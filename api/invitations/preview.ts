@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { clientKey, isRateLimited } from "../../lib/rateLimit";
+import { clientKey, isRateLimited } from "../../lib/rateLimit.js";
 
 type PreviewRequest = {
   token?: unknown;
