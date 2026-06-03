@@ -14,11 +14,7 @@ const supabase = createClient(
   { auth: { persistSession: false } },
 );
 
-export default async function handler(req: Request) {
-  if (req.method !== "POST") {
-    return new Response("method not allowed", { status: 405 });
-  }
-
+export async function POST(req: Request) {
   const limited = await enforce(req, "invitationPreview");
   if (limited) return limited;
 
