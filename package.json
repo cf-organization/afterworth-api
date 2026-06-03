@@ -4,7 +4,6 @@
   "private": true,
   "description": "Vercel edge functions for AfterWorth iOS app",
   "scripts": {
-    "build": "tsc --noEmit",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
