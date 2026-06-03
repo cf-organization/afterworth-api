@@ -1,156 +1,65 @@
+// CLOUDFLARE WAF RULES (deferred to Phase 5, kept for documentation):
+//   Rule 1: Bot Fight Mode ON for /api/invitations/*
+//   Rule 2: Managed Challenge if rate(/api/invitations/preview, 1m) > 30
+//   Rule 3: Block if rate(/api/invitations/preview, 1h) > 500 per IP
+//   Rule 4: Block requests with content-length > 2KB on this path
+//   Rule 5: Block requests where JSON body's "token" exceeds 512 chars
+
 import { createClient } from "@supabase/supabase-js";
-import { clientKey, isRateLimited } from "../../lib/rateLimit.js";
+import { enforce } from "../../lib/rateLimit.js";
 
-type PreviewRequest = {
-  token?: unknown;
-};
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_PUBLISHABLE_KEY!,
+  { auth: { persistSession: false } },
+);
 
-type InvitationPreview = {
-  tokenFingerprint: string;
-  invitationKind: string;
-  proposedRole: string;
-  estateDisplayName: string | null;
-  inviterDisplayName: string | null;
-  inviteeEmailHint: string | null;
-  inviteePhoneHint: string | null;
-  expiresAt: string;
-  isExpired: boolean;
-  isRevoked: boolean;
-};
-
-const jsonHeaders = {
-  "Content-Type": "application/json",
-};
-
-export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== "POST") {
-    return json({ error: "method_not_allowed" }, 405);
+export default async function handler(req: Request) {
+  if (req.method !== "POST") {
+    return new Response("method not allowed", { status: 405 });
   }
 
-  if (isRateLimited(clientKey(request), { limit: 30, windowMs: 60_000 })) {
-    return json({ error: "rate_limited" }, 429);
+  const limited = await enforce(req, "invitationPreview");
+  if (limited) return limited;
+
+  let body: { token?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("bad json", { status: 400 });
   }
 
-  const body = await parseBody(request);
-  const token = body?.token;
-
-  if (typeof token !== "string" || token.length < 16 || token.length > 512) {
-    return json({ preview: null }, 200);
+  const token = body.token?.trim();
+  if (!token || token.length < 16 || token.length > 512) {
+    return Response.json({ preview: null }, { status: 200 });
   }
-
-  const supabaseUrl = requiredEnv("SUPABASE_URL");
-  const publishableKey = requiredEnv("SUPABASE_PUBLISHABLE_KEY");
-  if (!supabaseUrl || !publishableKey) {
-    return json({ error: "server_not_configured" }, 500);
-  }
-
-  const supabase = createClient(supabaseUrl, publishableKey, {
-    auth: { persistSession: false },
-  });
 
   const { data, error } = await supabase.rpc("invitation_preview", {
     p_token: token,
   });
 
   if (error) {
-    return json({ error: "preview_failed" }, 500);
+    console.error("invitation_preview rpc error", error.code);
+    return Response.json({ preview: null }, { status: 200 });
   }
 
-  const preview = normalizePreview(data);
-  return json({ preview }, 200);
-}
-
-async function parseBody(request: Request): Promise<PreviewRequest | null> {
-  try {
-    return (await request.json()) as PreviewRequest;
-  } catch {
-    return null;
-  }
-}
-
-function normalizePreview(data: unknown): InvitationPreview | null {
-  const record = firstRecord(data);
-  if (!record) {
-    return null;
+  if (!data || data.length === 0) {
+    return Response.json({ preview: null }, { status: 200 });
   }
 
-  const tokenFingerprint = stringValue(record, "tokenFingerprint", "token_fingerprint");
-  const invitationKind = stringValue(record, "invitationKind", "invitation_kind");
-  const proposedRole = stringValue(record, "proposedRole", "proposed_role");
-  const expiresAt = stringValue(record, "expiresAt", "expires_at");
-
-  if (!tokenFingerprint || !invitationKind || !proposedRole || !expiresAt) {
-    return null;
-  }
-
-  return {
-    tokenFingerprint,
-    invitationKind,
-    proposedRole,
-    estateDisplayName: nullableStringValue(record, "estateDisplayName", "estate_display_name"),
-    inviterDisplayName: nullableStringValue(record, "inviterDisplayName", "inviter_display_name"),
-    inviteeEmailHint: nullableStringValue(record, "inviteeEmailHint", "invitee_email_hint"),
-    inviteePhoneHint: nullableStringValue(record, "inviteePhoneHint", "invitee_phone_hint"),
-    expiresAt,
-    isExpired: booleanValue(record, "isExpired", "is_expired"),
-    isRevoked: booleanValue(record, "isRevoked", "is_revoked"),
-  };
-}
-
-function firstRecord(data: unknown): Record<string, unknown> | null {
-  if (Array.isArray(data)) {
-    return data.length > 0 ? firstRecord(data[0]) : null;
-  }
-
-  if (isRecord(data)) {
-    if ("preview" in data) {
-      return firstRecord(data.preview);
-    }
-    return data;
-  }
-
-  return null;
-}
-
-function stringValue(
-  record: Record<string, unknown>,
-  camelKey: string,
-  snakeKey: string
-): string | null {
-  const value = record[camelKey] ?? record[snakeKey];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function nullableStringValue(
-  record: Record<string, unknown>,
-  camelKey: string,
-  snakeKey: string
-): string | null {
-  const value = record[camelKey] ?? record[snakeKey];
-  return typeof value === "string" ? value : null;
-}
-
-function booleanValue(
-  record: Record<string, unknown>,
-  camelKey: string,
-  snakeKey: string
-): boolean {
-  const value = record[camelKey] ?? record[snakeKey];
-  return typeof value === "boolean" ? value : false;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function requiredEnv(name: string): string | null {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : null;
-}
-
-function json(payload: unknown, status: number): Response {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: jsonHeaders,
+  const row = data[0];
+  return Response.json({
+    preview: {
+      tokenFingerprint: row.token_fingerprint,
+      invitationKind: row.invitation_kind,
+      proposedRole: row.proposed_role,
+      estateDisplayName: row.estate_display_name,
+      inviterDisplayName: row.inviter_display_name,
+      inviteeEmailHint: row.invitee_email_hint,
+      inviteePhoneHint: row.invitee_phone_hint,
+      expiresAt: row.expires_at,
+      isExpired: row.is_expired,
+      isRevoked: row.is_revoked,
+    },
   });
 }
