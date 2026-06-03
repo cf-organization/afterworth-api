@@ -1,0 +1,17 @@
+{
+  "name": "afterworth-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vercel edge functions for AfterWorth iOS app",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
