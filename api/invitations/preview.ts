@@ -1,10 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { clientKey, isRateLimited } from "../../lib/rateLimit";
 
-export const config = {
-  runtime: "edge",
-};
-
 type PreviewRequest = {
   token?: unknown;
 };
