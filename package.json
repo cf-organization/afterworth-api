@@ -2,6 +2,7 @@
   "name": "afterworth-api",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Vercel edge functions for AfterWorth iOS app",
   "scripts": {
     "type-check": "tsc --noEmit"
