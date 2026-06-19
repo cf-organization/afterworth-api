@@ -36,6 +36,15 @@ grant select on table public.documents to authenticated;
 -- grant select on table public.assets to authenticated;
 
 -- =============================================================================
--- beneficiaries  (TODO: next read slice — capture live grants before wiring)
+-- beneficiaries  (live beneficiaries listing — POST /api/beneficiaries)
 -- =============================================================================
--- grant select on table public.beneficiaries to authenticated;
+-- Confirmed live: authenticated has SELECT (read path for the RLS-scoped listing).
+-- RLS policy beneficiaries_read scopes the rows: the estate owner sees ALL rows in
+-- the estate; a beneficiary-role caller sees ONLY their own stamped row (user_id =
+-- auth.uid()). The grant alone is NOT the security boundary — RLS is.
+-- authenticated has NO insert/update/delete — live write methods would fail until
+-- those are granted in a future write slice.
+grant select on table public.beneficiaries to authenticated;
+
+-- Future write slice (NOT yet live — uncomment + apply when the write path is built):
+-- grant insert, update, delete on table public.beneficiaries to authenticated;

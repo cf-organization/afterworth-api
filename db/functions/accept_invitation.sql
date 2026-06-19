@@ -12,6 +12,14 @@
 -- same guard bind uses. This prevents accepting an invitation addressed to
 -- someone else.
 --
+-- Beneficiary self-link: when proposed_role = 'beneficiary', after the membership
+-- is created this also stamps the matching public.beneficiaries designation row(s)
+-- with the accepting user (user_id = auth.uid()), matched by invitee_email/phone
+-- within the estate. This is what lets the beneficiaries RLS read policy show a
+-- beneficiary only their OWN row. Tolerates zero matches (a designation row need
+-- not exist) and only stamps still-unlinked rows, so re-accepting self-heals an
+-- acceptance that predated this linkage.
+--
 -- Error codes (mapped to HTTP in api/invitations/accept.ts):
 --   42501 unauthenticated, P0002 not_found, P0003 expired, P0004 revoked,
 --   P0005 already_accepted (by someone else), P0006 not_for_caller,
@@ -82,6 +90,23 @@ begin
       and em.source_invitation_id = v_inv.id;
 
     if found then
+      -- Self-heal: an earlier acceptance may predate the beneficiary self-link
+      -- (or the link was added afterwards). If this is a beneficiary invitation
+      -- and the designation row is still unlinked, stamp it now. No-op once set.
+      if v_inv.proposed_role::text = 'beneficiary' then
+        update public.beneficiaries
+           set user_id = v_user
+         where estate_id = v_inv.estate_id
+           and user_id is null
+           and (
+             (v_inv.invitee_email is not null
+              and lower(email) = lower(v_inv.invitee_email))
+             or
+             (v_inv.invitee_phone is not null
+              and phone = v_inv.invitee_phone)
+           );
+      end if;
+
       return query
         select
           v_membership_id,
@@ -116,6 +141,25 @@ begin
      now(),
      now())
   returning estate_memberships.id into v_membership_id;
+
+  -- Beneficiary self-link: stamp the matching designation row(s) with the
+  -- accepting user so the beneficiaries RLS read policy (user_id = auth.uid())
+  -- shows this beneficiary only their OWN row. Matched by contact within the
+  -- estate (invitations carry no beneficiary_id). Only still-unlinked rows are
+  -- stamped; zero matches is fine — a designation row need not exist.
+  if v_inv.proposed_role::text = 'beneficiary' then
+    update public.beneficiaries
+       set user_id = v_user
+     where estate_id = v_inv.estate_id
+       and user_id is null
+       and (
+         (v_inv.invitee_email is not null
+          and lower(email) = lower(v_inv.invitee_email))
+         or
+         (v_inv.invitee_phone is not null
+          and phone = v_inv.invitee_phone)
+       );
+  end if;
 
   perform public.write_audit(
     'invitation.accepted',
