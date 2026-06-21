@@ -48,3 +48,17 @@ grant select on table public.beneficiaries to authenticated;
 
 -- Future write slice (NOT yet live — uncomment + apply when the write path is built):
 -- grant insert, update, delete on table public.beneficiaries to authenticated;
+
+-- =============================================================================
+-- access_grants  (access-grant model slice — db/migrations/0002_20260620_access_grants.sql)
+-- =============================================================================
+-- FIRST write slice: grant management is inherently a write (owner creates/revokes
+-- grants), so unlike documents/beneficiaries this gets insert + update. Writes are
+-- owner-scoped by RLS (access_grants_insert / access_grants_update WITH CHECK
+-- is_estate_owner), NOT by the grant — the grant is necessary, RLS is the boundary.
+-- NO delete: revoke is a status change (status -> 'revoked'); audit rows retained.
+-- Read is RLS-scoped: owner sees all estate grants; grantee sees only their own.
+-- NOTE: direct table writes are the SLICE-only path. The planned interface is a
+-- SECURITY DEFINER create_document_grant()/revoke_document_grant() RPC (Appendix A.2);
+-- when it lands, insert/update here may be revoked in favor of execute on the RPC.
+grant select, insert, update on table public.access_grants to authenticated;

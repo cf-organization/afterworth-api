@@ -1,16 +1,25 @@
 /**
  * POST /api/vault/documents
  *
- * Lists the documents for an estate the caller belongs to. Scoping is enforced
- * by RLS on public.documents (documents_read: owner_id = auth.uid() OR
- * is_estate_member(estate_id)) — the authed client only sees rows the caller is
- * permitted to read. A non-member receives an empty list.
+ * Lists the documents an estate caller may see, with per-document access-grant
+ * gating applied (access-grant model slice — db/migrations/0002_*; design in
+ * docs/live-data-migration.md Appendix A).
  *
- * NOTE ON GATING: this lists all documents in the estate that the caller (as an
- * approved member or owner) may read — faithful to the current app behavior
- * (MockVaultService.scopedDocuments filters by estate only). Per-document
- * protected-disclosure gating (VisibilityTier / PolicyContext) is a separate
- * future layer and is NOT applied here.
+ * TWO ENFORCEMENT LAYERS (Appendix A.6):
+ *   - ROW visibility = RLS (HARD). documents_read + can_access_document() decide
+ *     which rows the caller sees at all. Owner sees all (inherent); a non-owner sees
+ *     a row only through a covering, released, ceiling-satisfied grant. This is the
+ *     real boundary and cannot be bypassed by the authed client.
+ *   - FIELD masking = THIS endpoint (SOFT). For rows RLS lets through, title and the
+ *     derived fileName are masked when the resolved visibility_tier is below
+ *     full_detail. This relies on this endpoint being the ONLY read path on
+ *     public.documents for `authenticated`. A second read path bypasses this masking
+ *     unless it re-applies it (row visibility stays safe regardless).
+ *
+ * Tier resolution mirrors can_access_document(): owner (owner_id = caller) ->
+ * full_detail; else per-document grant -> category 'estate_documents' grant ->
+ * masked-by-default ('hidden'). RLS guarantees a non-owner row has a grant, so the
+ * default only fires defensively.
  *
  * Request:
  *   Headers: Authorization: Bearer <Supabase JWT>, Content-Type: application/json
@@ -46,6 +55,14 @@ interface DocumentRow {
   sha256: string | null;
   is_encrypted: boolean | null;
   created_at: string | null;
+  sensitivity: string; // 5-level ladder (low|medium|high|restricted|sealed)
+}
+
+// The caller's own active grants in this estate (RLS scopes to grantee = auth.uid()).
+interface GrantRow {
+  document_id: string | null;
+  category: string | null;
+  visibility_tier: string;
 }
 
 const UUID_RE =
@@ -85,27 +102,29 @@ function authErrorResponse(err: AuthError): Response {
 }
 
 /**
- * Reshape a raw documents row into the wire shape the iOS EstateDocument
- * decoder expects. The DB is lean; fields without a column are given honest
- * defaults (they are carried as metadata, not enforced gating). doc_type is
- * passed through unchanged because the DB vocabulary now matches the iOS
- * DocumentCategory raw values exactly.
+ * Reshape a raw documents row into the wire shape the iOS EstateDocument decoder
+ * expects, applying FIELD masking for the resolved visibility tier (Appendix A.6
+ * soft layer). Below full_detail the specific title and the derived fileName are
+ * withheld; documentType (the category) stays visible so the row is still
+ * meaningfully listed. sensitivity and visibilityTier now carry REAL values from
+ * the DB / resolution (no longer placeholders). doc_type passes through unchanged
+ * because the DB vocabulary matches the iOS DocumentCategory raw values exactly.
  */
-function toWire(row: DocumentRow): Record<string, unknown> {
+function toWire(row: DocumentRow, tier: string): Record<string, unknown> {
+  const full = tier === "full_detail";
   return {
     id: row.id,
     estateId: row.estate_id,
-    title: row.title,
-    documentType: row.doc_type, // matches DocumentCategory raw values
-    fileName: deriveFileName(row.storage_path, row.title),
+    title: full ? row.title : "Protected Document",
+    documentType: row.doc_type, // category stays visible even when masked
+    fileName: full ? deriveFileName(row.storage_path, row.title) : null,
     fileSizeBytes: row.size_bytes,
     uploadedAt: row.created_at,
     uploadedBy: row.owner_id,
     isVerified: false,
-    // Honest defaults for fields with no DB column (carried, not gating):
-    accessLevel: "ownerOnly",
-    sensitivity: "medium",
-    visibilityTier: "full_detail",
+    accessLevel: "ownerOnly", // legacy carried field, not gating
+    sensitivity: row.sensitivity, // REAL — from documents.sensitivity
+    visibilityTier: tier, // REAL — resolved per grant / owner inherency
     status: "active",
   };
 }
@@ -151,11 +170,12 @@ export async function POST(req: Request): Promise<Response> {
 
   const supabase = getAuthedSupabaseClient(user.jwt);
 
-  // RLS scopes this select: caller sees rows only if owner or approved member.
+  // RLS (documents_read) scopes this select to ROW visibility: owner sees all;
+  // a non-owner sees a row only via a covering, released, ceiling-satisfied grant.
   const { data, error } = await supabase
     .from("documents")
     .select(
-      "id, estate_id, owner_id, doc_type, title, storage_path, mime_type, size_bytes, sha256, is_encrypted, created_at"
+      "id, estate_id, owner_id, doc_type, title, storage_path, mime_type, size_bytes, sha256, is_encrypted, created_at, sensitivity"
     )
     .eq("estate_id", body.estateId)
     .order("created_at", { ascending: false });
@@ -165,8 +185,45 @@ export async function POST(req: Request): Promise<Response> {
     return errorResponse(502, "upstream_error");
   }
 
+  // The caller's own active grants in this estate (RLS scopes to grantee =
+  // auth.uid()). Used only to resolve the FIELD-masking tier; row visibility was
+  // already decided by RLS above.
+  const callerId = user.userId.toLowerCase();
+  const { data: grantData, error: grantError } = await supabase
+    .from("access_grants")
+    .select("document_id, category, visibility_tier")
+    .eq("estate_id", body.estateId)
+    .eq("grantee_user_id", callerId)
+    .eq("status", "active");
+
+  if (grantError) {
+    console.error("access_grants select error:", grantError);
+    return errorResponse(502, "upstream_error");
+  }
+
+  const perDocTier = new Map<string, string>();
+  let categoryDocTier: string | null = null;
+  for (const g of (grantData ?? []) as GrantRow[]) {
+    if (g.document_id) {
+      perDocTier.set(g.document_id, g.visibility_tier);
+    } else if (g.category === "estate_documents") {
+      categoryDocTier = g.visibility_tier;
+    }
+  }
+
+  // Resolve the field-masking tier per row (mirrors can_access_document):
+  // owner/creator -> full_detail; else per-doc grant -> category grant ->
+  // masked-by-default ('hidden'). RLS guarantees a non-owner row has a grant, so
+  // the 'hidden' default only fires defensively (safe-by-default, never leaks).
+  const effectiveTier = (row: DocumentRow): string => {
+    if (row.owner_id && row.owner_id.toLowerCase() === callerId) {
+      return "full_detail";
+    }
+    return perDocTier.get(row.id) ?? categoryDocTier ?? "hidden";
+  };
+
   const rows = (data ?? []) as DocumentRow[];
-  const documents = rows.map(toWire);
+  const documents = rows.map((row) => toWire(row, effectiveTier(row)));
 
   return jsonResponse(200, { documents });
 }
