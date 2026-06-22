@@ -21,6 +21,8 @@ export interface GrantRow {
   updated_at: string | null;
   revoked_at: string | null;
   revoked_by_user_id: string | null;
+  approved_at: string | null;
+  approved_by_user_id: string | null;
 }
 
 export function toGrantWire(r: GrantRow): Record<string, unknown> {
@@ -39,6 +41,8 @@ export function toGrantWire(r: GrantRow): Record<string, unknown> {
     grantedByUserId: r.granted_by_user_id,
     createdAt: r.created_at,
     revokedAt: r.revoked_at,
+    approvedAt: r.approved_at,
+    approvedByUserId: r.approved_by_user_id,
   };
 }
 

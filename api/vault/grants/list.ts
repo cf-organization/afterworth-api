@@ -27,7 +27,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const GRANT_COLUMNS =
   "id, estate_id, grantee_user_id, grantee_role, professional_type, document_id, " +
   "category, visibility_tier, release_condition, requires_step_up, status, " +
-  "granted_by_user_id, created_at, updated_at, revoked_at, revoked_by_user_id";
+  "granted_by_user_id, created_at, updated_at, revoked_at, revoked_by_user_id, " +
+  "approved_at, approved_by_user_id";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
