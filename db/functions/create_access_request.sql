@@ -2,16 +2,20 @@
 --                              p_reason text default null)
 --   -> SETOF public.access_requests   (the created request row)
 --
--- The FIRST beneficiary-initiated write. A NON-owner member of the estate requests access
--- to a category ('estate_documents' in V1); the owner later converts it to an
--- already-approved grant via approve_access_request. Mirrors the owner RPCs' care.
+-- A NON-owner member of the estate requests access to a category ('estate_documents' in V1);
+-- the owner later converts it to an already-approved grant via approve_access_request.
 --
--- SECURITY (load-bearing): SECURITY DEFINER bypasses RLS, so the explicit gates below ARE
--- the boundary. requester_user_id is STAMPED = auth.uid() (never a client param —
--- anti-spoof, the same discipline as granted_by_user_id on grants). The MEMBER gate is the
--- INVERSE of the owner RPCs: an APPROVED estate_membership for auth.uid() AND a
--- non-ownership role (owners have inherent access — a request is meaningless, and is
--- rejected). A non-member calling this -> 42501.
+-- SECURITY (load-bearing): SECURITY DEFINER bypasses RLS, so the explicit gate below IS the
+-- boundary. requester_user_id is STAMPED = auth.uid() (never a client param — anti-spoof,
+-- the same discipline as granted_by_user_id on grants). The MEMBER gate is the INVERSE of
+-- the owner RPCs: an APPROVED estate_membership for auth.uid() AND a non-ownership role
+-- (owners have inherent access — a request is meaningless, and is rejected). Non-member -> 42501.
+--
+-- requester_role: captured in the SAME membership lookup the gate performs (no second query)
+-- and STAMPED onto the row, so the owner-review surface can show the SCOPE of an approval
+-- (approving a professional_delegate grants RESTRICTED-doc access — more than a beneficiary;
+-- document_grantable keys on role). The gate changed from an EXISTS to a SELECT ... INTO so
+-- the one lookup both gates AND returns the role.
 --
 -- Dedup: the access_requests_one_pending partial unique (one pending per estate,requester,
 -- category) fires on insert; surfaced as a readable 409.
@@ -35,6 +39,7 @@ create or replace function public.create_access_request(
 as $function$
 declare
   v_user uuid := auth.uid();
+  v_requester_role text;
   v_id uuid;
 begin
   -- Auth null-guard.
@@ -48,27 +53,34 @@ begin
     raise exception 'unsupported request category';  -- P0001 -> 400
   end if;
 
-  -- MEMBER GATE (privilege boundary; DEFINER bypasses RLS, so this explicit check IS the
-  -- access boundary). Must be an APPROVED member AND a non-ownership role. Owners have
-  -- inherent access and do not request — this is the inverse of the owner RPCs.
-  if not exists (
-    select 1 from public.estate_memberships m
-    where m.estate_id = p_estate_id
-      and m.user_id = v_user
-      and m.status = 'approved'
-      and not public.is_ownership_role(m.role)
-  ) then
+  -- MEMBER GATE + ROLE CAPTURE in ONE lookup (privilege boundary; DEFINER bypasses RLS, so
+  -- this explicit check IS the access boundary). The ownership exclusion stays IN the WHERE
+  -- (NOT a post-LIMIT check): a single (estate, user) is NOT guaranteed to have only one
+  -- approved membership (accept_invitation inserts with no (estate,user) uniqueness; V2 adds
+  -- more ownership roles), so a status-only select + post-check would be nondeterministic —
+  -- it could grab an ownership row and wrongly reject a user who also has a non-ownership row.
+  -- Filtering here makes this provably equivalent to the original EXISTS (passes iff an
+  -- approved NON-ownership membership exists) AND captures that surviving role to stamp.
+  select m.role into v_requester_role
+  from public.estate_memberships m
+  where m.estate_id = p_estate_id
+    and m.user_id = v_user
+    and m.status = 'approved'
+    and not public.is_ownership_role(m.role)
+  limit 1;
+
+  if v_requester_role is null then
     raise exception 'not an estate member eligible to request access'
       using errcode = '42501';
   end if;
 
-  -- Insert. requester_user_id STAMPED = auth.uid() (server-side, never a param). The
+  -- Insert. requester_user_id + requester_role STAMPED server-side (never params). The
   -- one-pending partial unique fires here; surface a readable 409.
   begin
     insert into public.access_requests
-      (estate_id, requester_user_id, category, reason, status)
+      (estate_id, requester_user_id, requester_role, category, reason, status)
     values
-      (p_estate_id, v_user, p_category, p_reason, 'pending')
+      (p_estate_id, v_user, v_requester_role, p_category, p_reason, 'pending')
     returning id into v_id;
   exception
     when unique_violation then
@@ -82,7 +94,7 @@ begin
     'access_requests',
     v_id,
     p_estate_id,
-    jsonb_build_object('category', p_category)
+    jsonb_build_object('category', p_category, 'requester_role', v_requester_role)
   );
 
   return query select r.* from public.access_requests r where r.id = v_id;

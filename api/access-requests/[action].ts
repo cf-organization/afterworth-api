@@ -32,7 +32,7 @@ const CATEGORIES = new Set(["estate_documents"]);
 const TIERS = new Set(["full_detail", "limited_detail"]);
 const ACTIONS = new Set(["create", "list", "approve", "deny"]);
 const REQUEST_COLUMNS =
-  "id, estate_id, requester_user_id, category, reason, status, " +
+  "id, estate_id, requester_user_id, requester_role, category, reason, status, " +
   "created_at, resolved_at, resolved_by_user_id, resulting_grant_id";
 
 function jsonResponse(status: number, body: unknown): Response {

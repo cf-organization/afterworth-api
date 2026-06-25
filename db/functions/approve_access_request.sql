@@ -82,17 +82,25 @@ begin
     raise exception 'unsupported visibility tier';  -- P0001 -> 400
   end if;
 
-  -- Resolve the requester's CURRENT role in the estate (for grantee_role + the ceiling
-  -- matrix). If they are no longer an approved member, do not grant.
+  -- Resolve the requester's CURRENT NON-OWNERSHIP role in the estate (for grantee_role + the
+  -- ceiling matrix). The ownership exclusion stays IN the WHERE (mirrors create_access_request):
+  -- a (estate, user) may have >1 approved membership (no (estate,user) uniqueness — accept_
+  -- invitation keys idempotency on source_invitation_id; V2 adds ownership roles). A status-only
+  -- lookup could grab an OWNERSHIP row and stamp grantee_role='primary_user', which the
+  -- access_grants.grantee_role CHECK rejects -> a 500 on approval. Filtering here keeps
+  -- grantee_role valid AND resolves the role the SAME way the request's requester_role was stamped.
   select m.role into v_role
   from public.estate_memberships m
   where m.estate_id = v_estate
     and m.user_id = v_requester
     and m.status = 'approved'
+    and not public.is_ownership_role(m.role)
   limit 1;
 
+  -- Null = the requester is no longer an approved non-ownership member (revoked between request
+  -- and approval, or now only an ownership role). Clean 400 with a readable message — NOT a 500.
   if v_role is null then
-    raise exception 'requester is not an active member of this estate';  -- P0001 -> 400
+    raise exception 'requester is no longer an eligible member of this estate';  -- P0001 -> 400
   end if;
 
   -- Create the ALREADY-APPROVED category grant (inline; create_document_grant is doc-only).

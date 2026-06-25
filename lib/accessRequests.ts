@@ -8,6 +8,7 @@ export interface AccessRequestRow {
   id: string;
   estate_id: string;
   requester_user_id: string;
+  requester_role: string | null;
   category: string;
   reason: string | null;
   status: string;
@@ -22,6 +23,7 @@ export function toAccessRequestWire(r: AccessRequestRow): Record<string, unknown
     id: r.id,
     estateId: r.estate_id,
     requesterUserId: r.requester_user_id,
+    requesterRole: r.requester_role,
     category: r.category,
     reason: r.reason,
     status: r.status,
