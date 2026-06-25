@@ -62,3 +62,14 @@ grant select on table public.beneficiaries to authenticated;
 -- SECURITY DEFINER create_document_grant()/revoke_document_grant() RPC (Appendix A.2);
 -- when it lands, insert/update here may be revoked in favor of execute on the RPC.
 grant select, insert, update on table public.access_grants to authenticated;
+
+-- =============================================================================
+-- access_requests  (access-request lifecycle — db/migrations/0004_20260624_access_requests.sql)
+-- =============================================================================
+-- SELECT-ONLY. Unlike access_grants, this gets NO direct insert/update grant: all writes
+-- go through the SECURITY DEFINER RPCs (create_access_request member-gated;
+-- approve_access_request / deny_access_request owner-gated). RPC-only from day one avoids
+-- the access_grants transition-debt (the direct insert/update there is now slated for
+-- revocation once iOS uses the RPCs exclusively). Read is RLS-scoped
+-- (access_requests_select): requester sees only their own; owner sees all in the estate.
+grant select on table public.access_requests to authenticated;
