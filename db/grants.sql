@@ -73,3 +73,14 @@ grant select, insert, update on table public.access_grants to authenticated;
 -- revocation once iOS uses the RPCs exclusively). Read is RLS-scoped
 -- (access_requests_select): requester sees only their own; owner sees all in the estate.
 grant select on table public.access_requests to authenticated;
+
+-- =============================================================================
+-- estate_memberships + profiles  (members listing — POST /api/vault/members)
+-- =============================================================================
+-- NO new table grant. The members endpoint reads estate_memberships x profiles through the
+-- owner-gated SECURITY DEFINER rpc list_estate_members (db/functions/), NOT a direct authed
+-- select — the display label is the member's profiles.email, and a user cannot read another
+-- user's profiles row under RLS. DEFINER bypasses RLS to do the join; the is_estate_owner
+-- gate in the RPC is the boundary. So `authenticated` needs only EXECUTE on the function
+-- (default PUBLIC, matching the other DEFINER RPCs) — deliberately no SELECT grant on
+-- estate_memberships or profiles to authenticated (least exposure; emails stay RPC-gated).
