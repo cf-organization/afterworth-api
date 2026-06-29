@@ -18,13 +18,14 @@
 -- endpoint reveals nothing, not even emptiness). The owner already knows these emails (they
 -- invited by email), so this is owner-scoped disclosure of data the owner already holds.
 --
--- EMAIL-AS-LABEL (honest interim): there is NO real "name" for a member in the schema —
--- beneficiaries carry beneficiaries.full_name (owner-provided), but estate_memberships has
--- no name and profiles has email/phone, no name. So email is the display label; the iOS
--- picker falls back to a uid-prefix only if email is null. A proper name needs a
--- profiles.name column (a separate concern, NOT this slice). professional_type is NOT on
--- estate_memberships (it lives only on access_grants, chosen at grant time), so it is not
--- returned here — the grant RPC accepts p_professional_type when the owner grants.
+-- DISPLAY NAME + EMAIL: returns profiles.full_name (the display name) alongside email. iOS
+-- prefers full_name when present, falling back to email, then a uid-prefix. full_name is
+-- populated by the handle_new_user trigger, which copies raw_user_meta_data->>'full_name'
+-- captured at signup (see db/functions/handle_new_user.sql) — NULL for users seeded WITHOUT
+-- that metadata (e.g. SQL-seeded fixtures), which correctly fall back to email.
+-- professional_type is NOT on estate_memberships (it lives only on access_grants, chosen at
+-- grant time), so it is not returned here — the grant RPC accepts p_professional_type when
+-- the owner grants.
 --
 -- NON-OWNER + APPROVED + DISTINCT: filtered to status='approved' AND
 -- not is_ownership_role(role) — the same canonical "eligible non-owner member" predicate
@@ -43,8 +44,14 @@
 -- DEFINER RPCs — no explicit grant captured in VC; the gate, not the grant, is the
 -- boundary). Source of truth — re-apply on DB reset.
 
+-- Return type changed (full_name added) — Postgres rejects CREATE OR REPLACE when the
+-- OUT-parameter row type differs, so DROP first. Safe: nothing in the DB depends on this
+-- function (it is called only via the PostgREST RPC); EXECUTE returns to its default (PUBLIC)
+-- on recreate, matching the other DEFINER RPCs.
+drop function if exists public.list_estate_members(uuid);
+
 create or replace function public.list_estate_members(p_estate_id uuid)
- returns table(user_id uuid, role text, status text, email text)
+ returns table(user_id uuid, role text, status text, email text, full_name text)
  language plpgsql
  security definer
  set search_path to 'public', 'extensions'
@@ -64,7 +71,7 @@ begin
   end if;
 
   return query
-    select distinct m.user_id, m.role, m.status, p.email
+    select distinct m.user_id, m.role, m.status, p.email, p.full_name
     from public.estate_memberships m
     join public.profiles p on p.id = m.user_id
     where m.estate_id = p_estate_id

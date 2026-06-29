@@ -10,12 +10,14 @@
  * Two owner-side consumers: (a) resolve a request's requester to a display label in
  * owner-review; (b) populate the grant UI grantee picker with professionals/beneficiaries.
  *
- * The display label is the member's EMAIL (no real name exists in the schema; the iOS picker
- * falls back to a uid-prefix only when email is null). professional_type is NOT returned —
- * it is not on estate_memberships; the owner chooses it at grant time.
+ * Display: `fullName` (profiles.full_name, populated by the handle_new_user trigger from the
+ * name captured at signup) when present; iOS prefers it, falling back to email, then a
+ * uid-prefix. fullName is null for users seeded without that metadata (SQL fixtures) → email
+ * fallback. professional_type is NOT returned — it is not on estate_memberships; the owner
+ * chooses it at grant time.
  *
  * Request:  Authorization: Bearer <JWT>; body { estateId }
- * Response (200): { members: MemberWire[] }   where MemberWire = { userId, email, role, status }
+ * Response (200): { members: MemberWire[] }   MemberWire = { userId, email, role, status, fullName }
  * Errors: 401 auth, 400 bad body, 403 not-owner / non-member (gate), 405 method, 502 upstream.
  */
 
@@ -32,6 +34,7 @@ interface MemberRow {
   role: string;
   status: string;
   email: string | null;
+  full_name: string | null;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -71,6 +74,7 @@ function toWire(r: MemberRow): Record<string, unknown> {
     email: r.email,
     role: r.role,
     status: r.status,
+    fullName: r.full_name,
   };
 }
 
