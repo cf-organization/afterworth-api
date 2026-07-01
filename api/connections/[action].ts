@@ -16,11 +16,12 @@
  * only. The client only ever sees the reference_token handle + normalized balances.
  *
  * Bodies:
- *   create_link_token  {}                                                  -> { linkToken }
- *   exchange           { estateId, publicToken, institutionId?,
- *                        institutionName? }                                -> { connection }   (no token)
- *   refresh            { connectionId }                                    -> { assets: [] }
- *   list               { estateId }                                        -> { connections: [], assets: [] }
+ *   create_link_token    {}                                                -> { linkToken }
+ *   sandbox_public_token { institutionId? }  (B3a TEMPORARY; strip at B3b)  -> { publicToken }
+ *   exchange             { estateId, publicToken, institutionId?,
+ *                          institutionName? }                              -> { connection }   (no token)
+ *   refresh              { connectionId }                                  -> { assets: [] }
+ *   list                 { estateId }                                      -> { connections: [], assets: [] }
  * Errors: RPC SQLSTATE -> HTTP (42501->403, P0001->400, else 502); Plaid 4xx -> 400, else 502.
  *   401 auth, 400 bad body, 404 unknown action, 405 method.
  */
@@ -29,6 +30,7 @@ import { enforce } from "../../lib/rateLimit.js";
 import { verifyJwt, getAuthedSupabaseClient, AuthError } from "../../lib/auth.js";
 import {
   createLinkToken,
+  sandboxCreatePublicToken,
   exchangePublicToken,
   fetchAccounts,
   fetchHoldings,
@@ -37,7 +39,11 @@ import {
 } from "../../lib/plaid.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ACTIONS = new Set(["create_link_token", "exchange", "refresh", "list"]);
+// NOTE — sandbox_public_token is a TRACKED-TEMPORARY B3a helper: the iOS MockLinkHandler mints a
+// sandbox public_token SERVER-SIDE here (Plaid secret stays in Vercel, never on device) to prove the
+// create->exchange->reload loop without the LinkKit SDK. STRIP at B3b, when the real native LinkKit
+// produces the public_token. Auth-gated + self-disables when PLAID_ENV=production.
+const ACTIONS = new Set(["create_link_token", "sandbox_public_token", "exchange", "refresh", "list"]);
 
 const CONNECTION_COLUMNS =
   "id, estate_id, provider, institution_id, institution_name, reference_token, status, created_at, updated_at";
@@ -165,6 +171,22 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const supabase = getAuthedSupabaseClient(user.jwt);
+
+  // ----- sandbox_public_token: TRACKED-TEMPORARY B3a helper (strip at B3b). Mints a Plaid sandbox
+  //       public_token SERVER-SIDE so the iOS MockLinkHandler never touches the Plaid secret.
+  //       Auth-gated (verifyJwt above); disabled when PLAID_ENV=production. -----
+  if (action === "sandbox_public_token") {
+    if (process.env.PLAID_ENV === "production") return errorResponse(404, "not_found");
+    const institutionId = typeof o.institutionId === "string" ? o.institutionId : undefined;
+    try {
+      const publicToken = await sandboxCreatePublicToken(institutionId);
+      return jsonResponse(200, { publicToken });
+    } catch (err) {
+      if (err instanceof PlaidError) return plaidErrorResponse(err);
+      console.error("sandbox_public_token error:", err);
+      return errorResponse(502, "provider_error");
+    }
+  }
 
   // ----- create_link_token: ask Plaid for a Link token (no DB touch) -----
   if (action === "create_link_token") {
