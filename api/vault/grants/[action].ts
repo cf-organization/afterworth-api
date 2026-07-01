@@ -27,10 +27,15 @@ import type { PostgrestError } from "@supabase/supabase-js";
 import { type GrantRow, toGrantWire, grantRpcErrorResponse } from "../../../lib/grants.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ACTIONS = new Set(["create", "revoke", "approve", "list"]);
+const ACTIONS = new Set(["create", "create_asset", "revoke", "approve", "list"]);
 const ROLES = new Set(["beneficiary", "professional_delegate"]);
 const TIERS = new Set([
   "hidden", "range_only", "category_summary", "limited_detail", "full_detail",
+]);
+// B2b: the asset-disclosure category grants (category-scoped, no document_id). Mirrors the
+// access_grants.category CHECK for assets; create_asset_grant enforces the write-time ceiling.
+const ASSET_CATEGORIES = new Set([
+  "account_balances", "institution_names", "total_asset_value", "linked_account_details",
 ]);
 const GRANT_COLUMNS =
   "id, estate_id, grantee_user_id, grantee_role, professional_type, document_id, " +
@@ -184,6 +189,37 @@ export async function POST(req: Request): Promise<Response> {
       p_requires_step_up: requiresStepUp,
     });
     return grantRpcResult(data, error, "create_document_grant");
+  }
+
+  // ----- create_asset: owner-gated, WRITE-TIME-ceiling-enforced asset-category grant (B2b) -----
+  if (action === "create_asset") {
+    const estateId = typeof o.estateId === "string" ? o.estateId.trim() : "";
+    const granteeUserId = typeof o.granteeUserId === "string" ? o.granteeUserId.trim() : "";
+    const category = typeof o.category === "string" ? o.category : "";
+    const granteeRole = typeof o.granteeRole === "string" ? o.granteeRole : "";
+    const visibilityTier = typeof o.visibilityTier === "string" ? o.visibilityTier : "";
+    const releaseCondition = typeof o.releaseCondition === "string" ? o.releaseCondition : "";
+    if (![estateId, granteeUserId].every((v) => UUID_RE.test(v))) {
+      return errorResponse(400, "invalid_request");
+    }
+    if (!ASSET_CATEGORIES.has(category)) return errorResponse(400, "invalid_request");
+    if (!ROLES.has(granteeRole)) return errorResponse(400, "invalid_request");
+    if (!TIERS.has(visibilityTier)) return errorResponse(400, "invalid_request");
+    if (releaseCondition.length === 0) return errorResponse(400, "invalid_request");
+    const professionalType = typeof o.professionalType === "string" ? o.professionalType : null;
+    const requiresStepUp = typeof o.requiresStepUp === "boolean" ? o.requiresStepUp : false;
+
+    const { data, error } = await supabase.rpc("create_asset_grant", {
+      p_estate_id: estateId,
+      p_grantee_user_id: granteeUserId,
+      p_grantee_role: granteeRole,
+      p_category: category,
+      p_visibility_tier: visibilityTier,
+      p_release_condition: releaseCondition,
+      p_professional_type: professionalType,
+      p_requires_step_up: requiresStepUp,
+    });
+    return grantRpcResult(data, error, "create_asset_grant");
   }
 
   // ----- revoke: owner-gated RPC -----
