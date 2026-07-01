@@ -124,6 +124,12 @@ function toAssetWire(r: any) {
     confidenceLevel: r.confidence_level,
     verificationStatus: r.verification_status,
     createdAt: r.created_at,
+    // B2a redaction outputs (present on the list RPC path; undefined on the owner-only refresh path,
+    // which returns full rows). resolvedTier = the caller's account_balances tier; range_* = the
+    // coarse value bracket for range_only / category_summary (never an exact figure for a non-owner).
+    resolvedTier: r.resolved_tier,
+    rangeLowCents: r.range_low_cents,
+    rangeHighCents: r.range_high_cents,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -296,7 +302,7 @@ export async function POST(req: Request): Promise<Response> {
     return jsonResponse(200, { assets: (inserted ?? []).map(toAssetWire) });
   }
 
-  // ----- list: RLS-scoped connections + normalized_assets for an estate -----
+  // ----- list: connections (owner-RLS) + B2a server-redacted assets via the DEFINER RPC -----
   const estateId = typeof o.estateId === "string" ? o.estateId.trim() : "";
   if (!UUID_RE.test(estateId)) return errorResponse(400, "invalid_request");
 
@@ -310,18 +316,21 @@ export async function POST(req: Request): Promise<Response> {
     return errorResponse(502, "upstream_error");
   }
 
-  const { data: assets, error: assetErr } = await supabase
-    .from("normalized_assets")
-    .select(ASSET_COLUMNS)
-    .eq("estate_id", estateId)
-    .order("created_at", { ascending: false });
+  // Assets NEVER come from a direct normalized_assets SELECT here — that table is owner-only RLS,
+  // so the raw balance is structurally unreachable. list_estate_assets (SECURITY DEFINER) returns
+  // full rows to the owner and per-tier REDACTED rows to a non-owner (balance nulled/bucketed,
+  // holdings dropped) — the raw value is nulled inside the RPC before any bytes leave the backend.
+  const { data: assets, error: assetErr } = await supabase.rpc("list_estate_assets", {
+    p_estate_id: estateId,
+  });
   if (assetErr) {
-    console.error("normalized_assets list error:", assetErr);
+    console.error("list_estate_assets rpc error:", assetErr);
     return errorResponse(502, "upstream_error");
   }
 
   return jsonResponse(200, {
     connections: (connections ?? []).map(toConnectionWire),
-    assets: (assets ?? []).map(toAssetWire),
+    // supabase-js widens rpc() rows to a generic type; cast through unknown to the row shape.
+    assets: ((assets ?? []) as unknown as Record<string, unknown>[]).map(toAssetWire),
   });
 }
