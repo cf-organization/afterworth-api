@@ -25,12 +25,12 @@
  *   500 — anything else
  */
 
-import { enforce } from "../../lib/rateLimit.js";
+import { enforce } from "../rateLimit.js";
 import {
   verifyJwt,
   getAuthedSupabaseClient,
   AuthError,
-} from "../../lib/auth.js";
+} from "../auth.js";
 
 // ============================================================
 // Types
@@ -113,7 +113,7 @@ function authErrorResponse(err: AuthError): Response {
 // Handler
 // ============================================================
 
-export async function POST(req: Request): Promise<Response> {
+export async function handle(req: Request): Promise<Response> {
   // -- Step A: Method check --
   // POST is the only allowed method. Vercel routes the function regardless
   // of method, so we enforce it here.
