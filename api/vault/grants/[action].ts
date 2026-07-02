@@ -1,5 +1,5 @@
 /**
- * POST /api/vault/grants/[action]   where action ∈ {create, create_asset, revoke, approve, list, list_asset}
+ * POST /api/vault/grants/[action]   where action ∈ {create, create_asset, revoke, approve, list, list_asset, update_asset, update_document}
  *
  * ONE serverless function serving all four document-grant routes — consolidated to fit the
  * Vercel Hobby 12-function-per-deployment cap (matches the access-requests/[action].ts
@@ -20,6 +20,8 @@
  *   approve     { grantId }                                               -> { grant }
  *   list        { estateId, documentId }                                  -> { grants: [] }  (RLS-scoped, doc grants, active)
  *   list_asset  { estateId, granteeUserId }                               -> { grants: [] }  (RLS-scoped, category grants, active)
+ *   update_asset    { grantId, visibilityTier }                          -> { grant }  (in-place tier edit, category)
+ *   update_document { grantId, visibilityTier }                          -> { grant }  (in-place tier edit, document)
  * Errors (RPC SQLSTATE -> HTTP, message passed through): 42501->403, 23505->409, P0001->400,
  *   else 502. 401 auth, 400 bad body, 404 unknown action, 405 method.
  */
@@ -30,7 +32,7 @@ import type { PostgrestError } from "@supabase/supabase-js";
 import { type GrantRow, toGrantWire, grantRpcErrorResponse } from "../../../lib/grants.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ACTIONS = new Set(["create", "create_asset", "revoke", "approve", "list", "list_asset"]);
+const ACTIONS = new Set(["create", "create_asset", "revoke", "approve", "list", "list_asset", "update_asset", "update_document"]);
 const ROLES = new Set(["beneficiary", "professional_delegate"]);
 const TIERS = new Set([
   "hidden", "range_only", "category_summary", "limited_detail", "full_detail",
@@ -266,6 +268,25 @@ export async function POST(req: Request): Promise<Response> {
       p_grant_id: grantId,
     });
     return grantRpcResult(data, error, "revoke_document_grant");
+  }
+
+  // ----- update_asset / update_document: in-place tier edit (replaces revoke+recreate) -----
+  //   { grantId, visibilityTier } -> { grant }. Both re-enforce the ceiling on the NEW tier:
+  //   update_asset_grant explicitly (asset_category_grantable — the trigger skips category grants);
+  //   update_document_grant via the enforce_grant_ceiling trigger (BEFORE UPDATE). TIERS is validated
+  //   here because the document trigger doesn't police the tier value.
+  if (action === "update_asset" || action === "update_document") {
+    const grantId = typeof o.grantId === "string" ? o.grantId.trim() : "";
+    const visibilityTier = typeof o.visibilityTier === "string" ? o.visibilityTier : "";
+    if (!UUID_RE.test(grantId)) return errorResponse(400, "invalid_request");
+    if (!TIERS.has(visibilityTier)) return errorResponse(400, "invalid_request");
+
+    const fn = action === "update_asset" ? "update_asset_grant" : "update_document_grant";
+    const { data, error } = await supabase.rpc(fn, {
+      p_grant_id: grantId,
+      p_visibility_tier: visibilityTier,
+    });
+    return grantRpcResult(data, error, fn);
   }
 
   // ----- approve: owner-gated RPC (activates after_owner_approval grants) -----
