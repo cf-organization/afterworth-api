@@ -1,5 +1,5 @@
 /**
- * POST /api/connections/[action]   where action ∈ {create_link_token, exchange, refresh, list}
+ * POST /api/connections/[action]   where action ∈ {create_link_token, exchange, refresh, list, net_worth}
  *
  * ONE serverless function serving all four account-aggregation routes — consolidated to fit the
  * Vercel Hobby 12-function-per-deployment cap (the vault/grants/[action].ts + access-requests
@@ -21,6 +21,7 @@
  *                        institutionName? }                                -> { connection }   (no token)
  *   refresh            { connectionId }                                    -> { assets: [] }
  *   list               { estateId }                                        -> { connections: [], assets: [] }
+ *   net_worth          { estateId }                                        -> { netWorth: {...}|null }  (redacted aggregate)
  * Errors: RPC SQLSTATE -> HTTP (42501->403, P0001->400, else 502); Plaid 4xx -> 400, else 502.
  *   401 auth, 400 bad body, 404 unknown action, 405 method.
  */
@@ -37,7 +38,7 @@ import {
 } from "../../lib/plaid.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ACTIONS = new Set(["create_link_token", "exchange", "refresh", "list"]);
+const ACTIONS = new Set(["create_link_token", "exchange", "refresh", "list", "net_worth"]);
 
 const CONNECTION_COLUMNS =
   "id, estate_id, provider, institution_id, institution_name, reference_token, status, created_at, updated_at";
@@ -130,6 +131,19 @@ function toAssetWire(r: any) {
     resolvedTier: r.resolved_tier,
     rangeLowCents: r.range_low_cents,
     rangeHighCents: r.range_high_cents,
+  };
+}
+// Slice B — the estate net-worth aggregate (get_estate_net_worth). totalCents exact only for
+// owner/professional; range_* is the coarse bracket for a beneficiary; suppressedByBreakdown = true
+// when a total grant exists but is withheld by the account_balances-precedence exclusion.
+function toNetWorthWire(r: any) {
+  return {
+    totalCents: r.total_cents,
+    rangeLowCents: r.range_low_cents,
+    rangeHighCents: r.range_high_cents,
+    resolvedTier: r.resolved_tier,
+    currency: r.currency,
+    suppressedByBreakdown: r.suppressed_by_breakdown,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -300,6 +314,24 @@ export async function POST(req: Request): Promise<Response> {
       return errorResponse(502, "upstream_error");
     }
     return jsonResponse(200, { assets: (inserted ?? []).map(toAssetWire) });
+  }
+
+  // ----- net_worth: Slice B total_asset_value aggregate via the DEFINER RPC -----
+  //   { estateId } -> { netWorth: {...} }. get_estate_net_worth redacts per the total_asset_value
+  //   grant (owner exact; beneficiary bracketed; professional exact) and SUPPRESSES the total when the
+  //   caller holds an account_balances grant (breakdown precedence — the cross-surface subtraction-attack
+  //   exclusion). list_estate_assets is UNCHANGED; this is a separate aggregate surface.
+  if (action === "net_worth") {
+    const estateId = typeof o.estateId === "string" ? o.estateId.trim() : "";
+    if (!UUID_RE.test(estateId)) return errorResponse(400, "invalid_request");
+
+    const { data, error } = await supabase.rpc("get_estate_net_worth", { p_estate_id: estateId });
+    if (error) {
+      console.error("get_estate_net_worth rpc error:", error);
+      return errorResponse(502, "upstream_error");
+    }
+    const row = ((data ?? []) as unknown as Record<string, unknown>[])[0];
+    return jsonResponse(200, { netWorth: row ? toNetWorthWire(row) : null });
   }
 
   // ----- list: connections (owner-RLS) + B2a server-redacted assets via the DEFINER RPC -----
