@@ -1,5 +1,5 @@
 /**
- * POST /api/vault/grants/[action]   where action ∈ {create, revoke, approve, list}
+ * POST /api/vault/grants/[action]   where action ∈ {create, create_asset, revoke, approve, list, list_asset}
  *
  * ONE serverless function serving all four document-grant routes — consolidated to fit the
  * Vercel Hobby 12-function-per-deployment cap (matches the access-requests/[action].ts
@@ -12,11 +12,14 @@
  * db/functions/ + docs/live-data-migration.md Appendix A.2.
  *
  * Bodies:
- *   create  { estateId, granteeUserId, granteeRole, documentId, visibilityTier,
- *             releaseCondition, professionalType?, requiresStepUp? }   -> { grant }
- *   revoke  { grantId }                                               -> { grant }
- *   approve { grantId }                                               -> { grant }
- *   list    { estateId, documentId }                                  -> { grants: [] }  (RLS-scoped, status='active')
+ *   create      { estateId, granteeUserId, granteeRole, documentId, visibilityTier,
+ *                 releaseCondition, professionalType?, requiresStepUp? }   -> { grant }
+ *   create_asset{ estateId, granteeUserId, granteeRole, category, visibilityTier,
+ *                 releaseCondition, professionalType?, requiresStepUp? }   -> { grant }  (category-scoped)
+ *   revoke      { grantId }                                               -> { grant }
+ *   approve     { grantId }                                               -> { grant }
+ *   list        { estateId, documentId }                                  -> { grants: [] }  (RLS-scoped, doc grants, active)
+ *   list_asset  { estateId, granteeUserId }                               -> { grants: [] }  (RLS-scoped, category grants, active)
  * Errors (RPC SQLSTATE -> HTTP, message passed through): 42501->403, 23505->409, P0001->400,
  *   else 502. 401 auth, 400 bad body, 404 unknown action, 405 method.
  */
@@ -27,7 +30,7 @@ import type { PostgrestError } from "@supabase/supabase-js";
 import { type GrantRow, toGrantWire, grantRpcErrorResponse } from "../../../lib/grants.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ACTIONS = new Set(["create", "create_asset", "revoke", "approve", "list"]);
+const ACTIONS = new Set(["create", "create_asset", "revoke", "approve", "list", "list_asset"]);
 const ROLES = new Set(["beneficiary", "professional_delegate"]);
 const TIERS = new Set([
   "hidden", "range_only", "category_summary", "limited_detail", "full_detail",
@@ -157,6 +160,38 @@ export async function POST(req: Request): Promise<Response> {
     }
     // supabase-js can't infer a row type from a non-literal select string, so it widens to
     // GenericStringError[]; cast through unknown to the real row shape.
+    const grants = ((data ?? []) as unknown as GrantRow[]).map(toGrantWire);
+    return jsonResponse(200, { grants });
+  }
+
+  // ----- list_asset: RLS-scoped select of a grantee's ACTIVE category (asset) grants -----
+  //   { estateId, granteeUserId } -> { grants: [] }. The asset counterpart of `list`: category
+  //   grants have document_id NULL (never a document row), so this filters document_id IS NULL
+  //   rather than by a documentId. Same RLS boundary as `list` and curl-proven on the live table:
+  //   the owner sees the grantee's grants; a grantee sees only their own; a non-owner non-grantee
+  //   member (e.g. a professional_delegate) sees NONE — the policy keys on ownership/grantee, not
+  //   estate membership. Returns ALL asset categories; the iOS first cut manages account_balances
+  //   only (the tier that gates the beneficiary asset view).
+  if (action === "list_asset") {
+    const estateId = typeof o.estateId === "string" ? o.estateId.trim() : "";
+    const granteeUserId = typeof o.granteeUserId === "string" ? o.granteeUserId.trim() : "";
+    if (![estateId, granteeUserId].every((v) => UUID_RE.test(v))) {
+      return errorResponse(400, "invalid_request");
+    }
+
+    const { data, error } = await supabase
+      .from("access_grants")
+      .select(GRANT_COLUMNS)
+      .eq("estate_id", estateId)
+      .eq("grantee_user_id", granteeUserId)
+      .is("document_id", null)
+      .eq("status", "active")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("access_grants list_asset error:", error);
+      return errorResponse(502, "upstream_error");
+    }
     const grants = ((data ?? []) as unknown as GrantRow[]).map(toGrantWire);
     return jsonResponse(200, { grants });
   }
