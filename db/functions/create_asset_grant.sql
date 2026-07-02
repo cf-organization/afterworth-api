@@ -127,6 +127,21 @@ begin
     )
   );
 
+  -- BEST-EFFORT emit: notify the grantee they were granted access. Wrapped so a notification failure
+  -- NEVER fails the grant — the grant is load-bearing; the notification is a heads-up. The grantee is
+  -- PARTY to this grant (they're the recipient), so there is no cross-user leak.
+  begin
+    perform public.emit_notification(
+      p_grantee_user_id, p_estate_id, 'accessGranted',
+      'Access granted',
+      'You''ve been granted access to estate assets (' || p_category || ').',
+      'afterworth://accounts',
+      jsonb_build_object('kind', 'grant_created', 'grant_id', v_id, 'category', p_category)
+    );
+  exception when others then
+    null;  -- swallow: a notification error must not roll back the grant
+  end;
+
   return query select g.* from public.access_grants g where g.id = v_id;
 end;
 $function$;
