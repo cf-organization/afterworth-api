@@ -1,9 +1,9 @@
-import { enforce } from "../../lib/rateLimit.js";
+import { enforce } from "../rateLimit.js";
 import {
   verifyJwt,
   getAuthedSupabaseClient,
   AuthError,
-} from "../../lib/auth.js";
+} from "../auth.js";
 
 interface BindRequestBody {
   token: string;
@@ -76,7 +76,7 @@ function rpcErrorResponse(code: string | undefined): Response | null {
   }
 }
 
-export async function POST(req: Request): Promise<Response> {
+export async function handle(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return errorResponse(405, "method_not_allowed");
   }

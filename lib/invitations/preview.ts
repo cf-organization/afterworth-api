@@ -6,7 +6,7 @@
 //   Rule 5: Block requests where JSON body's "token" exceeds 512 chars
 
 import { createClient } from "@supabase/supabase-js";
-import { enforce } from "../../lib/rateLimit.js";
+import { enforce } from "../rateLimit.js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -14,7 +14,7 @@ const supabase = createClient(
   { auth: { persistSession: false } },
 );
 
-export async function POST(req: Request) {
+export async function handle(req: Request) {
   const limited = await enforce(req, "invitationPreview");
   if (limited) return limited;
 
