@@ -39,6 +39,9 @@ begin
   if not public.is_estate_owner(p_estate_id) then
     raise exception 'not estate owner' using errcode = '42501';
   end if;
+  -- aal2 GATE: connecting an account is an owner financial action -> ALWAYS require MFA. UNCONDITIONAL
+  -- (no tier — this persists the raw access_token). DEFINER bypasses RLS, so the gate must be HERE.
+  perform public.require_aal2();
 
   insert into public.connections
     (estate_id, provider, institution_id, institution_name, reference_token, status)

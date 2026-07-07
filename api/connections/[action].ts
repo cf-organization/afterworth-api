@@ -64,9 +64,14 @@ function authErrorResponse(err: AuthError): Response {
     case "invalid": return errorResponse(401, "invalid_token");
   }
 }
-// RPC SQLSTATE -> HTTP. 42501 (owner-gate / unauth) -> 403; P0001 (raised) -> 400; else 502.
+// RPC SQLSTATE -> HTTP. 42501 -> 403; the require_aal2() sentinel 'mfa_required' maps to a DISTINCT
+// body so iOS can branch to the "Enable MFA" prompt instead of a generic auth failure (both are 403;
+// only the body differs). Other 42501 (owner-gate / unauth) -> forbidden. P0001 (raised) -> 400; else 502.
 function rpcErrorResponse(code: string | undefined, message: string, fn: string): Response {
-  if (code === "42501") return errorResponse(403, "forbidden");
+  if (code === "42501") {
+    if (message.includes("mfa_required")) return errorResponse(403, "mfa_required");
+    return errorResponse(403, "forbidden");
+  }
   if (code === "P0001") return jsonResponse(400, { error: "bad_request", message });
   console.error(`${fn} raised (unmapped):`, code, message);
   return errorResponse(502, "upstream_error");
@@ -188,6 +193,10 @@ export async function POST(req: Request): Promise<Response> {
 
   // ----- create_link_token: ask Plaid for a Link token (no DB touch) -----
   if (action === "create_link_token") {
+    // aal2 GATE: starting the connect flow is an owner financial action. No DB touch here (so no RPC
+    // to carry require_aal2), hence the endpoint-level check. Fail-closed on a null aal. The real
+    // write (exchange -> create_connection) is aal2-gated in the RPC regardless; this just fails fast.
+    if ((user.aal ?? "aal1") !== "aal2") return errorResponse(403, "mfa_required");
     try {
       const linkToken = await createLinkToken(user.userId);
       return jsonResponse(200, { linkToken });
@@ -241,7 +250,19 @@ export async function POST(req: Request): Promise<Response> {
     const connectionId = typeof o.connectionId === "string" ? o.connectionId.trim() : "";
     if (!UUID_RE.test(connectionId)) return errorResponse(400, "invalid_request");
 
-    // Resolve the connection's estate/institution (RLS-scoped: caller must be a member).
+    // SERVER-ONLY token read FIRST (owner-gated + aal2-gated DEFINER RPC). Never returned to the
+    // client. Ordered before the metadata SELECT deliberately: the 0010 aal2 flip on
+    // connections_select_owner filters the metadata row to EMPTY for an aal1 owner, which would 404
+    // and MASK the mfa_required. Raising it here (the RPC's require_aal2) gives a clean 403
+    // mfa_required on the aal1-owner refresh path. The RPC also self-validates existence + ownership.
+    const { data: tokenData, error: tokenErr } = await supabase.rpc("get_connection_access_token", {
+      p_connection_id: connectionId,
+    });
+    if (tokenErr) return rpcErrorResponse(tokenErr.code, tokenErr.message, "get_connection_access_token");
+    const accessToken = typeof tokenData === "string" ? tokenData : "";
+    if (accessToken.length === 0) return errorResponse(404, "not_found");
+
+    // Metadata for the normalize step (caller is a verified aal2 owner at this point).
     const { data: connRow, error: connErr } = await supabase
       .from("connections")
       .select(CONNECTION_COLUMNS)
@@ -253,14 +274,6 @@ export async function POST(req: Request): Promise<Response> {
     }
     if (!connRow) return errorResponse(404, "not_found");
     const conn = toConnectionWire(connRow);
-
-    // SERVER-ONLY token read (owner-gated DEFINER RPC). Never returned to the client.
-    const { data: tokenData, error: tokenErr } = await supabase.rpc("get_connection_access_token", {
-      p_connection_id: connectionId,
-    });
-    if (tokenErr) return rpcErrorResponse(tokenErr.code, tokenErr.message, "get_connection_access_token");
-    const accessToken = typeof tokenData === "string" ? tokenData : "";
-    if (accessToken.length === 0) return errorResponse(404, "not_found");
 
     // Plaid fetch + normalize (the firewall — nothing Plaid-shaped past this point). Pull BOTH
     // shapes: cash balances (all accounts) AND investment holdings (brokerage/retirement positions).
@@ -326,10 +339,9 @@ export async function POST(req: Request): Promise<Response> {
     if (!UUID_RE.test(estateId)) return errorResponse(400, "invalid_request");
 
     const { data, error } = await supabase.rpc("get_estate_net_worth", { p_estate_id: estateId });
-    if (error) {
-      console.error("get_estate_net_worth rpc error:", error);
-      return errorResponse(502, "upstream_error");
-    }
+    // Route through rpcErrorResponse so the require_aal2() 42501 'mfa_required' -> 403 mfa_required
+    // (not a masked 502). A non-owner never raises here (redacts instead); the only 42501 is aal2.
+    if (error) return rpcErrorResponse(error.code, error.message, "get_estate_net_worth");
     const row = ((data ?? []) as unknown as Record<string, unknown>[])[0];
     return jsonResponse(200, { netWorth: row ? toNetWorthWire(row) : null });
   }
@@ -355,10 +367,9 @@ export async function POST(req: Request): Promise<Response> {
   const { data: assets, error: assetErr } = await supabase.rpc("list_estate_assets", {
     p_estate_id: estateId,
   });
-  if (assetErr) {
-    console.error("list_estate_assets rpc error:", assetErr);
-    return errorResponse(502, "upstream_error");
-  }
+  // Route through rpcErrorResponse so the require_aal2() 42501 'mfa_required' -> 403 mfa_required
+  // (not a masked 502). A non-owner never raises here (redacts instead); the only 42501 is aal2.
+  if (assetErr) return rpcErrorResponse(assetErr.code, assetErr.message, "list_estate_assets");
 
   return jsonResponse(200, {
     connections: (connections ?? []).map(toConnectionWire),

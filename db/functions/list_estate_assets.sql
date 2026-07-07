@@ -86,6 +86,9 @@ begin
 
   -- OWNER: inherent full value, no redaction.
   if public.is_estate_owner(p_estate_id) then
+    -- aal2 GATE (option b): the owner branch emits EXACT balance_cents + holdings -> require MFA,
+    -- UNCONDITIONALLY. (DEFINER bypasses RLS; the gate must be inline.)
+    perform public.require_aal2();
     return query
       select a.id, a.estate_id, a.connection_id, a.institution_name, a.provider_name,
              a.asset_group, a.asset_category, a.asset_subtype, a.source_type,
@@ -132,6 +135,17 @@ begin
   end if;
   if v_det is not null and not public.asset_category_grantable(v_role, 'linked_account_details', v_det) then
     v_det := 'hidden';
+  end if;
+
+  -- aal2 GATE (option b) — TIER-AWARE, THE CORRECTNESS-CRITICAL PLACEMENT. Placed AFTER the ceiling
+  -- re-check so it keys off the FINAL resolved tier. A non-owner sees EXACT balance_cents only at
+  -- limited_detail/full_detail (and holdings only at full_detail, which implies v_bal='full_detail'),
+  -- so this single check covers every exact-value field. Beneficiary tiers (range_only/category_summary)
+  -- and hidden emit brackets/NULL -> NO exact value -> stay aal1 (the payoff of option b). Because
+  -- asset_category_grantable caps 'account_balances' at category_summary for role 'beneficiary',
+  -- v_bal can never reach limited/full for them, so this can only fire for a professional.
+  if v_bal in ('limited_detail', 'full_detail') then
+    perform public.require_aal2();
   end if;
 
   return query
