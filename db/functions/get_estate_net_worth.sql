@@ -67,6 +67,8 @@ begin
 
   -- OWNER FIRST: inherent exact total, never suppressed.
   if public.is_estate_owner(p_estate_id) then
+    -- aal2 GATE (option b): the owner sees the EXACT total -> require MFA, UNCONDITIONALLY.
+    perform public.require_aal2();
     return query select v_sum, null::bigint, null::bigint, 'full_detail'::text, v_cur, false;
     return;
   end if;
@@ -114,7 +116,10 @@ begin
 
   -- Emit the total per its tier. Beneficiary (range_only/category_summary) -> BRACKETED (never exact);
   -- professional (limited_detail/full_detail) -> exact, authorized by the ceiling.
+  -- aal2 GATE (option b) — TIER-AWARE: the EXACT total emits ONLY in this branch (professional
+  -- full/limited), so the gate goes HERE, not before. The bracketed else-branch stays aal1.
   if v_tot in ('limited_detail', 'full_detail') then
+    perform public.require_aal2();
     return query select v_sum, null::bigint, null::bigint, v_tot, v_cur, false;
   else
     return query select null::bigint,

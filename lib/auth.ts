@@ -35,6 +35,10 @@ export interface VerifiedUser {
   userId: string;
   email: string | null;
   jwt: string;
+  // Authenticator Assurance Level from the JWT ('aal1' = password only, 'aal2' = MFA-verified).
+  // Null when the claim is absent. Endpoint-level financial gates fail-closed on null (treat as aal1);
+  // the authoritative aal2 gate is inline in the financial DEFINER RPCs (require_aal2), not here.
+  aal: string | null;
 }
 
 /**
@@ -166,11 +170,13 @@ export async function verifyJwt(req: Request): Promise<VerifiedUser> {
   }
 
   const email = typeof payload.email === "string" ? payload.email : null;
+  const aal = typeof payload.aal === "string" ? payload.aal : null;
 
   return {
     userId,
     email,
     jwt: token,
+    aal,
   };
 }
 

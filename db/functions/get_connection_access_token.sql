@@ -36,6 +36,9 @@ begin
   if not public.is_estate_owner(v_estate_id) then
     raise exception 'not estate owner' using errcode = '42501';
   end if;
+  -- aal2 GATE: reading a provider access_token (owner-only, feeds the aggregator refresh) -> ALWAYS
+  -- require MFA. UNCONDITIONAL. DEFINER bypasses RLS, so the gate must be HERE.
+  perform public.require_aal2();
 
   select access_token into v_token from public.connection_secrets where connection_id = p_connection_id;
   return v_token;
