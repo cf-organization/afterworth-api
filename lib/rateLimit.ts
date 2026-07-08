@@ -101,6 +101,10 @@ const REGISTRY: Record<string, BucketConfig> = {
   notifications_list:            { tier: 2, keyBy: "user", limit: 60, window: "1 m" },
   notifications_mark_read:       { tier: 2, keyBy: "user", limit: 60, window: "1 m" },
   notifications_unread_count:    { tier: 2, keyBy: "user", limit: 60, window: "1 m" }, // 0 iOS callers today; defensive row
+  // Client audit-forward pipe (api/audit.ts -> forward_client_audit). Tier-2 fail-open: telemetry must
+  // never be gated by a limiter outage, and it's already best-effort/fire-and-forget on the client. 60/min
+  // fits the bursty pre/post-signup coordinator fan-out (matches the beneficiaries/notifications tier).
+  audit_forward:                 { tier: 2, keyBy: "user", limit: 60, window: "1 m" },
 };
 
 // One Ratelimit per bucket, module-scope. timeout:false disables the SDK's fail-open timeout (ours is
