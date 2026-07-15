@@ -13,12 +13,12 @@
 -- prokind='f' functions sweep returned nothing), so the bytea columns are written by NOTHING yet. Wiring
 -- this = building the entire crypto layer outward from the custody decision. Correctly deferred.
 --
--- (!) RLS / ROLE MISMATCH — captured AS-IS, NOT fixed: instructions_executor_read_after_release gates SELECT
--- on estate_memberships.role IN ('executor','trustee'), but the live estate_memberships role CHECK only
--- permits primary_user / beneficiary / professional_delegate — so those roles CANNOT EXIST and the
--- executor-read path is UNREACHABLE today. The executor/trustee vocabulary is half-plumbed (present in
--- invitations.kind, absent from invitations.proposed_role + the estate_memberships role CHECK). A future
--- encrypted-instructions slice must reconcile this. FK rebuild order: needs estates + auth.users.
+-- RLS / ROLE MISMATCH — RECONCILED by migration 0020 (Slice R). The executor-read policy ORIGINALLY gated on
+-- estate_memberships.role IN ('executor','trustee') — phantom roles the membership CHECK forbids, so the path
+-- was structurally UNREACHABLE. Executor/trustee are now modeled as DESIGNATIONS (0019 estate_designations,
+-- NOT membership roles), and the policy uses is_estate_executor(estate_id, auth.uid()) — the executor-read
+-- path is now REACHABLE (verified live 2026-07-15: executor+released -> read; executor+unreleased -> denied;
+-- non-designee -> denied). FK rebuild order: needs estates + auth.users.
 
 create table if not exists public.encrypted_instructions (
   id                uuid        not null default uuid_generate_v4(),
@@ -45,18 +45,12 @@ alter table public.encrypted_instructions enable row level security;
 create policy instructions_owner_all on public.encrypted_instructions
   for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 
--- EXECUTOR/TRUSTEE read AFTER release — see the RLS/ROLE MISMATCH note above: the roles 'executor'/'trustee'
--- cannot exist under the current estate_memberships role CHECK, so this path is UNREACHABLE today.
+-- EXECUTOR/TRUSTEE read AFTER release — via the designation model (0019/0020). Reachable: an ACTIVE
+-- executor/trustee designee reads a RELEASED instruction; the release gate (released = true) still holds.
 create policy instructions_executor_read_after_release on public.encrypted_instructions
   for select using (
     released = true
-    and exists (
-      select 1 from public.estate_memberships
-      where estate_memberships.estate_id = encrypted_instructions.estate_id
-        and estate_memberships.user_id  = auth.uid()
-        and estate_memberships.role     = any (array['executor','trustee'])
-        and estate_memberships.status   = 'approved'
-    )
+    and public.is_estate_executor(encrypted_instructions.estate_id, auth.uid())
   );
 
 -- NOTE: no GRANT to anon/authenticated/service_role at capture (only postgres) — the RLS policies above are
