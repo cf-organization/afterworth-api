@@ -259,10 +259,52 @@ crypt('…', gen_salt('bf')) where email in (…)`), export `PW_OWNER/PW_EXEC/PW
   SECURITY DEFINER RPC, so the invariant is proven at the **RLS predicate level**
   (`released = true AND is_estate_executor(estate, uid)`), which is exactly what the policy gates on.
   When a client read path lands, re-prove B1/B3 as a role-switched table read.
-- **`invitation_write_gate`** (called by `create_invitation`) is still **live-only, not in VC** —
-  capture it (`pg_get_functiondef`) into `db/functions/` as a follow-up (same live-only-object class
-  as `handle_new_user` / `is_estate_owner`).
 - **Key finding fixed during this proof**: the idempotency self-heal was keyed on the membership's
   `source_invitation_id`, which never matches for a reconciled membership (an executor who is already
   a beneficiary) — so a same-user double-accept spuriously `P0005`'d and a missing designation could
   never self-heal. Re-keyed on `invitations.accepted_by`; leg **C** proves it.
+- **Live-only gate functions captured to VC** alongside the break-glass work (0022):
+  `invitation_write_gate`, `admin_require_gate`, `is_admin` — all were live-only (same class as
+  `handle_new_user` / `is_estate_owner`), now in `db/functions/`.
+
+---
+
+# Admin break-glass — executor invitation (migration 0022)
+
+`admin_create_executor_invitation` lets a platform **admin** (no estate ownership) mint an
+executor/trustee invitation directly — the emergency path when no owner is available to designate a
+fiduciary. It layers a mandatory justification + separation of duties + a high-severity `admin` audit
+on top of the full admin gate, then mints through the canonical `create_invitation`; the invitation
+accepts via the unchanged COMMIT-1 flow. Three primitives are factored to be reused by the next
+break-glass action: `require_breakglass_justification`, `assert_not_self_invitee`,
+`write_admin_breakglass_audit`.
+
+## Door — SQL crafted-claims matrix (`scratchpad/breakglass_proof_matrix.sql`)
+
+Crafted `request.jwt.claims` drive the gate (sub=admin/non-admin, aal1/aal2, fresh/stale `iat`).
+Admin = real non-owner `16db5021-…`; invitee/executor = `cb5edecc`; non-admin = owner `77ef850e`.
+Self-cleaning single transaction.
+
+### Captured verdicts — 10/10 pass (2026-07-15)
+
+| leg | expect | pass |
+|-----|--------|:----:|
+| G1 non-admin | `admin_required` | ✅ |
+| G2 admin aal1 | `mfa_required` | ✅ |
+| G3 admin stale token | `stale_token_reauth_required` (fail-closed) | ✅ |
+| K1 kind=beneficiary | `kind_not_supported` (fiduciary roles only) | ✅ |
+| J1 missing reason | `breakglass_reason_required` | ✅ |
+| J2 missing case_ref | `breakglass_case_ref_required` | ✅ |
+| S1 self-assignment | `breakglass_self_assignment` (separation of duties) | ✅ |
+| OK1 success | minted `invitation_id` + `raw_token` | ✅ |
+| OK2 audit | one row `source='admin'`, `metadata.severity='high'`, reason + case_ref | ✅ |
+| E2E | minted invite accepts → `is_estate_executor=true`, membership role stays `beneficiary` | ✅ |
+
+The gate order (**is_admin before aal2**) is the same order the console middleware mirrors — a
+non-admin is told `admin_required`, not sent to a step-up it can't complete (the Slice-3 gate-order
+lesson). `source='admin'` was already an allowed `audit_logs.source` value (verified live) — no
+schema change. "Immutable" here = server-stamped actor + append-only via grants, not a trigger.
+
+Door 2 (real-JWT PostgREST) is covered by the grant surface proven above:
+`admin_create_executor_invitation` is `authenticated`-only (revoked from public/anon), and the three
+break-glass primitives are INTERNAL (revoked from all client roles) — the endpoint buys nothing extra.
