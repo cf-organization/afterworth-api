@@ -7,12 +7,17 @@
 -- "attest-vs-KYC identity-verification" decision is effectively ANSWERED IN-SCHEMA: it is neither — it's
 -- human document review.
 --
--- Access posture AT CAPTURE: RLS ENABLED with a SELECT (estate owner/member) + INSERT (requested_by =
--- auth.uid() AND estate member/owner) policy — but NO client-role GRANTS (only postgres; born clean under
--- the 0012 default-priv cure), and NO trigger. So there is no authenticated/anon PostgREST path yet and
--- no writer/reader — effectively a DORMANT schema scaffold. Any real access path would be a SECURITY
--- DEFINER RPC (owner = postgres); iOS is mock (MockClaimService / orchestration) today. FK rebuild order:
--- needs estates, documents (live-only), and auth.users.
+-- Access posture — ACTIVATED by Slice C1 (migration 0023), submit path:
+--   * WRITES are RPC-only. submit_claim_packet (DEFINER, gated inside via is_estate_executor) is the sole
+--     submit door; reviewer decisions are 0024 (admin RPCs). The table keeps NO client INSERT/UPDATE grant.
+--   * READS are claimant-own: SELECT granted to authenticated + policy claim_own_read (requested_by =
+--     auth.uid()). Admins read via the DEFINER admin_list_claim_packets, bypassing RLS. aclexplode verified
+--     born-clean: authenticated SELECT ONLY (no anon/service_role, no disease grants).
+--   * The two capture-era policies (claim_estate_visible owner/any-member, claim_insert_member) were
+--     DROPPED by 0023 — the first was too broad (a beneficiary must not see the executor's claim + its
+--     sensitive doc refs) and the second moot (writes are RPC-only). See db/migrations/0023.
+-- iOS is mock (MockClaimService / orchestration) today. FK rebuild order: needs estates, documents
+-- (live-only), and auth.users.
 
 create table if not exists public.claim_packets (
   id                       uuid        not null default uuid_generate_v4(),
@@ -31,19 +36,20 @@ create table if not exists public.claim_packets (
 
 create index if not exists claim_packets_estate_id_idx on public.claim_packets using btree (estate_id);
 
+-- Idempotency (0023): at most ONE ACTIVE (non-rejected) claim per estate; rejected rows coexist
+-- (append-only history — the revoked-designation precedent), so a rejected claim can be re-submitted.
+create unique index if not exists claim_packets_one_active_per_estate
+  on public.claim_packets (estate_id) where status <> 'rejected';
+
 alter table public.claim_packets enable row level security;
 
--- SELECT: any estate owner or member sees the estate's claim packets.
-create policy claim_estate_visible on public.claim_packets
-  for select using (public.is_estate_owner(estate_id) or public.is_estate_member(estate_id));
+-- SELECT: the claimant reads their own claim (requested_by = auth.uid()). Admins read via the DEFINER
+-- admin_list_claim_packets (0024), which bypasses RLS. No client INSERT/UPDATE policy — writes are RPC-only.
+create policy claim_own_read on public.claim_packets
+  for select using (requested_by = auth.uid());
 
--- INSERT: a member/owner may submit, and only as themselves (requested_by = auth.uid()).
-create policy claim_insert_member on public.claim_packets
-  for insert with check (
-    requested_by = auth.uid()
-    and (public.is_estate_member(estate_id) or public.is_estate_owner(estate_id))
-  );
+grant select on public.claim_packets to authenticated;
 
--- NOTE: no GRANT to anon/authenticated/service_role at capture — the RLS policies above are moot for
--- client roles until a grant OR a SECURITY DEFINER RPC is added. No UPDATE/DELETE policy exists (a
--- reviewer decision path would need one, or an RPC). Dormant scaffold — see the Slice-A recon.
+-- NOTE: writes flow ONLY through DEFINER RPCs (submit_claim_packet 0023; admin_* decisions 0024). The
+-- table exposes exactly one client grant: authenticated SELECT (RLS-scoped to claimant-own). No UPDATE/DELETE
+-- policy or grant — reviewer transitions are DEFINER-RPC-only. The RELEASE transition is Slice C5.
