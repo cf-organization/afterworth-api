@@ -109,6 +109,10 @@ const REGISTRY: Record<string, BucketConfig> = {
   // never be gated by a limiter outage, and it's already best-effort/fire-and-forget on the client. 60/min
   // fits the bursty pre/post-signup coordinator fan-out (matches the beneficiaries/notifications tier).
   audit_forward:                 { tier: 2, keyBy: "user", limit: 60, window: "1 m" },
+  // Admin evidence viewer (api/claims/[action].ts -> admin_authorize_claim_evidence). Tier-2 anti-abuse only:
+  // the RPC's admin gate (auth->is_admin->aal2->freshness) is the security boundary; this bounds a scripted
+  // pull of PII scans. 60/min covers a reviewer opening both docs across several claims per minute.
+  claims_view_evidence:          { tier: 2, keyBy: "user", limit: 60, window: "1 m" },
 };
 
 // One Ratelimit per bucket, module-scope. timeout:false disables the SDK's fail-open timeout (ours is
