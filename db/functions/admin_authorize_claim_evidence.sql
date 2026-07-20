@@ -14,6 +14,8 @@
 -- only if the seeded singleton is absent. RETURNS TABLE OUT cols shadow documents cols -> resolve into locals
 -- (42702). EXECUTE authenticated only. Source of truth -- re-apply on reset.
 
+-- DROP first: the RETURNS TABLE has 4 cols; Postgres can't CREATE OR REPLACE a changed return type (42P13).
+drop function if exists public.admin_authorize_claim_evidence(uuid, text);
 create or replace function public.admin_authorize_claim_evidence(
   p_claim uuid,
   p_slot  text

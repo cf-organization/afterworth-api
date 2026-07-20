@@ -155,7 +155,11 @@ $function$;
 revoke execute on function public.submit_claim_with_evidence(uuid, uuid, text, uuid, text) from public, anon;
 grant  execute on function public.submit_claim_with_evidence(uuid, uuid, text, uuid, text) to authenticated;
 
--- ---- admin_authorize_claim_evidence: return max_upload_bytes so the serving guard is policy-sourced. ----
+-- ---- admin_authorize_claim_evidence: return max_upload_bytes so the serving guard is policy-sourced.
+--      The RETURNS TABLE gains a column, and Postgres CANNOT change a function's return type via CREATE OR
+--      REPLACE (42P13) — DROP first. No DB object depends on it (the Vercel endpoint is the only caller), so a
+--      plain drop is safe; the grants below re-establish EXECUTE. ----
+drop function if exists public.admin_authorize_claim_evidence(uuid, text);
 create or replace function public.admin_authorize_claim_evidence(
   p_claim uuid,
   p_slot  text
