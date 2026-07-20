@@ -18,11 +18,13 @@
  *      document_id -> arbitrary-document read is unrepresentable). It also writes the claim.evidence_viewed
  *      audit. A direct rest/v1/rpc/... caller hits the identical gate; this endpoint buys no privilege.
  *   2. STREAM (mechanics only) = a service-role storage download of the resolved path (the recover.ts
- *      service-role pattern, confined here), streamed back with a HARD SIZE GUARD. Service role is used ONLY
- *      for the storage read of an ALREADY-AUTHORIZED path — it is NOT an RLS bypass on data.
+ *      service-role pattern, confined here), STREAMED back via blob.stream() — NOT buffered. Streaming bypasses
+ *      Vercel's 4.5 MB *buffered* response cap (proven, not doc-trusted), so evidence up to the upload_policy
+ *      limit (25 MB) is viewable. The size guard is now DEFENSIVE and POLICY-SOURCED (max_upload_bytes from the
+ *      admin_authorize RPC), never a hardcoded number. Service role reads an ALREADY-AUTHORIZED path only.
  *
  * Request:  Authorization: Bearer <admin aal2 JWT>; body { claimId: uuid, slot: 'death_cert'|'executor_id' }
- * Response (200): the raw PDF bytes (Content-Type from the documents row; no-store; nosniff; inline).
+ * Response (200): the raw PDF bytes, STREAMED (Content-Type from the documents row; no-store; nosniff; inline).
  * Errors (RPC SQLSTATE -> HTTP): 42501->403 (admin gate), P0001->400 (invalid_slot), P0002->404
  *   (claim_not_found / evidence_not_found), else 502. 401 auth, 400 bad body, 404 unknown action, 405 method,
  *   413 object too large, 429 rate, 502 config/storage.
@@ -35,7 +37,7 @@ import { verifyJwt, getAuthedSupabaseClient, AuthError } from "../../lib/auth.js
 const ACTIONS = new Set(["view_evidence"]);
 const SLOTS = new Set(["death_cert", "executor_id"]);
 const DOCUMENTS_BUCKET = "documents";
-const MAX_BYTES = 4 * 1024 * 1024; // 4 MB hard guard — well above an ID/death-cert scan; caps a proxy blowup.
+const FALLBACK_MAX_BYTES = 25 * 1024 * 1024; // only if the admin_authorize RPC omits max_upload_bytes.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -130,6 +132,9 @@ export async function POST(req: Request): Promise<Response> {
   const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
   const storagePath = row && typeof row.storage_path === "string" ? row.storage_path : "";
   const mimeType = row && typeof row.mime_type === "string" ? row.mime_type : "application/pdf";
+  // Serving-guard ceiling, SOURCED from policy (the RPC reads upload_policy). Defensive-only — the bucket +
+  // submit-RPC quotas are the real gates; this just caps a pathological object. bigint may arrive as a string.
+  const maxUploadBytes = row && row.max_upload_bytes != null ? Number(row.max_upload_bytes) : FALLBACK_MAX_BYTES;
   if (!storagePath) {
     return errorResponse(404, "evidence_not_found");
   }
@@ -151,16 +156,17 @@ export async function POST(req: Request): Promise<Response> {
     console.error("claims/view_evidence: storage download error:", dlErr?.message);
     return errorResponse(502, "storage_error");
   }
-  if (blob.size > MAX_BYTES) {
+  if (blob.size > maxUploadBytes) {
     return errorResponse(413, "evidence_too_large");
   }
 
-  const buf = await blob.arrayBuffer();
-  return new Response(buf, {
+  // STREAM (not buffer): blob.stream() is a ReadableStream body, which Vercel serves WITHOUT the 4.5 MB
+  // buffered-payload cap. Content-Length is known (blob.size) so the browser still gets a progress bar.
+  return new Response(blob.stream(), {
     status: 200,
     headers: {
       "Content-Type": mimeType,
-      "Content-Length": String(buf.byteLength),
+      "Content-Length": String(blob.size),
       "Content-Disposition": "inline",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
