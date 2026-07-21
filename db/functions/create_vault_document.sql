@@ -5,6 +5,7 @@
 -- then calls this). Row creation is DEFINER-RPC-ONLY (0030 dropped documents_write). Gate + checks, in order:
 --   auth -> is_estate_owner(p_estate) -> estate exists -> title (trim+<=200) -> subtype-in/both-out (catalog
 --   lookup: unknown_subtype / inactive_subtype, derive coarse doc_type) -> sensitivity in the server 5-set ->
+--   (0036: subtype/doc_type + sensitivity now validate against document_subtype/document_sensitivity TABLES) ->
 --   PATH AGREEMENT (regex: exactly estates/<p_estate>/vault/<p_doc_id>.<ext>, kills traversal, ties id<->object)
 --   -> object MUST exist (size/mime read from storage, never client-trusted) -> upload_policy quota
 --   (max_upload_bytes + allowed_mime_types) -> insert ONE row (owner_id=auth.uid(), is_encrypted=false,
@@ -50,7 +51,7 @@ begin
     raise exception 'title_too_long' using errcode = 'P0001';
   end if;
 
-  select ds.doc_type into v_doc_type
+  select ds.parent_doc_type into v_doc_type
     from public.document_subtype ds
     where ds.subtype = p_doc_subtype and ds.is_active;
   if not found then
@@ -61,8 +62,9 @@ begin
     end if;
   end if;
 
+  -- sensitivity validated against the document_sensitivity TABLE (0036), active values only.
   if p_sensitivity is not null
-     and p_sensitivity not in ('low','medium','high','restricted','sealed') then
+     and not exists (select 1 from public.document_sensitivity where value = p_sensitivity and is_active) then
     raise exception 'invalid_sensitivity' using errcode = 'P0001';
   end if;
 

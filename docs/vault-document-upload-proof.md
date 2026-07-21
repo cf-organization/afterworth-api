@@ -133,6 +133,52 @@ the doc is present in the Vault list with its title + subtype (served by `/api/v
 `documentSubtype`). Edit its title + subtype, force-quit, relaunch → the edit persists. This is the proof the
 surface is no longer fake-durable.
 
+## 0036 — Taxonomy config proof (after applying 0036)
+
+```bash
+# T1: get_document_taxonomy returns all three vocabularies + both versions; authenticated allowed, anon denied.
+rpc get_document_taxonomy "$OWNER" '{}' | jq '{schema_version, vocabulary_version, doc_types: (.doc_types|length), subtypes: (.subtypes|length), sensitivities: (.sensitivities|length), sample_subtype: .subtypes[0]}'
+# EXPECT: schema_version 1, vocabulary_version 1, doc_types 11, subtypes 132, sensitivities 5,
+#         sample has value/display_name/description/parent_doc_type/rank/sort_order/badge_color_key/icon_key.
+curl -s -o /dev/null -w '%{http_code}\n' "$URL/rest/v1/rpc/get_document_taxonomy" -H "apikey: $PUB" -H 'Content-Type: application/json' -d '{}'   # anon -> 401
+```
+```sql
+-- T2: seeding a NEW subtype bumps vocabulary_version AND appears in the payload with NO function change.
+select vocabulary_version from public.taxonomy_version where id=1;   -- note N
+insert into public.document_subtype (subtype, parent_doc_type, display_name, sort_order, rank, badge_color_key, icon_key)
+  values ('testProofSubtype','other','Test Proof Subtype',999,99,'neutral','doc.fill');
+select vocabulary_version from public.taxonomy_version where id=1;   -- EXPECT N+1 (trigger fired)
+```
+```bash
+rpc get_document_taxonomy "$OWNER" '{}' | jq '.vocabulary_version, (.subtypes[] | select(.value=="testProofSubtype"))'
+# EXPECT: N+1, and the testProofSubtype object present — WITHOUT redeploying/altering any function.
+```
+```sql
+-- T3: deactivating a value removes it from the payload, but existing rows carrying it stay valid.
+update public.document_subtype set is_active=false where subtype='testProofSubtype';   -- bumps version again
+-- (payload no longer lists it — verify via get_document_taxonomy); a documents row already carrying a now-inactive
+-- subtype is untouched (is_active gates NEW writes only, the FK keeps the value present). Cleanup: delete it:
+delete from public.document_subtype where subtype='testProofSubtype';
+
+-- T4 REGRESSION: submit_claim_with_evidence still writes coarse death_certificate + sealed (0031 untouched).
+--   Re-run a claim submit (executor path) OR confirm the existing claim rows still validate under the new FKs:
+select doc_type, doc_subtype, sensitivity from public.documents
+  where doc_type in ('death_certificate','id_document') order by created_at desc limit 4;
+-- EXPECT: rows present, doc_subtype NULL, sensitivity 'sealed' — all FK-valid (death_certificate/id_document +
+-- sealed are seeded in document_type/document_sensitivity).
+
+-- T6: every existing documents row satisfies the new FKs (no orphan doc_type/sensitivity):
+select count(*) as bad_doc_type   from public.documents d left join public.document_type t on t.value=d.doc_type where t.value is null;
+select count(*) as bad_sensitivity from public.documents d left join public.document_sensitivity s on s.value=d.sensitivity where s.value is null;
+-- EXPECT: both 0.
+```
+```bash
+# T5: create/update still reject unknown + inactive subtypes (unchanged behavior, now table-sourced).
+D=$(uuidgen|tr 'A-F' 'a-f')
+rpc create_vault_document "$OWNER" "{\"p_estate\":\"$ESTATE\",\"p_doc_id\":\"$D\",\"p_storage_path\":\"estates/$ESTATE/vault/$D.pdf\",\"p_title\":\"x\",\"p_doc_subtype\":\"noSuchSubtype\"}"   # unknown_subtype
+# invalid sensitivity now table-checked: rpc create_vault_document ... p_sensitivity 'nope' -> invalid_sensitivity
+```
+
 ## Cleanup
 ```sql
 delete from public.documents where estate_id = '9add2645-b3ef-4c25-b315-63900833ba5a'

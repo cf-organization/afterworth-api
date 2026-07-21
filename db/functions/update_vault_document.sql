@@ -53,7 +53,7 @@ begin
   end if;
 
   if p_doc_subtype is not null then
-    select ds.doc_type into v_new_type
+    select ds.parent_doc_type into v_new_type
       from public.document_subtype ds
       where ds.subtype = p_doc_subtype and ds.is_active;
     if not found then
@@ -69,7 +69,7 @@ begin
   end if;
 
   if p_sensitivity is not null then
-    if p_sensitivity not in ('low','medium','high','restricted','sealed') then
+    if not exists (select 1 from public.document_sensitivity where value = p_sensitivity and is_active) then
       raise exception 'invalid_sensitivity' using errcode = 'P0001';
     end if;
     update public.documents set sensitivity = p_sensitivity where id = p_doc_id;

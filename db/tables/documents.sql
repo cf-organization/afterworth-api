@@ -22,9 +22,10 @@ create table if not exists public.documents (
   id           uuid not null default uuid_generate_v4(),
   estate_id    uuid not null references public.estates(id) on delete cascade,
   owner_id     uuid not null references auth.users(id) on delete cascade,
-  doc_type     text not null
-                 check (doc_type in ('will','trust','power_of_attorney','insurance_policy','deed',
-                        'id_document','tax_return','medical_directive','beneficiary_form','death_certificate','other')),
+  -- doc_type / sensitivity: 0036 replaced the inline CHECKs with FKs to the server-authoritative taxonomy
+  -- tables (public.document_type / public.document_sensitivity). FK + is_active: integrity + RESTRICT-on-delete,
+  -- with is_active as the retire-without-delete lifecycle lever. (FK rebuild order now also needs those tables.)
+  doc_type     text not null references public.document_type(value),
   title        text not null,
   storage_path text not null,
   mime_type    text,
@@ -32,8 +33,7 @@ create table if not exists public.documents (
   sha256       text,
   is_encrypted boolean default true,
   created_at   timestamptz default now(),
-  sensitivity  text not null default 'sealed'
-                 check (sensitivity in ('low','medium','high','restricted','sealed')),
+  sensitivity  text not null default 'sealed' references public.document_sensitivity(value),
   -- doc_subtype (migration 0035): the FINE client subtype, persisted alongside the COARSE doc_type
   -- (persist-both taxonomy). NULLABLE + FK to public.document_subtype — claim-evidence rows
   -- (submit_claim_with_evidence) stay coarse-only (NULL); owner vault docs (create_vault_document) carry it.
