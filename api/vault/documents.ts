@@ -56,6 +56,7 @@ interface DocumentRow {
   is_encrypted: boolean | null;
   created_at: string | null;
   sensitivity: string; // 5-level ladder (low|medium|high|restricted|sealed)
+  doc_subtype: string | null; // fine client subtype (0035); coarse doc_type is derived from it
 }
 
 // The caller's own active grants in this estate (RLS scopes to grantee = auth.uid()).
@@ -116,7 +117,8 @@ function toWire(row: DocumentRow, tier: string): Record<string, unknown> {
     id: row.id,
     estateId: row.estate_id,
     title: full ? row.title : "Protected Document",
-    documentType: row.doc_type, // category stays visible even when masked
+    documentType: row.doc_type, // coarse category stays visible even when masked
+    documentSubtype: full ? row.doc_subtype : null, // fine subtype withheld below full_detail (may reveal more)
     fileName: full ? deriveFileName(row.storage_path, row.title) : null,
     fileSizeBytes: row.size_bytes,
     uploadedAt: row.created_at,
@@ -175,7 +177,7 @@ export async function POST(req: Request): Promise<Response> {
   const { data, error } = await supabase
     .from("documents")
     .select(
-      "id, estate_id, owner_id, doc_type, title, storage_path, mime_type, size_bytes, sha256, is_encrypted, created_at, sensitivity"
+      "id, estate_id, owner_id, doc_type, title, storage_path, mime_type, size_bytes, sha256, is_encrypted, created_at, sensitivity, doc_subtype"
     )
     .eq("estate_id", body.estateId)
     .order("created_at", { ascending: false });
