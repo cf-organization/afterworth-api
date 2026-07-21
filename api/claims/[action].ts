@@ -34,7 +34,7 @@ import { createClient } from "@supabase/supabase-js";
 import { enforce } from "../../lib/rateLimit.js";
 import { verifyJwt, getAuthedSupabaseClient, AuthError } from "../../lib/auth.js";
 
-const ACTIONS = new Set(["view_evidence"]);
+const ACTIONS = new Set(["view_evidence", "sweep_orphans"]);
 const SLOTS = new Set(["death_cert", "executor_id"]);
 const DOCUMENTS_BUCKET = "documents";
 const FALLBACK_MAX_BYTES = 25 * 1024 * 1024; // only if the admin_authorize RPC omits max_upload_bytes.
@@ -63,6 +63,73 @@ function actionFromUrl(rawUrl: string): string {
   }
   path = path.replace(/[?#].*$/, "").replace(/\/+$/, "");
   return path.slice(path.lastIndexOf("/") + 1);
+}
+
+// Map a 42501 admin-gate exception message to the specific sentinel (so the console can silent-refresh on a
+// stale token); shared by both actions. auth/admin/mfa are terminal (re-auth / step-up).
+function gateSentinel(msg: string): string {
+  return msg.includes("stale_token_reauth_required") ? "stale_token_reauth_required"
+    : msg.includes("mfa_required") ? "mfa_required"
+    : msg.includes("admin_required") ? "admin_required"
+    : "forbidden";
+}
+
+/**
+ * action=sweep_orphans — reclaim `documents`-bucket objects with no authoritative row (interrupted-submit PII).
+ * Body: { confirm?: boolean, graceHours?: number, max?: number }.
+ *   DRY-RUN (default): list what WOULD be deleted (age > grace AND no documents row) + audit; delete nothing.
+ *   confirm:true: service-role storage.remove the identified paths, then audit. NO UNDO — dry-run is the default.
+ * Admin gate lives INSIDE list_orphan_storage_objects (a non-admin/aal1 caller is denied there). Byte deletion
+ * MUST use the storage API (a SQL row delete does not delete the S3 bytes), hence the service-role client here.
+ */
+async function handleSweepOrphans(req: Request, jwt: string, o: Record<string, unknown>): Promise<Response> {
+  const rl = await enforce(req, "claims_sweep_orphans");
+  if (rl) return rl;
+
+  const confirm = o.confirm === true;
+  const graceHours = typeof o.graceHours === "number" && Number.isFinite(o.graceHours) ? Math.floor(o.graceHours) : 72;
+  const max = typeof o.max === "number" && Number.isFinite(o.max) ? Math.floor(o.max) : 100;
+
+  const authed = getAuthedSupabaseClient(jwt);
+
+  // 1. IDENTIFY (admin gate inside the RPC). Both doors: a direct rest/v1/rpc caller hits the same gate.
+  const { data, error } = await authed.rpc("list_orphan_storage_objects", { p_grace_hours: graceHours, p_max: max });
+  if (error) {
+    if (error.code === "42501") return errorResponse(403, gateSentinel(error.message ?? ""));
+    console.error("list_orphan_storage_objects error:", error.code, error.message);
+    return errorResponse(502, "upstream_error");
+  }
+  const rows = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+  const paths = rows.map((r) => String(r.object_name)).filter((p) => p.length > 0);
+
+  // 2a. DRY-RUN (default) — audit + return the would-delete list. Delete nothing.
+  if (!confirm) {
+    const { error: aErr } = await authed.rpc("record_orphan_sweep", { p_mode: "dry_run", p_paths: paths, p_grace_hours: graceHours, p_batch_cap: max });
+    if (aErr) console.error("record_orphan_sweep(dry_run) error:", aErr.code, aErr.message);
+    return jsonResponse(200, { mode: "dry_run", count: paths.length, orphans: rows });
+  }
+
+  // 2b. CONFIRM — service-role storage remove of the identified paths, then audit. Byte deletion needs the API.
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SECRET_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    console.error("sweep_orphans: SUPABASE_URL / SUPABASE_SECRET_KEY not configured");
+    return errorResponse(502, "config_error");
+  }
+  if (paths.length > 0) {
+    const admin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { error: rmErr } = await admin.storage.from(DOCUMENTS_BUCKET).remove(paths);
+    if (rmErr) {
+      console.error("sweep_orphans: storage remove error:", rmErr.message);
+      return errorResponse(502, "storage_error");
+    }
+  }
+  // Audit AFTER the (irreversible) delete. Best-effort: a failed audit is logged, never fails a completed delete.
+  const { error: aErr } = await authed.rpc("record_orphan_sweep", { p_mode: "delete", p_paths: paths, p_grace_hours: graceHours, p_batch_cap: max });
+  if (aErr) console.error("record_orphan_sweep(delete) error:", aErr.code, aErr.message);
+  return jsonResponse(200, { mode: "delete", deleted: paths.length, paths });
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -94,6 +161,12 @@ export async function POST(req: Request): Promise<Response> {
     return errorResponse(400, "invalid_request");
   }
   const o = raw as Record<string, unknown>;
+
+  if (action === "sweep_orphans") {
+    return handleSweepOrphans(req, user.jwt, o);
+  }
+
+  // ---- view_evidence ----
   const claimId = typeof o.claimId === "string" ? o.claimId.trim() : "";
   const slot = typeof o.slot === "string" ? o.slot.trim() : "";
   // The ONLY inputs are a claim id + a fixed slot enum — no path/document_id can be injected.
