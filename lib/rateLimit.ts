@@ -113,6 +113,9 @@ const REGISTRY: Record<string, BucketConfig> = {
   // the RPC's admin gate (auth->is_admin->aal2->freshness) is the security boundary; this bounds a scripted
   // pull of PII scans. 60/min covers a reviewer opening both docs across several claims per minute.
   claims_view_evidence:          { tier: 2, keyBy: "user", limit: 60, window: "1 m" },
+  // Admin orphan-sweep (api/claims/[action].ts -> list_orphan_storage_objects + service-role remove). Tier-2
+  // anti-abuse; the admin gate in the RPC is the boundary. Low limit — a sweep is a rare deliberate action.
+  claims_sweep_orphans:          { tier: 2, keyBy: "user", limit: 10, window: "1 m" },
 };
 
 // One Ratelimit per bucket, module-scope. timeout:false disables the SDK's fail-open timeout (ours is
