@@ -27,6 +27,7 @@ begin
     select o.name, o.created_at, (o.metadata->>'size')::bigint
     from storage.objects o
     where o.bucket_id = 'documents'
+      and o.name not like '%.emptyFolderPlaceholder'   -- Supabase folder markers are system artifacts, not orphan uploads
       and o.created_at < now() - make_interval(hours => greatest(coalesce(p_grace_hours, 72), 0))
       and not exists (select 1 from public.documents d where d.storage_path = o.name)
     order by o.created_at

@@ -5,6 +5,14 @@ Reclaims `documents`-bucket objects with no authoritative row (interrupted-submi
 `storage.remove`; **byte deletion needs the storage API — a SQL row delete leaves the bytes**). Dry-run default;
 `confirm:true` deletes; audited both modes; batch cap 100; NO undo.
 
+The predicate targets orphaned **uploads** only: it excludes Supabase `.emptyFolderPlaceholder` folder markers
+(system artifacts with no `documents` row — harmless to delete, but not what we reclaim), on top of age > grace
+AND no `documents.storage_path` referencing the object.
+
+**Proven green (2026-07-21):** dry-run listed the seeded orphan + real leftovers, `confirm:true` deleted them
+(bytes gone via the storage API), idempotent re-run returned 0, both modes audited (`source='admin'`), the four
+referenced `claim-evidence` objects survived the sweep (Leg A), and both gate doors denied non-admin/anon.
+
 ## Environment
 
 ```bash

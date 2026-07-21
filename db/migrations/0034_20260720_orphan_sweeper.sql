@@ -15,7 +15,8 @@
 --   guards raw SQL deletes anyway). Byte deletion REQUIRES the storage API (service-role) — so this RPC only
 --   IDENTIFIES orphans; the afterworth-api sweep_orphans action does the service-role `storage.remove`.
 --
--- Conservative predicate (fail-safe against the upload-before-row race): age > grace AND no documents row. The
+-- Conservative predicate (fail-safe against the upload-before-row race): age > grace AND no documents row, with
+-- Supabase `.emptyFolderPlaceholder` folder markers excluded (system artifacts, never orphan uploads). The
 -- grace is a param (default 72h) so a dry-run can preview with a smaller window; the console always sends 72h.
 -- Both RPCs are admin-gated INSIDE (admin_require_gate: auth -> is_admin -> aal2 -> 15-min freshness), DEFINER
 -- (read storage.objects + write audit as owner), EXECUTE authenticated only. Captured in db/functions/.
@@ -39,6 +40,7 @@ begin
     select o.name, o.created_at, (o.metadata->>'size')::bigint
     from storage.objects o
     where o.bucket_id = 'documents'
+      and o.name not like '%.emptyFolderPlaceholder'   -- Supabase folder markers are system artifacts, not orphan uploads
       and o.created_at < now() - make_interval(hours => greatest(coalesce(p_grace_hours, 72), 0))
       and not exists (select 1 from public.documents d where d.storage_path = o.name)
     order by o.created_at
