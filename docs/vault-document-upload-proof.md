@@ -289,6 +289,95 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "$URL/rest/v1/document_type" -H
 # EXPECT: 401/403/404 (permission denied / not exposed) — NOT 201. Taxonomy is DEFINER-RPC-read-only.
 ```
 
+## 0038 — IA refinement proof (P1–P12 + P13–P16)
+
+**P1 — PRE-FLIGHT (run BEFORE applying 0038; rows carrying a subtype 0038 RE-POINTS will backfill).**
+```sql
+with repointed(subtype) as (values
+  ('personalLetter'),('lifeStoryDocument'),('familyHistory'),('photosMemorabiliaReference'),('legacyMessage'),
+  ('personalValuesStatement'),('award'),('certificateOfAchievement'),('professionalRecognition'),('publishedWork'),
+  ('patentDocument'),('businessMilestone'),('charityCommunityServiceRecord'),('beneficiaryID'),('familyContactList'),
+  ('dependentInformation'),('emergencyContactList'),('caregiverInstructions'),('minorChildInstructions'),
+  ('petCareInstructions'),('diploma'),('certificate'),('professionalLicense'),('resume'),('employmentContract'),
+  ('awardLetter'),('referenceLetter'),('trainingCertificate'),('militaryID'),('dd214'),('veteransBenefitsDocument'),
+  ('governmentBenefitsLetter'),('socialSecurityBenefitsDocument'),('pensionBenefitsDocument'),('letterOfInstruction'),
+  ('funeralBurialInstructions'),('executorInstructions'),('guardianshipInstructions'))
+select d.doc_type as current_coarse, d.doc_subtype, count(*)
+from public.documents d join repointed r on r.subtype = d.doc_subtype group by 1,2 order by 3 desc;
+-- Expected: 0 rows (no test row carries a 0038 subtype). If any appear, report the count before applying.
+```
+
+**Apply `0038`, then:**
+```sql
+-- P2: the 6 new coarse rows exist, active, correct metadata.
+select value, display_name, is_active, badge_color_key, icon_key from public.document_type
+  where value in ('legacy_and_family','achievements_and_recognition','family_and_beneficiary','education_and_career','military_and_government','estate_planning')
+  order by sort_order;   -- all 6 active with the metadata
+
+-- P3: every approved subtype has the expected parent (counts per new parent).
+select parent_doc_type, count(*) from public.document_subtype
+  where parent_doc_type in ('legacy_and_family','achievements_and_recognition','family_and_beneficiary','education_and_career','military_and_government','estate_planning')
+  group by 1 order by 1;
+-- EXPECT: legacy_and_family 6, achievements_and_recognition 7, family_and_beneficiary 7, education_and_career 8,
+--         military_and_government 6, estate_planning 4.
+
+-- P6 post-backfill mismatch = 0 · P7 no dup active ids · P8 no active-subtype->inactive-parent.
+select count(*) as mismatches from public.documents d join public.document_subtype ds on ds.subtype=d.doc_subtype where d.doc_type <> ds.parent_doc_type;   -- 0
+select value, count(*) from public.document_type where is_active group by value having count(*)>1;      -- 0 rows
+select subtype, count(*) from public.document_subtype where is_active group by subtype having count(*)>1; -- 0 rows
+select count(*) as active_subtype_inactive_parent from public.document_subtype ds
+  left join public.document_type dt on dt.value=ds.parent_doc_type where ds.is_active and (dt.value is null or not dt.is_active);  -- 0
+
+-- P9 versioning: vocab advanced; schema_version STILL 1.
+select schema_version, vocabulary_version from public.taxonomy_version where id=1;
+
+-- P13: personal_legacy is ABSENT (never created).
+select count(*) as personal_legacy_rows from public.document_type where value='personal_legacy';   -- 0
+
+-- P14: legacy vs achievement records SEPARATED (distinct parents; no overlap).
+select parent_doc_type, string_agg(subtype, ', ' order by subtype) from public.document_subtype
+  where parent_doc_type in ('legacy_and_family','achievements_and_recognition') group by 1;
+-- EXPECT: legacy_and_family = personal/family keepsakes; achievements_and_recognition = award/patent/…/businessMilestone/charityCommunityServiceRecord — no value in both.
+
+-- P15: exact memberships match the approved recon.
+select parent_doc_type, string_agg(subtype, ', ' order by subtype) from public.document_subtype
+  where parent_doc_type in ('family_and_beneficiary','education_and_career','military_and_government','estate_planning')
+  group by 1 order by 1;
+-- EXPECT (exact):
+--  family_and_beneficiary: beneficiaryID, caregiverInstructions, dependentInformation, emergencyContactList, familyContactList, minorChildInstructions, petCareInstructions
+--  education_and_career:    awardLetter, certificate, diploma, employmentContract, professionalLicense, referenceLetter, resume, trainingCertificate
+--  military_and_government: dd214, governmentBenefitsLetter, militaryID, pensionBenefitsDocument, socialSecurityBenefitsDocument, veteransBenefitsDocument
+--  estate_planning:         executorInstructions, funeralBurialInstructions, guardianshipInstructions, letterOfInstruction
+
+-- P16: `other` contains ONLY the two approved catch-alls.
+select subtype from public.document_subtype where parent_doc_type='other' order by subtype;   -- EXACTLY: customDocument, miscellaneousRecord
+select count(*) as other_count from public.document_subtype where parent_doc_type='other';     -- 2
+```
+```bash
+# P4: deterministic create derivation for each new category.
+for pair in "legacyMessage:legacy_and_family" "patentDocument:achievements_and_recognition" "beneficiaryID:family_and_beneficiary" \
+            "diploma:education_and_career" "dd214:military_and_government" "executorInstructions:estate_planning"; do
+  sub="${pair%%:*}"; exp="${pair##*:}"; D=$(uuidgen|tr 'A-F' 'a-f'); P="estates/$ESTATE/vault/$D.pdf"
+  curl -s -X POST "$URL/storage/v1/object/documents/$P" -H "apikey: $PUB" -H "Authorization: Bearer $OWNER" -H "Content-Type: application/pdf" --data-binary @/tmp/small.pdf >/dev/null
+  echo "$sub -> $(rpc create_vault_document "$OWNER" "{\"p_estate\":\"$ESTATE\",\"p_doc_id\":\"$D\",\"p_storage_path\":\"$P\",\"p_title\":\"$sub\",\"p_doc_subtype\":\"$sub\"}")  (want $exp)"
+done
+# Then: select doc_subtype, doc_type from documents where doc_subtype in
+#   ('legacyMessage','patentDocument','beneficiaryID','diploma','dd214','executorInstructions'); -> each = its new parent.
+# P5 also via update: rpc update_vault_document "$OWNER" '{"p_doc_id":"<a doc>","p_doc_subtype":"militaryID"}' -> doc_type military_and_government.
+
+# P5 ★ CLAIM REGRESSION — unchanged (0031 untouched):
+#   select value,is_active from document_type where value in ('death_certificate','id_document'); -> both present+active
+#   select doc_type,doc_subtype from documents where doc_type in ('death_certificate','id_document') limit 4; -> coarse, NULL
+
+# P10: payload = 22 ACTIVE doc_types (deed still excluded), new ones present.
+rpc get_document_taxonomy "$OWNER" '{}' | jq '{doc_types_active:(.doc_types|length), has_personal_legacy:([.doc_types[].value]|index("personal_legacy")!=null), new6:([.doc_types[].value]|map(select(.=="legacy_and_family" or .=="estate_planning"))), other_subtypes:([.subtypes[]|select(.parent_doc_type=="other")|.value])}'
+# EXPECT: doc_types_active 22, has_personal_legacy false, new6 present, other_subtypes ["customDocument","miscellaneousRecord"].
+
+# P11: unauthorized taxonomy mutation denied.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$URL/rest/v1/document_type" -H "apikey: $PUB" -H "Authorization: Bearer $OWNER" -H "Content-Type: application/json" -d '{"value":"hack2","display_name":"Hack"}'   # 401/403
+```
+**P12** — untargeted rows unchanged: any pre-existing 0037-category row (e.g. `bankStatement→financial_account`) keeps its coarse type (0038 doesn't touch it).
+
 ## Cleanup
 ```sql
 delete from public.documents where estate_id = '9add2645-b3ef-4c25-b315-63900833ba5a'

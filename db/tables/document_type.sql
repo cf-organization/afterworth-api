@@ -7,9 +7,10 @@
 -- integrity + RESTRICT-on-delete; is_active retires a value from NEW writes + the payload without deleting).
 -- Born clean: RLS on, NO client grants (read only via the DEFINER get_document_taxonomy). SEED: 11 rows in
 -- migration 0036; 0037 adds 6 more (financial_account/business/legal_and_court/healthcare_record/
--- crypto_digital_asset/real_estate) and RETIRES `deed` via is_active=false (kept for historical readability) —
--- net 16 active + deed inactive = 17 rows. Single source (not duplicated here). FK rebuild order: referenced BY
--- documents + document_subtype.
+-- crypto_digital_asset/real_estate) and RETIRES `deed` via is_active=false (kept for historical readability);
+-- 0038 adds 6 more (legacy_and_family/achievements_and_recognition/family_and_beneficiary/education_and_career/
+-- military_and_government/estate_planning) — net 22 active + deed inactive = 23 rows. Single source (not
+-- duplicated here). FK rebuild order: referenced BY documents + document_subtype.
 
 create table if not exists public.document_type (
   value           text        primary key,
