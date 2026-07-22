@@ -38,6 +38,10 @@ create table if not exists public.documents (
   -- (persist-both taxonomy). NULLABLE + FK to public.document_subtype — claim-evidence rows
   -- (submit_claim_with_evidence) stay coarse-only (NULL); owner vault docs (create_vault_document) carry it.
   doc_subtype  text references public.document_subtype(subtype),
+  -- retention_until (migration 0039): a mandatory-retention floor. NULL = no retention (the common case);
+  -- delete_vault_document / replace_vault_document raise 'blocked_retention' while retention_until > now().
+  -- Starts empty; a setter RPC/policy is a fast-follow — the CHECK is a real, reachable predicate today.
+  retention_until timestamptz,
   constraint documents_pkey primary key (id)
 );
 
