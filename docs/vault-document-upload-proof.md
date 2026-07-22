@@ -179,6 +179,116 @@ rpc create_vault_document "$OWNER" "{\"p_estate\":\"$ESTATE\",\"p_doc_id\":\"$D\
 # invalid sensitivity now table-checked: rpc create_vault_document ... p_sensitivity 'nope' -> invalid_sensitivity
 ```
 
+## 0037 — Core taxonomy stabilization proof (P1–P12)
+
+**P1 — PRE-FLIGHT affected-row count (run BEFORE applying 0037; report the exact number).**
+The backfill runs AFTER the re-points, so it compares each row's `doc_type` to the subtype's NEW parent. A
+row is backfilled iff its `doc_subtype` is one 0037 RE-POINTS (its coarse changes). Match against the exact
+re-pointed set (below) — NOT against the current parent (which is trivially consistent pre-migration and would
+falsely report 0). Claim rows (`doc_subtype` NULL) are excluded.
+```sql
+with repointed(subtype) as (values
+  ('bankStatement'),('brokerageStatement'),('retirementAccountStatement'),('document401k'),('iraDocument'),
+  ('plan529Document'),('pensionDocument'),('loanDocument'),('mortgageStatement'),('creditCardStatement'),
+  ('debtRecord'),('accountClosureInstruction'),
+  ('businessFormationDocument'),('operatingAgreement'),('corporateBylaws'),('stockCertificate'),('capTable'),
+  ('businessTaxRecord'),('partnershipAgreement'),('buySellAgreement'),('businessInsuranceDocument'),('businessSuccessionPlan'),
+  ('courtOrder'),('settlementAgreement'),('legalAgreement'),('attorneyLetter'),('probateDocument'),
+  ('lettersTestamentary'),('notarizedDocument'),('contract'),
+  ('advanceHealthcareDirective'),('livingWill'),('healthcareDirective'),
+  ('medicalRecord'),('prescriptionList'),('doctorContactList'),('insuranceCard'),('emergencyMedicalInformation'),
+  ('carePlan'),('disabilityRecord'),
+  ('cryptoWalletInventory'),('hardwareWalletLocationReference'),('exchangeAccountStatement'),('digitalAssetInventory'),
+  ('nftOwnershipRecord'),('cryptoTaxReport'),('recoveryLocationReference'),
+  ('mortgageDocument'),('leaseAgreement'),('propertyAppraisal'),('homeInventory'),('vehicleTitle'),('boatTitle'),
+  ('landOwnershipRecord'),('propertyInsuranceDocument'),('propertyDeed'))
+select d.doc_type as current_coarse, d.doc_subtype, count(*)
+from public.documents d join repointed r on r.subtype = d.doc_subtype
+group by 1,2 order by 3 desc;
+-- bare count (the authoritative will-backfill number):
+with repointed(subtype) as (values
+  ('bankStatement'),('brokerageStatement'),('retirementAccountStatement'),('document401k'),('iraDocument'),
+  ('plan529Document'),('pensionDocument'),('loanDocument'),('mortgageStatement'),('creditCardStatement'),
+  ('debtRecord'),('accountClosureInstruction'),('businessFormationDocument'),('operatingAgreement'),
+  ('corporateBylaws'),('stockCertificate'),('capTable'),('businessTaxRecord'),('partnershipAgreement'),
+  ('buySellAgreement'),('businessInsuranceDocument'),('businessSuccessionPlan'),('courtOrder'),
+  ('settlementAgreement'),('legalAgreement'),('attorneyLetter'),('probateDocument'),('lettersTestamentary'),
+  ('notarizedDocument'),('contract'),('advanceHealthcareDirective'),('livingWill'),('healthcareDirective'),
+  ('medicalRecord'),('prescriptionList'),('doctorContactList'),('insuranceCard'),('emergencyMedicalInformation'),
+  ('carePlan'),('disabilityRecord'),('cryptoWalletInventory'),('hardwareWalletLocationReference'),
+  ('exchangeAccountStatement'),('digitalAssetInventory'),('nftOwnershipRecord'),('cryptoTaxReport'),
+  ('recoveryLocationReference'),('mortgageDocument'),('leaseAgreement'),('propertyAppraisal'),('homeInventory'),
+  ('vehicleTitle'),('boatTitle'),('landOwnershipRecord'),('propertyInsuranceDocument'),('propertyDeed'))
+select count(*) as will_backfill from public.documents d join repointed r on r.subtype = d.doc_subtype;
+```
+Expected: the `propertyDeed` row(s) your update-legs set to `doc_type='deed'` (→ `real_estate`); ≈1–2. The other
+55 re-pointed subtypes have no rows in the test data, so they contribute 0.
+
+**Apply `0037`, then:**
+```sql
+-- P2: new coarse rows exist with correct metadata; medical_directive relabelled; deed retired.
+select value, display_name, is_active, badge_color_key, icon_key from public.document_type
+  where value in ('financial_account','business','legal_and_court','healthcare_record','crypto_digital_asset','real_estate','medical_directive','deed')
+  order by sort_order;
+-- EXPECT: the 6 new = active with the metadata; medical_directive display 'Medical Directives'; deed is_active=false.
+
+-- P3: every moved subtype has the intended parent (spot the 7 groups; count per new parent).
+select parent_doc_type, count(*) from public.document_subtype
+  where parent_doc_type in ('financial_account','business','legal_and_court','healthcare_record','crypto_digital_asset','real_estate','medical_directive')
+  group by 1 order by 1;
+-- EXPECT: financial_account 12, business 10, legal_and_court 8, healthcare_record 7, crypto_digital_asset 7,
+--         real_estate 9 (incl propertyDeed), medical_directive 3.
+
+-- P6: post-backfill mismatch count is ZERO.
+select count(*) as mismatches from public.documents d join public.document_subtype ds on ds.subtype=d.doc_subtype
+  where d.doc_type <> ds.parent_doc_type;   -- 0
+
+-- P7: no duplicate ACTIVE identifiers (coarse + subtype are PKs, so this is belt-and-suspenders).
+select value, count(*) from public.document_type where is_active group by value having count(*) > 1;   -- 0 rows
+select subtype, count(*) from public.document_subtype where is_active group by subtype having count(*) > 1; -- 0 rows
+
+-- P8: no invalid parent references — NO active subtype points to an inactive/nonexistent parent.
+select count(*) as active_subtype_inactive_parent from public.document_subtype ds
+  left join public.document_type dt on dt.value = ds.parent_doc_type
+  where ds.is_active and (dt.value is null or not dt.is_active);   -- 0
+
+-- P9: vocabulary_version advanced (note the pre-0037 value first). schema_version UNCHANGED.
+select schema_version, vocabulary_version from public.taxonomy_version where id=1;   -- schema_version still 1; vocab higher
+
+-- P12: rows NOT targeted are unchanged — a will/insurance row keeps its coarse type.
+select doc_type, doc_subtype from public.documents where doc_subtype in ('will','lifeInsurancePolicy') limit 4;
+-- EXPECT: will->will, lifeInsurancePolicy->insurance_policy (untouched — those subtypes weren't re-pointed).
+```
+```bash
+# P4: a representative subtype from EACH new category derives the correct coarse type on create.
+for pair in "bankStatement:financial_account" "stockCertificate:business" "courtOrder:legal_and_court" \
+            "medicalRecord:healthcare_record" "nftOwnershipRecord:crypto_digital_asset" "vehicleTitle:real_estate" \
+            "livingWill:medical_directive"; do
+  sub="${pair%%:*}"; exp="${pair##*:}"; D=$(uuidgen|tr 'A-F' 'a-f'); P="estates/$ESTATE/vault/$D.pdf"
+  curl -s -X POST "$URL/storage/v1/object/documents/$P" -H "apikey: $PUB" -H "Authorization: Bearer $OWNER" -H "Content-Type: application/pdf" --data-binary @/tmp/small.pdf >/dev/null
+  got=$(rpc create_vault_document "$OWNER" "{\"p_estate\":\"$ESTATE\",\"p_doc_id\":\"$D\",\"p_storage_path\":\"$P\",\"p_title\":\"$sub\",\"p_doc_subtype\":\"$sub\"}")
+  echo "$sub -> created $got  (verify doc_type='$exp' in SQL)"
+done
+# Then: select doc_subtype, doc_type from documents where doc_subtype in
+#   ('bankStatement','stockCertificate','courtOrder','medicalRecord','nftOwnershipRecord','vehicleTitle','livingWill');
+# EXPECT each derives its new parent (financial_account/business/legal_and_court/healthcare_record/
+#         crypto_digital_asset/real_estate/medical_directive). ALSO: creating with p_doc_subtype='propertyDeed'
+#         now derives 'real_estate' (not 'deed').
+
+# P5 ★ CLAIM REGRESSION — coarse values intact; submit_claim_with_evidence still works.
+#   (values still present + claim rows still valid; the 0031 RPC is byte-for-byte unchanged.)
+#   SQL: select value,is_active from document_type where value in ('death_certificate','id_document'); -> both present+active
+#        select doc_type,doc_subtype from documents where doc_type in ('death_certificate','id_document') limit 4; -> coarse, NULL subtype
+
+# P10: get_document_taxonomy payload — 16 ACTIVE doc_types (deed excluded), new ones present, deed absent.
+rpc get_document_taxonomy "$OWNER" '{}' | jq '{doc_types_active: (.doc_types|length), has_deed: ([.doc_types[].value] | index("deed") != null), new_present: ([.doc_types[].value] | map(select(. == "financial_account" or . == "real_estate"))), realestate_subtypes: ([.subtypes[] | select(.parent_doc_type=="real_estate") | .value] | length)}'
+# EXPECT: doc_types_active 16, has_deed false, new_present ["financial_account","real_estate"], realestate_subtypes 9.
+
+# P11: unauthorized users cannot mutate the taxonomy tables (no client grants).
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$URL/rest/v1/document_type" -H "apikey: $PUB" -H "Authorization: Bearer $OWNER" -H "Content-Type: application/json" -d '{"value":"hack","display_name":"Hack"}'
+# EXPECT: 401/403/404 (permission denied / not exposed) — NOT 201. Taxonomy is DEFINER-RPC-read-only.
+```
+
 ## Cleanup
 ```sql
 delete from public.documents where estate_id = '9add2645-b3ef-4c25-b315-63900833ba5a'

@@ -6,7 +6,10 @@
 -- Referenced by FK from documents.doc_type and document_subtype.parent_doc_type (FK + is_active: the FK gives
 -- integrity + RESTRICT-on-delete; is_active retires a value from NEW writes + the payload without deleting).
 -- Born clean: RLS on, NO client grants (read only via the DEFINER get_document_taxonomy). SEED: 11 rows in
--- migration 0036 (single source — not duplicated here). FK rebuild order: referenced BY documents + document_subtype.
+-- migration 0036; 0037 adds 6 more (financial_account/business/legal_and_court/healthcare_record/
+-- crypto_digital_asset/real_estate) and RETIRES `deed` via is_active=false (kept for historical readability) —
+-- net 16 active + deed inactive = 17 rows. Single source (not duplicated here). FK rebuild order: referenced BY
+-- documents + document_subtype.
 
 create table if not exists public.document_type (
   value           text        primary key,
