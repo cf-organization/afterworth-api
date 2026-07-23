@@ -25,8 +25,11 @@ create table if not exists public.claim_packets (
   requested_by             uuid        not null references auth.users(id),
   status                   text        not null default 'submitted'
                              check (status in ('submitted','under_review','approved','rejected','released')),
-  death_certificate_doc_id uuid        references public.documents(id),
-  executor_id_doc_id       uuid        references public.documents(id),
+  -- Evidence pins. FKs are ON DELETE SET NULL (migration 0039): a REJECTED claim (non-blocking) keeps its
+  -- append-only history with a nulled evidence pointer when its doc is deleted; delete_vault_document still
+  -- rejects deletion for every ACTIVE claim status (submitted/under_review/approved/released) via 'blocked_active_claim'.
+  death_certificate_doc_id uuid        references public.documents(id) on delete set null,
+  executor_id_doc_id       uuid        references public.documents(id) on delete set null,
   reviewer_id              uuid        references auth.users(id),
   review_notes             text,
   submitted_at             timestamptz default now(),

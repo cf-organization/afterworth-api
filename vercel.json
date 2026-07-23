@@ -2,5 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": null,
   "outputDirectory": null,
-  "framework": null
+  "framework": null,
+  "crons": [
+    {
+      "path": "/api/claims/drain_purge_outbox",
+      "schedule": "0 4 * * *"
+    }
+  ]
 }

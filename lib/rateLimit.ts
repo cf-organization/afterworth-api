@@ -116,6 +116,10 @@ const REGISTRY: Record<string, BucketConfig> = {
   // Admin orphan-sweep (api/claims/[action].ts -> list_orphan_storage_objects + service-role remove). Tier-2
   // anti-abuse; the admin gate in the RPC is the boundary. Low limit — a sweep is a rare deliberate action.
   claims_sweep_orphans:          { tier: 2, keyBy: "user", limit: 10, window: "1 m" },
+  // Client-immediate byte purge after delete/replace (api/claims/[action].ts -> authorize_purge + service-role
+  // remove + record_purge_result). Owner-gated in the RPCs (the boundary); this bounds abuse. Modest limit —
+  // one purge per delete/replace, a few in a burst. (The cron drain is CRON_SECRET-gated, not rate-limited.)
+  claims_purge_document:         { tier: 2, keyBy: "user", limit: 30, window: "1 m" },
 };
 
 // One Ratelimit per bucket, module-scope. timeout:false disables the SDK's fail-open timeout (ours is

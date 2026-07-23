@@ -34,7 +34,7 @@ import { createClient } from "@supabase/supabase-js";
 import { enforce } from "../../lib/rateLimit.js";
 import { verifyJwt, getAuthedSupabaseClient, AuthError } from "../../lib/auth.js";
 
-const ACTIONS = new Set(["view_evidence", "sweep_orphans"]);
+const ACTIONS = new Set(["view_evidence", "sweep_orphans", "purge_document"]);
 const SLOTS = new Set(["death_cert", "executor_id"]);
 const DOCUMENTS_BUCKET = "documents";
 const FALLBACK_MAX_BYTES = 25 * 1024 * 1024; // only if the admin_authorize RPC omits max_upload_bytes.
@@ -132,6 +132,120 @@ async function handleSweepOrphans(req: Request, jwt: string, o: Record<string, u
   return jsonResponse(200, { mode: "delete", deleted: paths.length, paths });
 }
 
+/**
+ * purge_document — the CLIENT-IMMEDIATE byte purge after delete_vault_document / replace_vault_document (which
+ * committed the outbox row in-tx). Owner-gated INSIDE the RPCs (authorize_purge / record_purge_result); the
+ * service-role storage.remove is confined to this endpoint (only place with the key). Idempotent: storage
+ * remove of a missing key is a no-op, and a purged outbox row can't be re-authorized. This is the FAST path;
+ * the GET cron drain + the 72h orphan sweeper are the reliability backstops.
+ * Body: { outboxId: uuid } (the id returned by delete/replace).
+ */
+async function handlePurgeDocument(req: Request, jwt: string, o: Record<string, unknown>): Promise<Response> {
+  const rl = await enforce(req, "claims_purge_document");
+  if (rl) return rl;
+
+  const outboxId = typeof o.outboxId === "string" ? o.outboxId.trim() : "";
+  if (!UUID_RE.test(outboxId)) return errorResponse(400, "invalid_request");
+
+  const authed = getAuthedSupabaseClient(jwt);
+
+  // 1. AUTHORIZE (owner gate inside the RPC) — returns the object to remove + bumps attempts.
+  const { data, error } = await authed.rpc("authorize_purge", { p_outbox_id: outboxId });
+  if (error) {
+    if (error.code === "42501") return errorResponse(403, "forbidden");
+    if (error.code === "P0002") return errorResponse(404, "outbox_not_found");
+    console.error("authorize_purge error:", error.code, error.message);
+    return errorResponse(502, "upstream_error");
+  }
+  const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+  const bucket = row && typeof row.v_bucket === "string" ? row.v_bucket : DOCUMENTS_BUCKET;
+  const path = row && typeof row.v_path === "string" ? row.v_path : "";
+  if (!path) return errorResponse(404, "outbox_not_found");
+
+  // 2. REMOVE bytes (service role — the only place with the key; used ONLY for the storage op).
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SECRET_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    console.error("purge_document: SUPABASE_URL / SUPABASE_SECRET_KEY not configured");
+    return errorResponse(502, "config_error");
+  }
+  const admin = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+  const { error: rmErr } = await admin.storage.from(bucket).remove([path]);
+
+  // 3. RECORD the result (owner gate). ok -> purged; not-ok -> failed (re-drainable by the cron/sweeper).
+  const { error: recErr } = await authed.rpc("record_purge_result", {
+    p_outbox_id: outboxId,
+    p_ok: !rmErr,
+    p_error: rmErr ? rmErr.message : null,
+  });
+  if (recErr) console.error("record_purge_result error:", recErr.code, recErr.message);
+
+  if (rmErr) {
+    console.error("purge_document: storage remove error:", rmErr.message);
+    return errorResponse(502, "storage_error");
+  }
+  return jsonResponse(200, { purged: true });
+}
+
+/**
+ * GET /api/claims/drain_purge_outbox — the SCHEDULED reliability backstop (Vercel Cron), CRON_SECRET-gated.
+ * Drains pending/failed purge-outbox rows via the service role (the born-clean table grants select+update to
+ * service_role). On Hobby, cron frequency is plan-limited (daily); the CLIENT-immediate purge is the primary
+ * "not retained" path, and the 72h orphan sweeper is the FINAL catch-all. Tighten the schedule on Pro.
+ */
+export async function GET(req: Request): Promise<Response> {
+  const action = actionFromUrl(req.url);
+  if (action !== "drain_purge_outbox") return errorResponse(404, "not_found");
+
+  // Vercel Cron sends `Authorization: Bearer $CRON_SECRET` automatically when CRON_SECRET is configured.
+  const cronSecret = process.env.CRON_SECRET;
+  const auth = req.headers.get("authorization");
+  if (!cronSecret || auth !== `Bearer ${cronSecret}`) return errorResponse(401, "unauthorized");
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SECRET_KEY;
+  if (!supabaseUrl || !serviceKey) return errorResponse(502, "config_error");
+  const admin = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+
+  const MAX_ATTEMPTS = 10;
+  const BATCH = 50;
+  const { data: rows, error } = await admin
+    .from("storage_deletion_outbox")
+    .select("id,bucket,object_path,attempts")
+    .neq("status", "purged")
+    .lt("attempts", MAX_ATTEMPTS)
+    .order("requested_at", { ascending: true })
+    .limit(BATCH);
+  if (error) {
+    console.error("drain_purge_outbox: select error:", error.message);
+    return errorResponse(502, "upstream_error");
+  }
+
+  let purged = 0;
+  let failed = 0;
+  for (const r of rows ?? []) {
+    const id = r.id as string;
+    const bucket = (r.bucket as string) || DOCUMENTS_BUCKET;
+    const path = r.object_path as string;
+    const attempts = ((r.attempts as number) ?? 0) + 1;
+    const { error: rmErr } = await admin.storage.from(bucket).remove([path]);
+    if (rmErr) {
+      await admin.from("storage_deletion_outbox")
+        .update({ status: "failed", attempts, last_error: rmErr.message }).eq("id", id);
+      failed++;
+    } else {
+      await admin.from("storage_deletion_outbox")
+        .update({ status: "purged", purged_at: new Date().toISOString(), attempts, last_error: null }).eq("id", id);
+      purged++;
+    }
+  }
+  return jsonResponse(200, { drained: (rows ?? []).length, purged, failed });
+}
+
 export async function POST(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return errorResponse(405, "method_not_allowed");
@@ -164,6 +278,10 @@ export async function POST(req: Request): Promise<Response> {
 
   if (action === "sweep_orphans") {
     return handleSweepOrphans(req, user.jwt, o);
+  }
+
+  if (action === "purge_document") {
+    return handlePurgeDocument(req, user.jwt, o);
   }
 
   // ---- view_evidence ----
