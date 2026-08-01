@@ -150,6 +150,12 @@ begin
   exception when check_violation then null;
   end;
 
+  -- Leave no CLAIMABLE residue. This section walks the row through every legal status and happens
+  -- to finish on 'queued'; §5 then asserts on an UNTARGETED drain, which would legitimately claim
+  -- this leftover and read as a defect in the claim predicate. Settling it here keeps each
+  -- section's fixtures from contaminating the next.
+  update public.invitation_delivery_outbox set status = 'cancelled' where id = v_outbox;
+
   raise notice '§1 PASSED — CHECK constraints';
 end $$;
 
@@ -332,7 +338,11 @@ begin
   -- ---- IDEMPOTENT CLAIMING (check 11): a processing row is never handed out twice ----
   select count(*) into v_count from public.claim_invitation_deliveries(25, v_outbox);
   assert v_count = 0, '5.6 ★ a processing row was re-claimed by a targeted claim';
-  select count(*) into v_count from public.claim_invitation_deliveries(25);
+  -- Filtered to THIS row. An untargeted drain is free to claim other sections' fixtures — that is
+  -- correct behaviour, not a defect — so the assertion must be about this row specifically, or it
+  -- reports unrelated work as a double-claim.
+  select count(*) into v_count
+    from public.claim_invitation_deliveries(25) c where c.outbox_id = v_outbox;
   assert v_count = 0, '5.7 ★ a processing row was re-claimed by an untargeted drain';
 
   select attempts into v_attempts from public.invitation_delivery_outbox where id = v_outbox;
@@ -360,7 +370,8 @@ begin
    where id = v_outbox;
   select count(*) into v_count from public.claim_invitation_deliveries(25, v_outbox);
   assert v_count = 0, '5.11 ★ AN outcomeUncertain ROW WAS CLAIMED — a live link could be rotated';
-  select count(*) into v_count from public.claim_invitation_deliveries(25);
+  select count(*) into v_count
+    from public.claim_invitation_deliveries(25) c where c.outbox_id = v_outbox;
   assert v_count = 0, '5.12 ★ an outcomeUncertain row was claimed by an untargeted drain';
 
   -- ---- terminal states are never claimable ----
@@ -461,6 +472,24 @@ begin
   select count(*) into v_count from public.invitations
    where id = v_inv and token_hash = encode(digest(v_raw, 'sha256'), 'hex');
   assert v_count = 0, '6.15 ★ the OLD token hash survived a reissue — the old link still works';
+
+  -- The REISSUED secret gets the same custody scrutiny as the first. A reissue is the second place
+  -- a token is minted, so it is the second place one could leak.
+  select count(*) into v_count from public.invitation_delivery_outbox o
+   where o.id = v_outbox and position(v_raw2 in o::text) > 0;
+  assert v_count = 0, '6.16 ★ THE REISSUED TOKEN APPEARS SOMEWHERE ON THE OUTBOX ROW';
+
+  select count(*) into v_count from public.audit_logs a
+   where a.created_at > now() - interval '5 minutes' and position(v_raw2 in a::text) > 0;
+  assert v_count = 0, '6.17 ★ THE REISSUED TOKEN APPEARS IN AN AUDIT ROW';
+
+  select count(*) into v_count from public.invitations
+   where id = v_inv and token_hash = encode(digest(v_raw2, 'sha256'), 'hex');
+  assert v_count = 1, '6.18 the reissued token''s hash must be the one now stored';
+
+  select count(*) into v_count from public.audit_logs a
+   where a.action = 'invitation.delivery_issued' and a.target_id = v_inv;
+  assert v_count = 2, '6.19 a reissue must write a second delivery_issued audit row, got ' || v_count;
 
   raise notice '§6 PASSED — issuance and token custody';
 end $$;
