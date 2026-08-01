@@ -71,6 +71,11 @@ const REGISTRY: Record<string, BucketConfig> = {
   accept:                        { tier: 1, keyBy: "user",    limit: 10, window: "1 m" },
   decline:                       { tier: 1, keyBy: "user",    limit: 10, window: "1 m" },
   resolve:                       { tier: 1, keyBy: "user",    limit: 20, window: "1 m" },
+  // Owner invitation creation (api/invitations/[action].ts -> create_estate_invitation + one immediate
+  // send). TIER 1 / fail-closed deliberately: it BOTH grants estate access AND causes outbound email, so
+  // a limiter outage must never degrade into an open relay. The DB caps (20 pending per estate, one
+  // active invitation per recipient+role) are the real ceiling; this bounds the burst.
+  invitations_create_owner:      { tier: 1, keyBy: "user",    limit: 10, window: "1 m" },
   access_requests_create:        { tier: 1, keyBy: "user",    limit: 10, window: "1 m" },
   connections_create_link_token: { tier: 1, keyBy: "user",    limit: 10, window: "1 m" },
   connections_exchange:          { tier: 1, keyBy: "user",    limit: 10, window: "1 m" },

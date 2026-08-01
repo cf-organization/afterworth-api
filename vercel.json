@@ -7,6 +7,10 @@
     {
       "path": "/api/claims/drain_purge_outbox",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/invitations/drain_email_outbox",
+      "schedule": "30 4 * * *"
     }
   ]
 }
