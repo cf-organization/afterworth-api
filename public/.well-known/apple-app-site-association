@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["REPLACE_WITH_APPLE_TEAM_ID.com.afterworth.mobile"],
+        "components": [
+          {
+            "/": "/i",
+            "comment": "Invitation entry point. Exact path only."
+          },
+          {
+            "/": "/i/",
+            "comment": "Trailing-slash form of the same entry point."
+          }
+        ]
+      }
+    ]
+  }
+}

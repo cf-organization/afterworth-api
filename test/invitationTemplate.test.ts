@@ -9,7 +9,7 @@ const base = {
   estateDisplayName: "The Example Estate",
   inviterDisplayName: "Alex Example",
   expiresAt: new Date("2026-09-01T00:00:00Z"),
-  link: "https://example.test/invite?token=abc123",
+  link: "https://invite.example.test/i",
 };
 
 const ALL_SHAPES = [
@@ -34,6 +34,23 @@ describe("both formats are produced", () => {
     expect(r.html).toContain("copy and paste"); // link also present as visible text
     expect(r.text).toContain(base.link);
   });
+
+  it("★ the link carries no secret and no identifier, in any configuration", () => {
+    for (const input of ALL_SHAPES) {
+      const r = renderInvitationEmail(input);
+      const all = `${r.subject}\n${r.html}\n${r.text}`;
+      expect(all).not.toMatch(/[?&]token=/);
+      expect(all).not.toMatch(/[0-9a-f]{32,}/i);       // nothing token-shaped
+      expect(all).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    }
+  });
+
+  it("tells the recipient which address to sign in with — that is what matches them", () => {
+    // Functional, not decoration: the invitation is matched to the caller's verified address, so a
+    // recipient who signs in with a different one finds nothing and assumes the link is broken.
+    const r = renderInvitationEmail(base);
+    expect(r.text).toContain("sign in with this email address");
+  });
 });
 
 describe("accessibility basics", () => {
@@ -46,7 +63,7 @@ describe("accessibility basics", () => {
 
   it("uses a real anchor with descriptive text, not a bare URL as the only affordance", () => {
     const html = renderInvitationEmail(base).html;
-    expect(html).toMatch(/<a href="[^"]+"[^>]*>View your invitation<\/a>/);
+    expect(html).toMatch(/<a href="[^"]+"[^>]*>Open AfterWorth<\/a>/);
   });
 
   it("uses semantic landmarks and a heading rather than layout tables", () => {

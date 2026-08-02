@@ -12,9 +12,10 @@ import { captureConsole, jsonResponse, makeDb, makeFakeAdmin, makeTransport, MAX
 import type { ProviderResult } from "../lib/email/resendProvider.js";
 
 const OUTBOX_ID = "22222222-2222-4222-8222-222222222222";
+const ENTRY_URL = "https://invite.example.test/i";
 
 beforeEach(() => {
-  process.env.INVITATION_LINK_BASE_URL = "https://example.test/invite";
+  process.env.INVITATION_LINK_BASE_URL = ENTRY_URL;
 });
 afterEach(() => {
   delete process.env.INVITATION_LINK_BASE_URL;
@@ -79,8 +80,7 @@ describe("the immediate attempt", () => {
     expect(calls).toHaveLength(2);
     expect(calls[1].idempotencyKey).toBe(calls[0].idempotencyKey); // ← the whole point
     expect(calls[1].html).toBe(calls[0].html);                     // same link, same message
-    expect(db.mintedTokens).toHaveLength(1);                       // ← no second token
-    expect(db.outbox[0].delivery_generation).toBe(1);
+    expect(db.outbox[0].delivery_generation).toBe(1);              // ← one notice, not two
     expect(db.outbox[0].status).toBe("outcomeUncertain");
   });
 
@@ -102,33 +102,34 @@ describe("the immediate attempt", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it("fails closed when no link base URL is configured — and mints no token", async () => {
+  it("fails closed when no link base URL is configured, before taking a notice", async () => {
     delete process.env.INVITATION_LINK_BASE_URL;
     const db = makeDb();
     const { send, calls } = scriptedSender([accepted]);
     await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
 
     expect(calls).toHaveLength(0);
-    expect(db.mintedTokens).toHaveLength(0); // ← the point: no token burned on a dead link
+    // Configuration is checked BEFORE the notice RPC, so no generation is burned on a dead link.
+    expect(db.tokenHashReads).toHaveLength(0);
+    expect(db.outbox[0].delivery_generation).toBe(0);
     expect(db.outbox[0].status).toBe("failedPermanent");
   });
 });
 
-describe("★ same generation vs deliberate reissue", () => {
-  it("an ambiguous outcome does NOT mint a second token on its own", async () => {
+describe("★ generations, retries, and the absence of any secret", () => {
+  it("an ambiguous outcome does NOT trigger a second notice on its own", async () => {
     const db = makeDb();
     const { send } = scriptedSender([uncertain]);
     await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
 
-    expect(db.mintedTokens).toHaveLength(1);
     expect(db.outbox[0].delivery_generation).toBe(1);
-    // outcomeUncertain is not claimable, so no drain will pick it up and quietly reissue.
+    // outcomeUncertain is not claimable, so no drain picks it up and quietly emails again.
     const second = await claimAndDeliver(makeFakeAdmin(db), { max: 10 }, { send });
     expect(second.claimed).toBe(0);
-    expect(db.mintedTokens).toHaveLength(1);
+    expect(db.outbox[0].delivery_generation).toBe(1);
   });
 
-  it("a cron retry after a DEFINITIVE refusal mints a fresh token — no live link is rotated", async () => {
+  it("a cron retry after a DEFINITIVE refusal takes a fresh generation and a fresh key", async () => {
     const db = makeDb();
     const { send, calls } = scriptedSender([transient, accepted]);
     const admin = makeFakeAdmin(db);
@@ -140,15 +141,15 @@ describe("★ same generation vs deliberate reissue", () => {
     await claimAndDeliver(admin, { max: 10 }, { send });
 
     expect(calls).toHaveLength(2);
-    // retryPending means the provider ANSWERED and refused, so no link ever reached anyone — there
-    // is nothing live to invalidate, and a fresh token is the only way to send at all (the previous
-    // raw token died with the previous invocation). A key must never collide across generations.
+    // retryPending means the provider ANSWERED and refused, so nothing reached anyone. The retry
+    // is a second attempt at the same informational email; the key must not collide with the first,
+    // or Resend would dedupe a genuinely-needed send away.
     expect(new Set(calls.map((c) => c.idempotencyKey)).size).toBe(2);
     expect(calls.every((c) => c.idempotencyKey.startsWith(`afterworth/invitation/${OUTBOX_ID}/`))).toBe(true);
     expect(db.outbox[0].delivery_generation).toBe(2);
   });
 
-  it("★ an ambiguous row is never claimed by a later drain, so no live link is ever rotated", async () => {
+  it("★ an ambiguous row is never claimed by a later drain, so no duplicate email is sent", async () => {
     const db = makeDb();
     const { send } = scriptedSender([uncertain, uncertain]);
     const admin = makeFakeAdmin(db);
@@ -162,18 +163,17 @@ describe("★ same generation vs deliberate reissue", () => {
     const later = await claimAndDeliver(admin, { max: 25 }, { send });
 
     expect(later.claimed).toBe(0);
-    expect(db.mintedTokens).toHaveLength(1);
     expect(db.outbox[0].delivery_generation).toBe(1);
   });
 
-  it("a deliberate reissue advances the generation AND the key", async () => {
+  it("an owner-initiated redelivery gets its own key, and leaves token_hash alone", async () => {
     const db = makeDb();
     const { send, calls } = scriptedSender([accepted]);
     const admin = makeFakeAdmin(db);
+    const originalHash = db.invitations[0].token_hash;
 
     await claimAndDeliver(admin, { outboxId: OUTBOX_ID }, { send });
     const firstKey = calls[0].idempotencyKey;
-    const firstToken = db.mintedTokens[0];
 
     // An owner-initiated redelivery enqueues a NEW outbox row (0042's request_invitation_redelivery).
     db.outbox.push({ ...db.outbox[0], id: "44444444-4444-4444-8444-444444444444", status: "queued",
@@ -185,10 +185,10 @@ describe("★ same generation vs deliberate reissue", () => {
 
     expect(calls).toHaveLength(2);
     expect(calls[1].idempotencyKey).not.toBe(firstKey);
-    expect(db.mintedTokens).toHaveLength(2);
-    expect(db.mintedTokens[1]).not.toBe(firstToken);
-    // The old link is dead: only the newest hash is stored.
-    expect(db.invitations[0].token_hash).toBe(`hash-of-${db.mintedTokens[1]}`);
+    // ★ 0043's minter overwrote token_hash on every send, silently killing any prior link. The
+    //   token-free path must never touch it — not on a first send, not on a redelivery.
+    expect(db.invitations[0].token_hash).toBe(originalHash);
+    expect(db.tokenHashReads.every((h) => h === originalHash)).toBe(true);
   });
 });
 
@@ -226,7 +226,7 @@ describe("the cron drain", () => {
     ]);
 
     expect(calls).toHaveLength(1);
-    expect(db.mintedTokens).toHaveLength(1);
+    expect(db.outbox[0].delivery_generation).toBe(1);
   });
 
   it("skips a terminal invitation and cancels the row instead of sending", async () => {
@@ -239,7 +239,7 @@ describe("the cron drain", () => {
       expect(calls, `status=${status}`).toHaveLength(0);
       expect(counters.claimed).toBe(0);
       expect(db.outbox[0].status).toBe("cancelled");
-      expect(db.mintedTokens).toHaveLength(0);
+      expect(db.tokenHashReads).toHaveLength(0);
     }
   });
 
@@ -275,94 +275,87 @@ describe("the cron drain", () => {
   });
 });
 
-describe("★ the raw token's blast radius", () => {
-  it("never appears on the outbox row", async () => {
-    const db = makeDb();
-    const { send } = scriptedSender([accepted]);
-    await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
-
-    const serialized = JSON.stringify(db.outbox);
-    for (const token of db.mintedTokens) expect(serialized).not.toContain(token);
-    expect(db.mintedTokens).toHaveLength(1);
-  });
-
-  it("never appears in provider metadata — only in the link inside the body", async () => {
+describe("★ the email carries no secret at all", () => {
+  it("the link is the bare configured entry point — every recipient gets the identical URL", async () => {
     const db = makeDb();
     const { send, calls } = scriptedSender([accepted]);
     await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
 
-    const token = db.mintedTokens[0];
-    expect(calls[0].idempotencyKey).not.toContain(token);
-    expect(calls[0].to).not.toContain(token);
-    // It IS in the body — that is the verified recipient contract, and the only place it may be.
-    expect(calls[0].html).toContain(encodeURIComponent(token));
-    expect(calls[0].text).toContain(encodeURIComponent(token));
+    // No token, no invitation id, no estate id, no per-person segment, no query string.
+    expect(calls[0].html).toContain(ENTRY_URL);
+    expect(calls[0].text).toContain(ENTRY_URL);
+    for (const body of [calls[0].html, calls[0].text]) {
+      expect(body).not.toMatch(/[?&]token=/);
+      expect(body).not.toMatch(/\/i\/[0-9a-f]{16,}/);
+      expect(body).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    }
   });
 
-  it("never appears in a log line, on any outcome", async () => {
-    for (const result of [accepted, transient, uncertain, permanent]) {
+  it("two different invitations produce byte-identical links", async () => {
+    const linksFor = async (invitationEmail: string) => {
       const db = makeDb();
+      db.invitations[0].invitee_email = invitationEmail;
+      const { send, calls } = scriptedSender([accepted]);
+      await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
+      return calls[0];
+    };
+    const a = await linksFor("one@example.test");
+    const b = await linksFor("two@example.test");
+
+    // Same URL for both, and the recipient address is the ONLY difference between the sends.
+    expect(a.html).toBe(b.html);
+    expect(a.to).not.toBe(b.to);
+  });
+
+  it("★ the notice path never writes invitations.token_hash", async () => {
+    const db = makeDb();
+    const original = db.invitations[0].token_hash;
+    const { send } = scriptedSender([accepted]);
+    await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
+
+    // 0043's minter overwrote this on every send. 0044's notice must not.
+    expect(db.invitations[0].token_hash).toBe(original);
+    expect(db.tokenHashReads).toEqual([original]);
+  });
+
+  it("★ calling 0043's minter would fail the suite — the fake refuses it", async () => {
+    // Backward compatibility keeps issue_invitation_delivery_token in the database. This proves
+    // the production orchestrator does not reach for it.
+    const db = makeDb();
+    const { send } = scriptedSender([accepted]);
+    await expect(
+      claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send })
+    ).resolves.toBeDefined();
+    expect(db.tokenHashReads).toHaveLength(1); // took a notice, not a token
+  });
+
+  it("nothing secret reaches a log line, on any outcome", async () => {
+    for (const result of [accepted, transient, uncertain, permanent]) {
       const cap = captureConsole();
       try {
+        const db = makeDb();
         const { send } = scriptedSender([result]);
         await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
       } finally {
         cap.restore();
       }
       const logged = cap.lines.join("\n");
-      for (const token of db.mintedTokens) expect(logged).not.toContain(token);
+      expect(logged).not.toContain("recipient@example.test");
+      expect(logged).not.toContain(ENTRY_URL);
     }
   });
 
-  it("never appears in the returned counters, which carry no identifiers at all", async () => {
+  it("the returned counters carry no identifiers at all", async () => {
     const db = makeDb();
     const { send } = scriptedSender([accepted]);
     const counters = await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
 
     const serialized = JSON.stringify(counters);
-    for (const token of db.mintedTokens) expect(serialized).not.toContain(token);
     expect(serialized).not.toContain("recipient@example.test");
     expect(serialized).not.toContain(OUTBOX_ID);
     expect(serialized).not.toContain("msg_1");
     expect(Object.keys(counters).sort()).toEqual([
       "cancelled", "claimed", "failedPermanent", "outcomeUncertain", "providerAccepted", "retryPending",
     ]);
-  });
-});
-
-describe("owner disclosure choices are honoured", () => {
-  it("omits estate and inviter names when the owner hid them", async () => {
-    const db = makeDb();
-    db.invitations[0].preview_visibility = { showEstateName: false, showInviterName: false };
-    // issue_invitation_delivery_token only accepts an already-claimed row, so put it in the state a
-    // claim would have left it in before calling the row-level path directly.
-    db.outbox[0].status = "processing";
-    const { send, calls } = scriptedSender([accepted]);
-
-    await deliverClaimedRow(
-      makeFakeAdmin(db),
-      { outboxId: OUTBOX_ID, invitationId: db.invitations[0].id, deliveryGeneration: 0, attempts: 1 },
-      { send }
-    );
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].html).not.toContain("The Example Estate");
-    expect(calls[0].html).not.toContain("Alex Example");
-    expect(calls[0].text).not.toContain("The Example Estate");
-  });
-
-  it("includes them when the owner allowed them", async () => {
-    const db = makeDb();
-    db.outbox[0].status = "processing";
-    const { send, calls } = scriptedSender([accepted]);
-
-    await deliverClaimedRow(
-      makeFakeAdmin(db),
-      { outboxId: OUTBOX_ID, invitationId: db.invitations[0].id, deliveryGeneration: 0, attempts: 1 },
-      { send }
-    );
-
-    expect(calls[0].html).toContain("The Example Estate");
-    expect(calls[0].html).toContain("Alex Example");
   });
 });

@@ -1,0 +1,112 @@
+<!doctype html>
+<!--
+  The invitation entry page.
+
+  ★ IT IS COMPLETELY STATIC AND IDENTICAL FOR EVERY RECIPIENT. There is no token in the URL, no
+  query string, and no per-person path segment, so this page has nothing to look up and nothing to
+  reveal. Fetching it — by a recipient, a link-preview bot, a mail scanner, or an attacker who
+  found the URL — discloses nothing and consumes nothing.
+
+  That is a direct consequence of the backend contract: accept_invitation, decline_invitation and
+  bind_invitation_token all require the caller's verified email or phone to match the invitee
+  (P0006). Authority is identity, not possession of a link. So the link does not need to carry one.
+
+  ★ WHAT THIS PAGE MAY NOT DO, and structurally cannot:
+    - name an estate, an inviter, or a recipient;
+    - state that an invitation exists, or that it is valid, expired, or revoked;
+    - claim anything was delivered, received, opened, accepted, or that membership exists;
+    - store anything (no localStorage, no sessionStorage, no cookies);
+    - load a third-party script, font, image, or stylesheet;
+    - run analytics of any kind.
+
+  It has no script tag at all, which is what makes most of the above true by construction rather
+  than by discipline. CSP and Referrer-Policy are set in vercel.json for defence in depth.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Open AfterWorth</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: #f5f7f9;
+    color: #111820;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 34rem; width: 100%; }
+  h1 { font-size: 1.6rem; line-height: 1.3; margin: 0 0 1rem; }
+  p { font-size: 1rem; margin: 0 0 1rem; }
+  .muted { color: #586472; font-size: 0.95rem; }
+  .cta {
+    display: inline-block;
+    background: #0c7489;
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+    padding: 0.9rem 1.75rem;
+    border-radius: 8px;
+    margin: 0.5rem 0 1.5rem;
+  }
+  .cta:focus-visible { outline: 3px solid #111820; outline-offset: 3px; }
+  ul { padding-left: 1.2rem; margin: 0 0 1rem; }
+  li { margin-bottom: 0.4rem; }
+  hr { border: 0; border-top: 1px solid #d3dae2; margin: 1.5rem 0; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0c1417; color: #e8eef1; }
+    .muted { color: #9aa8b2; }
+    hr { border-top-color: #24343b; }
+    .cta:focus-visible { outline-color: #e8eef1; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Open AfterWorth to see your invitation</h1>
+
+  <p>
+    Someone has invited you to an estate on AfterWorth — a place for keeping estate information
+    organised and private.
+  </p>
+
+  <!--
+    The href is the custom scheme, which is what an INSTALLED app answers when link verification
+    has not taken over. On a device where the universal link / App Link is verified, the OS opens
+    the app before this page ever renders, and this button is never seen.
+  -->
+  <p><a class="cta" href="afterworth://invitations">Open AfterWorth</a></p>
+
+  <p>
+    <strong>Sign in with the email address this message was sent to.</strong> That address is what
+    connects you to the invitation — signing in with a different one will not find it.
+  </p>
+
+  <hr>
+
+  <h2 style="font-size:1.05rem;margin:0 0 0.6rem;">Don't have the app yet?</h2>
+  <ul class="muted">
+    <li><strong>iPhone or iPad</strong> — install AfterWorth from the App Store, then sign in.</li>
+    <li><strong>Android</strong> — install AfterWorth from Google Play, then sign in.</li>
+  </ul>
+
+  <p class="muted">
+    Nothing has been shared with you yet. You will be able to read the invitation and choose to
+    accept or decline it after you sign in.
+  </p>
+
+  <p class="muted">
+    If you were not expecting this, you can close this page. Nothing happens unless you accept.
+  </p>
+</main>
+</body>
+</html>

@@ -1,27 +1,34 @@
 /**
  * Delivery orchestration — the only place that turns a claimed outbox row into an email.
  *
+ * ★ THE EMAIL CARRIES NO SECRET. This is the load-bearing property of the whole flow, and it is a
+ * consequence of the 0042 contract rather than a preference:
+ *
+ *   accept_invitation, decline_invitation and bind_invitation_token all enforce the SAME guard —
+ *   the caller's verified email or phone must match the invitee, or P0006. Authority is IDENTITY,
+ *   not possession of a token. And POST /api/invitations/resolve already returns the caller's
+ *   pendingInvitations matched by that same identity.
+ *
+ * So a recipient reaches their invitation by signing in, full stop. The email only has to tell
+ * them that, and point at a page that helps them install the app. Minting a credential for that
+ * would leave a live secret in an inbox indefinitely in exchange for no capability — and 0043's
+ * token issuance additionally overwrote invitations.token_hash, so every send silently killed any
+ * previously issued link.
+ *
  * ★ THE ORDER IS THE SAFETY PROPERTY, and it mirrors the storage-deletion outbox exactly:
  *
  *     1. claim   (DEFINER RPC, `for update skip locked`) — row moves to `processing`
- *     2. issue   (DEFINER RPC) — token minted, generation incremented, ONLY the hash stored
+ *     2. notice  (DEFINER RPC, 0044) — generation advances, key derived, NOTHING minted
  *     3. send    (provider, with the deterministic Idempotency-Key)
  *     4. record  (DEFINER RPC) — outcome written back, generation-guarded
  *
- * A worker that dies between any two steps leaves a row that a later drain can reason about. The
- * one state it cannot resolve by itself is `outcomeUncertain`, and that is deliberate — see below.
+ * Steps 1 and 4 are 0043's, reused verbatim — the claim predicate, SKIP LOCKED behaviour, retry
+ * cap and generation guard are all unchanged. Only step 2 differs (0044).
  *
- * ★ WHY THIS NEVER RETRIES AN AMBIGUOUS SEND. The database stores only `token_hash`; the raw token
- * exists solely in this function's local scope for the length of one call. So a later invocation
- * physically cannot resend the same link. If it "retried", it would have to mint a NEW token, which
- * would invalidate a link that may already be sitting in the recipient's inbox — turning an
- * uncertain success into a certain failure. So an ambiguous outcome is recorded honestly and left
- * for a human to decide, and `retryPending` is reserved for the case where the provider ANSWERED
- * and refused (429/5xx), which proves nothing was accepted.
- *
- * ★ THE RAW TOKEN'S BLAST RADIUS. It exists as a local, is written into the link, and is nulled as
- * soon as the send returns. It is never logged, never returned, never put on the outbox row, never
- * put in provider metadata, and never included in a counter or an error.
+ * ★ AN AMBIGUOUS SEND IS STILL NOT RETRIED BY A LATER DRAIN. Not for token reasons any more —
+ * there is no token — but because a second email would be a second email. `outcomeUncertain` stays
+ * out of the claim predicate, and `retryPending` remains reserved for the case where the provider
+ * ANSWERED and refused (429/5xx), which proves nothing was accepted.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -41,7 +48,7 @@ export interface ClaimedRow {
   readonly attempts: number;
 }
 
-/** Sanitized. Counts only — no id, no address, no token, no provider handle. */
+/** Sanitized. Counts only — no id, no address, no provider handle. */
 export interface DeliveryCounters {
   claimed: number;
   providerAccepted: number;
@@ -69,17 +76,18 @@ export function emptyCounters(): DeliveryCounters {
 }
 
 /**
+ * The invitation entry point, used VERBATIM. There is no per-recipient path segment and no query
+ * string, so this value IS the link — every recipient gets the identical URL.
+ *
  * No default. A missing base URL is a CONFIGURATION FAILURE, not a reason to guess: a guessed
- * origin produces a link that 404s, and the recipient has no way to tell that from a revoked
- * invitation. Failing closed keeps the token unminted rather than burning one on a dead link.
+ * origin produces a link the recipient cannot distinguish from a broken invitation.
  */
-function linkBaseUrl(): string | null {
+function invitationEntryUrl(): string | null {
   const base = (process.env.INVITATION_LINK_BASE_URL ?? "").trim();
-  return base.length > 0 ? base.replace(/\/+$/, "") : null;
-}
-
-function buildLink(base: string, rawToken: string): string {
-  return `${base}?token=${encodeURIComponent(rawToken)}`;
+  if (base.length === 0) return null;
+  // Trailing slashes trimmed so the value is stable whether or not the operator added one, and so
+  // no double slash can appear in the rendered link.
+  return base.replace(/\/+$/, "");
 }
 
 async function recordOutcome(
@@ -98,7 +106,7 @@ async function recordOutcome(
     p_failure_class: failureClass,
   });
   // Logged by code only. A failure here leaves the row in `processing`, which the next drain
-  // re-examines — it is recoverable, so it must not throw and abort the rest of the batch.
+  // re-examines — recoverable, so it must not throw and abort the rest of the batch.
   if (error) console.error("record_invitation_delivery_outcome error:", error.code);
 }
 
@@ -111,7 +119,7 @@ function tally(counters: DeliveryCounters, outcome: DeliveryOutcome | "cancelled
 }
 
 /**
- * Issue, send, and record ONE already-claimed row. Returns the outcome so the caller can tally.
+ * Prepare, send and record ONE already-claimed row. Returns the outcome so the caller can tally.
  * Never throws — a throw would strand the row in `processing` with nothing written back.
  */
 export async function deliverClaimedRow(
@@ -119,19 +127,20 @@ export async function deliverClaimedRow(
   row: ClaimedRow,
   deps: DeliveryDeps = {}
 ): Promise<DeliveryOutcome | "cancelled"> {
-  const base = linkBaseUrl();
-  if (!base) {
+  const link = invitationEntryUrl();
+  if (!link) {
     console.error("delivery: INVITATION_LINK_BASE_URL is not configured");
     await recordOutcome(admin, row.outboxId, row.deliveryGeneration, "failedPermanent", null, "configuration");
     return "failedPermanent";
   }
 
-  // ---- 2. ISSUE. Mints the token and bumps the generation. Only reached for a row we hold. ----
-  const { data, error } = await admin.rpc("issue_invitation_delivery_token", { p_outbox_id: row.outboxId });
+  // ---- 2. NOTICE (0044). Advances the generation and derives the key. Mints nothing, and does
+  //         not touch invitations.token_hash. ----
+  const { data, error } = await admin.rpc("issue_invitation_delivery_notice", { p_outbox_id: row.outboxId });
   if (error) {
-    // P0005 = the invitation turned terminal between claim and issue; the RPC already cancelled it.
+    // P0005 = the invitation turned terminal between claim and notice; the RPC already cancelled it.
     if (error.code === "P0005") return "cancelled";
-    console.error("issue_invitation_delivery_token error:", error.code);
+    console.error("issue_invitation_delivery_notice error:", error.code);
     await recordOutcome(admin, row.outboxId, row.deliveryGeneration, "retryPending", null, "unknown");
     return "retryPending";
   }
@@ -159,16 +168,6 @@ export async function deliverClaimedRow(
     return "failedPermanent";
   }
 
-  // ---- 3. SEND. rawToken and link are the only variables holding the secret. ----
-  let rawToken: string | null = typeof issued.raw_token === "string" ? issued.raw_token : null;
-  let link: string | null = rawToken ? buildLink(base, rawToken) : null;
-  rawToken = null; // no longer needed once the link is built
-
-  if (!link) {
-    await recordOutcome(admin, row.outboxId, generation, "retryPending", null, "unknown");
-    return "retryPending";
-  }
-
   const rendered = renderInvitationEmail({
     estateDisplayName: estateName,
     inviterDisplayName: inviterName,
@@ -176,6 +175,7 @@ export async function deliverClaimedRow(
     link,
   });
 
+  // ---- 3. SEND. ----
   const sender = deps.send ?? defaultSend;
   const outbound = {
     to: recipient,
@@ -185,24 +185,15 @@ export async function deliverClaimedRow(
     idempotencyKey,
   };
 
-  let result: ProviderResult;
-  try {
-    result = await sender(outbound, deps.transport);
+  let result = await sender(outbound, deps.transport);
 
-    // ★ THE ONE PLACE A SEND IS REPEATED, and the only place it is safe to. We are still inside the
-    //   invocation that minted the token, so the IDENTICAL message can go out under the IDENTICAL
-    //   idempotency key — if the first request did reach Resend, the key makes the second a no-op
-    //   rather than a duplicate email. Exactly one extra attempt: a second ambiguous answer means
-    //   the network is genuinely unreliable, and hammering it cannot produce certainty.
-    //
-    //   Once this function returns, the raw token is gone and this option disappears with it. That
-    //   is why no later drain retries an ambiguous row — it would have to mint a NEW token and
-    //   invalidate a link that may already be in the recipient's inbox.
-    if (result.outcome === "outcomeUncertain") {
-      result = await sender(outbound, deps.transport);
-    }
-  } finally {
-    link = null; // ★ cleared the moment the sends return, success or not
+  // ★ THE ONE PLACE A SEND IS REPEATED. An ambiguous first attempt is retried ONCE with the
+  //   IDENTICAL message under the IDENTICAL idempotency key — if the first request did reach
+  //   Resend, the key makes the second a no-op rather than a duplicate email. Exactly one extra
+  //   attempt: a second ambiguous answer means the network is genuinely unreliable, and hammering
+  //   it cannot produce certainty.
+  if (result.outcome === "outcomeUncertain") {
+    result = await sender(outbound, deps.transport);
   }
 
   // ---- 4. RECORD. ----
