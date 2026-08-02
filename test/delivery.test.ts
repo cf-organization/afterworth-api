@@ -12,7 +12,7 @@ import { captureConsole, jsonResponse, makeDb, makeFakeAdmin, makeTransport, MAX
 import type { ProviderResult } from "../lib/email/resendProvider.js";
 
 const OUTBOX_ID = "22222222-2222-4222-8222-222222222222";
-const ENTRY_URL = "https://invite.example.test/i";
+const ENTRY_URL = "https://app.example.test/invitations";
 
 beforeEach(() => {
   process.env.INVITATION_LINK_BASE_URL = ENTRY_URL;
@@ -286,7 +286,8 @@ describe("★ the email carries no secret at all", () => {
     expect(calls[0].text).toContain(ENTRY_URL);
     for (const body of [calls[0].html, calls[0].text]) {
       expect(body).not.toMatch(/[?&]token=/);
-      expect(body).not.toMatch(/\/i\/[0-9a-f]{16,}/);
+      // Nothing may follow the exact entry path — no segment, no slash, no fragment.
+      expect(body).not.toMatch(/\/invitations[/#?]\S/);
       expect(body).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     }
   });

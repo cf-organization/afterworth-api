@@ -9,7 +9,7 @@ const base = {
   estateDisplayName: "The Example Estate",
   inviterDisplayName: "Alex Example",
   expiresAt: new Date("2026-09-01T00:00:00Z"),
-  link: "https://invite.example.test/i",
+  link: "https://app.example.test/invitations",
 };
 
 const ALL_SHAPES = [

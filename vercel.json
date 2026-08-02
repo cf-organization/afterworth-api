@@ -15,7 +15,7 @@
   ],
   "headers": [
     {
-      "source": "/i",
+      "source": "/invitations",
       "headers": [
         { "key": "Content-Security-Policy", "value": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" },
         { "key": "Referrer-Policy", "value": "no-referrer" },
@@ -40,6 +40,6 @@
     }
   ],
   "rewrites": [
-    { "source": "/i", "destination": "/i/index.html" }
+    { "source": "/invitations", "destination": "/invitations/index.html" }
   ]
 }

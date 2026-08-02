@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const ROOT = path.resolve(__dirname, "..");
-const PAGE = fs.readFileSync(path.join(ROOT, "public", "i", "index.html"), "utf8");
+const PAGE = fs.readFileSync(path.join(ROOT, "public", "invitations", "index.html"), "utf8");
 
 /**
  * Comments must go before matching. The page's own header block ENUMERATES what it may not do
@@ -100,7 +100,7 @@ describe("★ the page is inert", () => {
 
 describe("★ served headers", () => {
   it("sets a restrictive CSP that forbids scripts outright", () => {
-    const csp = headersFor("/i")["Content-Security-Policy"] ?? "";
+    const csp = headersFor("/invitations")["Content-Security-Policy"] ?? "";
     expect(csp).toContain("default-src 'none'");
     expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
     expect(csp).toContain("frame-ancestors 'none'");
@@ -108,11 +108,11 @@ describe("★ served headers", () => {
   });
 
   it("sets Referrer-Policy: no-referrer at the edge as well as in the document", () => {
-    expect(headersFor("/i")["Referrer-Policy"]).toBe("no-referrer");
+    expect(headersFor("/invitations")["Referrer-Policy"]).toBe("no-referrer");
   });
 
   it("sets nosniff and denies framing", () => {
-    const h = headersFor("/i");
+    const h = headersFor("/invitations");
     expect(h["X-Content-Type-Options"]).toBe("nosniff");
     expect(h["X-Frame-Options"]).toBe("DENY");
   });
@@ -158,7 +158,9 @@ describe("association files", () => {
 
   it("scopes iOS matching to the entry path only, never the whole origin", () => {
     const components = AASA.applinks.details[0].components.map((c: Record<string, string>) => c["/"]);
-    expect(components).toEqual(["/i", "/i/"]);
+    // Exact path only — deliberately NOT the trailing-slash form, so AASA matches exactly what
+    // the mobile parser accepts. A URL the OS opens but the app rejects is worse than a web fallback.
+    expect(components).toEqual(["/invitations"]);
     expect(components).not.toContain("*");
   });
 
@@ -195,6 +197,9 @@ describe("★ the deployment cost is still zero functions", () => {
   });
 
   it("the rewrite points the bare /i path at the static file", () => {
-    expect(VERCEL.rewrites).toContainEqual({ source: "/i", destination: "/i/index.html" });
+    expect(VERCEL.rewrites).toContainEqual({
+      source: "/invitations",
+      destination: "/invitations/index.html",
+    });
   });
 });

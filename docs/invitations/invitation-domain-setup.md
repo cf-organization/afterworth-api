@@ -15,18 +15,22 @@ quietly:
 
 ---
 
-## Why a new host, and not `mail.minifam.com`
-
-`mail.minifam.com` is the Resend **sending** domain. Its DNS is owned by mail authentication —
-SPF, DKIM and DMARC — and an Apple associated domain binds a host to an app identity. Those are two
-unrelated trust decisions, and entangling them means a future mail-provider change risks breaking
-invitation links, or vice versa.
-
-Use a dedicated host. This document assumes:
+## Why a separate host from the sending domain
 
 ```
-invite.minifam.com
+app.afterworth.com          ← the clickable link (this document)
+mail.minifam.com            ← the Resend SENDING domain (unchanged)
 ```
+
+`mail.minifam.com` stays exactly as it is. Its DNS is owned by mail authentication — SPF, DKIM and
+DMARC — while an Apple associated domain binds a host to an app identity. Entangling the two means
+a future mail-provider change risks breaking invitation links, or vice versa.
+
+⚠️ **Worth a deliberate decision before sending:** the email will be *from* `@mail.minifam.com` but
+*link to* `app.afterworth.com`. Those are different registrable domains. Users are taught to treat
+that mismatch as a phishing signal, and some filters score it. Nothing here is technically broken —
+DMARC alignment concerns the From domain only — but if `afterworth.com` can also host the sending
+subdomain, matching them would be the stronger choice. Flagging rather than deciding.
 
 ---
 
@@ -34,7 +38,7 @@ invite.minifam.com
 
 Vercel dashboard → the **afterworth-api** project → Settings → Domains → Add.
 
-Enter `invite.minifam.com`. Vercel will then display the exact DNS record it wants.
+Enter `app.afterworth.com`. Vercel will then display the exact DNS record it wants.
 
 **Do not use a record from this document.** Vercel's target values change and are per-project; the
 dashboard is authoritative. It will show either a `CNAME` to a `*.vercel-dns.com` target or an `A`
@@ -42,7 +46,8 @@ record — take whichever it gives you.
 
 ## 2 · Create that record in Cloudflare
 
-Cloudflare dashboard → `minifam.com` → DNS → Add record, exactly as Vercel specified.
+Cloudflare dashboard → the **`afterworth.com`** zone → DNS → Add record, exactly as Vercel specified.
+(Note this is a different zone from `minifam.com`, which holds the mail records and is untouched.)
 
 ⚠️ **Set Proxy status to DNS only (grey cloud), not Proxied (orange cloud).** An orange-clouded
 record puts Cloudflare in front of Vercel, which breaks Vercel's domain verification and its
@@ -55,18 +60,18 @@ Vercel issues the certificate automatically once the record resolves. Then check
 
 ```sh
 # 1. The landing page renders, with the security headers attached
-curl -sI https://invite.minifam.com/i | grep -iE 'HTTP/|content-security-policy|referrer-policy|x-content-type'
+curl -sI https://app.afterworth.com/invitations | grep -iE 'HTTP/|content-security-policy|referrer-policy|x-content-type'
 
 # 2. Apple's file — MUST be application/json, and MUST have no file extension
-curl -sI https://invite.minifam.com/.well-known/apple-app-site-association | grep -iE 'HTTP/|content-type'
-curl -s  https://invite.minifam.com/.well-known/apple-app-site-association | python3 -m json.tool
+curl -sI https://app.afterworth.com/.well-known/apple-app-site-association | grep -iE 'HTTP/|content-type'
+curl -s  https://app.afterworth.com/.well-known/apple-app-site-association | python3 -m json.tool
 
 # 3. Android's file
-curl -s https://invite.minifam.com/.well-known/assetlinks.json | python3 -m json.tool
+curl -s https://app.afterworth.com/.well-known/assetlinks.json | python3 -m json.tool
 ```
 
 Expected: `200` on all three, `Content-Type: application/json` on both association files, and
-`Referrer-Policy: no-referrer` plus a `default-src 'none'` CSP on `/i`.
+`Referrer-Policy: no-referrer` plus a `default-src 'none'` CSP on `/invitations`.
 
 ## 4 · Substitute the two placeholders
 
@@ -94,11 +99,11 @@ assert the real shape, and redeploy so the corrected files are served.
 
 **iOS** — `app.json` → `expo.ios.associatedDomains`:
 ```json
-["applinks:invite.minifam.com"]
+["applinks:app.afterworth.com"]
 ```
 
 **Android** — `app.json` → `expo.android.intentFilters`, an autoVerify filter for
-`https://invite.minifam.com/i`.
+`https://app.afterworth.com/invitations`.
 
 Both require a **native rebuild** — they are baked into the binary at build time, so an OTA update
 cannot deliver them. That work lives in the mobile repository, not here.
@@ -108,7 +113,7 @@ cannot deliver them. That work lives in the mobile repository, not here.
 Vercel → afterworth-api → Settings → Environment Variables:
 
 ```
-INVITATION_LINK_BASE_URL=https://invite.minifam.com/i
+INVITATION_LINK_BASE_URL=https://app.afterworth.com/invitations
 ```
 
 **No token is appended, and none should be.** The worker uses this value verbatim as the link;
@@ -140,7 +145,7 @@ Do this with an address **you control**, never a real invitee:
 1. Create an invitation to your own address through `POST /api/invitations/create_owner`.
 2. Confirm the response reads `deliveryState: "queued"` or `"providerAccepted"` — **never
    `"delivered"`**; no such state exists.
-3. Check the inbox. The link must be exactly `https://invite.minifam.com/i` with nothing appended.
+3. Check the inbox. The link must be exactly `https://app.afterworth.com/invitations` with nothing appended.
 4. Tap it on a real iOS device and a real Android device. Verified links open the app directly;
    unverified ones show the landing page, which is the correct fallback, not a failure.
 5. Sign in as the invited address and confirm the invitation appears.

@@ -49,6 +49,13 @@ flow rather than carried through sign-up, email confirmation and MFA.
 
 ## The eleven recon questions
 
+> ⚠️ **Read Q1, Q2, Q5, Q6 and Q7 as a record of what was FOUND, not as the shipped design.** They
+> describe 0043's token-bearing delivery path as it existed at recon time. The confirmed
+> architecture is **token-free** — migration 0044 replaced the issue step, the link carries no
+> secret, and `INVITATION_LINK_BASE_URL` is `https://app.afterworth.com/invitations` with nothing
+> appended. See `invitation-link-architecture.md`. This section is preserved because the reasoning
+> that led to the change is the reasoning that justifies it.
+
 ### 1 · Does 0043 require a secret-bearing link?
 
 **Yes, as currently written.** `issue_invitation_delivery_token()` mints a 64-hex-character secret,
@@ -141,7 +148,7 @@ handling code at all** — no `expo-linking` usage, no `getInitialURL`, no `useU
 
 **Yes.** Vercel counts *Serverless Functions* — files under `api/` — toward the Hobby limit of 12,
 which this deployment is exactly at. Files under `public/` are served as **static assets** and cost
-no function slot. A static `public/i/index.html` plus a `vercel.json` rewrite therefore adds a
+no function slot. A static `public/invitations/index.html` plus a `vercel.json` rewrite therefore adds a
 landing surface at **zero function cost**.
 
 The same mechanism serves the two link-verification files, which must be static and
@@ -154,10 +161,10 @@ The same mechanism serves the two link-verification files, which must be static 
 Proposed, **not to be set until the route is deployed and returns 200**:
 
 ```
-INVITATION_LINK_BASE_URL=https://invite.minifam.com/i
+INVITATION_LINK_BASE_URL=https://app.afterworth.com/invitations
 ```
 
-producing `https://invite.minifam.com/i/<64-hex-token>`.
+producing `https://app.afterworth.com/invitations`.
 
 `mail.minifam.com` is deliberately **not** reused as the clickable origin: it is the Resend sending
 domain, its DNS is owned by mail authentication (SPF/DKIM/DMARC), and binding an Apple associated
