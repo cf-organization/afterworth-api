@@ -20,11 +20,11 @@ const email = {
 
 beforeEach(() => {
   process.env.RESEND_API_KEY = FIXTURE_KEY;
-  process.env.INVITATION_FROM_ADDRESS = "AfterWorth <invitations@example.test>";
+  process.env.INVITATION_FROM_EMAIL = "AfterWorth <invitations@example.test>";
 });
 afterEach(() => {
   delete process.env.RESEND_API_KEY;
-  delete process.env.INVITATION_FROM_ADDRESS;
+  delete process.env.INVITATION_FROM_EMAIL;
 });
 
 describe("outcome mapping is honest", () => {

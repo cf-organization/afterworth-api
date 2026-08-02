@@ -2,12 +2,24 @@
 
 Decided from the evidence in `invitation-link-contract.md`. Applies to both repositories.
 
+> **Domain correction, 2026-08-02.** This record originally named `app.afterworth.com` as the
+> canonical host and `mail.minifam.com` as the sender. Both are superseded. The canonical domain is
+> **`after-worth.com`** — link host `app.after-worth.com`, sending domain `mail.after-worth.com`.
+>
+> The correction was not cosmetic: `afterworth.com` is registered to HugeDomains.com and parked for
+> sale, so it could never have served an association file. The hostnames throughout this document
+> have been updated to the canonical values. **The architecture itself is unchanged** — token-free,
+> identity-authorized, exact-equality parsing. Only the hostnames moved.
+>
+> A consequence worth recording: the sender and the link now share one registrable domain, which
+> closes the from/link mismatch this document previously listed as an accepted risk.
+
 ---
 
 ## Selected: **Architecture B — HTTPS landing page with an explicit open-app action**
 
 ```
-https://app.afterworth.com/invitations
+https://app.after-worth.com/invitations
 ```
 
 Served as a **static asset** from the existing `afterworth-api` Vercel project (`public/invitations/`), which
@@ -87,7 +99,7 @@ capability is not lost, because it never existed.
 ## Final URL shape
 
 ```
-https://app.afterworth.com/invitations
+https://app.after-worth.com/invitations
 └──┬──┘ └────────┬───────┘└─────┬─────┘
  https      exact host      exact path — nothing follows
 ```
@@ -100,16 +112,16 @@ Rules, all enforced by the mobile parser before anything else happens:
 | Rule | Reason |
 |---|---|
 | Scheme must be `https` | `http` would allow a network attacker to redirect the entry point |
-| Host equality against a literal allowlist, lowercased | Not `endsWith` — `app.afterworth.com.attacker.tld` and `evil-app.afterworth.com` must both fail |
+| Host equality against a literal allowlist, lowercased | Not `endsWith` — `app.after-worth.com.attacker.tld` and `evil-app.after-worth.com` must both fail |
 | Path exactly `/invitations` | Rejects `/invitations/`, `/invitation`, `/invite`, `/i`, and any child segment |
 | No query string, no fragment | Nothing in the contract uses them, so their presence means the URL was tampered with or is not ours |
-| No userinfo, no explicit port | `https://app.afterworth.com@evil.tld/invitations` must fail |
+| No userinfo, no explicit port | `https://app.after-worth.com@evil.tld/invitations` must fail |
 | Nothing is read *out* of the URL | There is nothing in it to read. The parser returns a boolean intent, not data. |
 
 The parser's entire output is "this was our invitation entry point, or it was not". No authority,
 no identifier, and no string is carried forward from the URL into the app.
 
-`mail.minifam.com` is **not** the clickable origin — it is the Resend sending domain, and coupling
+`mail.after-worth.com` is **not** the clickable origin — it is the Resend sending domain, and coupling
 an Apple associated domain to mail-authentication DNS would entangle two unrelated trust decisions.
 
 ---
@@ -128,7 +140,7 @@ there is no secret to leak, persist, replay, or steal.**
 | T4 | Attacker with the URL learns who was invited, or to which estate | **Neutralised.** The page is a single static file, byte-identical for every visitor, and the app never calls `invitation_preview`. There is no lookup to perform. |
 | T5 | Attacker with the URL accepts the invitation | **Neutralised by P0006.** Acceptance requires an authenticated session whose *verified* email or phone matches the invitee. The URL grants nothing toward that. |
 | T6 | Link-preview bot or mail scanner fetches the URL and consumes the invitation | **Neutralised.** The page performs no backend call. Nothing is consumed by fetching it. |
-| T7 | Host confusion — `app.afterworth.com.evil.tld`, uppercase, unicode, userinfo | **Mitigated by the parser.** Exact lowercased host equality against a literal allowlist; no suffix matching; userinfo and ports rejected. |
+| T7 | Host confusion — `app.after-worth.com.evil.tld`, uppercase, unicode, userinfo | **Mitigated by the parser.** Exact lowercased host equality against a literal allowlist; no suffix matching; userinfo and ports rejected. |
 | T8 | Path confusion — `/invitations/../admin`, `/invitations/<injected>` | **Mitigated by the parser.** Exact path equality, not a prefix match. Any child segment is rejected. |
 | T9 | Open redirect via a return parameter | **Structurally impossible.** No such parameter exists, and any query string is rejected outright. |
 | T10 | A recipient signs in with the wrong address and sees someone else's invitation | **Neutralised by P0006** on `resolve`, `accept` and `decline` alike. They see nothing, indistinguishably from having no invitation. |
@@ -144,7 +156,7 @@ there is no secret to leak, persist, replay, or steal.**
   AfterWorth exists. Acceptance still requires controlling the invited identity, which for an email
   invitation means controlling that mailbox — a compromise that is out of scope for any design that
   delivers by email at all.
-- **Link verification requires DNS and hosting that do not exist yet.** Until `app.afterworth.com`
+- **Link verification requires DNS and hosting that do not exist yet.** Until `app.after-worth.com`
   resolves and the association files are served with real values in place of the placeholders, only
   the development scheme works. This is why `INVITATION_LINK_BASE_URL` stays unset and no real send
   is enabled.
@@ -157,7 +169,7 @@ there is no secret to leak, persist, replay, or steal.**
 |---|---|
 | Architecture A alone | Fails the uninstalled-recipient case, which is the majority case for an invitation |
 | Architecture C for production | Any app can claim the scheme (T1) |
-| `mail.minifam.com` as the click origin | Couples Apple/Android association to mail-auth DNS |
+| `mail.after-worth.com` as the click origin | Couples Apple/Android association to mail-auth DNS |
 | Any token, id, or hash in the URL | Nothing needs it, and everything that carries it can leak it |
 | Building review/accept/decline on `bind_invitation_token` | It has no decline, and it accepts as a side effect of inspection |
 | Calling `invitation_preview` pre-auth for a richer landing page | Discloses estate name, inviter name, role and a contact hint to an unauthenticated caller (T4) |

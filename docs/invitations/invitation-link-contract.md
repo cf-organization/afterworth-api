@@ -8,6 +8,21 @@ Recon performed against the migration files, the captured function sources in `d
 live PostgREST schema, and `api/invitations/[action].ts`. Nothing here is inferred from
 documentation alone.
 
+> **HISTORICAL RECORD — read as a snapshot, not as current configuration.**
+>
+> This document captures what the backend looked like at recon time, before migration 0044 and
+> before the domain correction. Two things have since changed:
+>
+> 1. **Token-free delivery shipped.** The token-bearing path described in Q1, Q2, Q5, Q6 and Q7 was
+>    replaced by 0044. The link carries no secret.
+> 2. **The canonical domain changed.** Hostnames here were updated in place from
+>    `app.afterworth.com` / `mail.minifam.com` to `app.after-worth.com` / `mail.after-worth.com`, so
+>    that no reader copies a decommissioned value out of this file. The *reasoning* recorded against
+>    each question is preserved verbatim.
+>
+> Current configuration lives in `invitation-domain-setup.md`. Current architecture lives in
+> `invitation-link-architecture.md`.
+
 ---
 
 ## ★ The finding that changes the design
@@ -52,7 +67,7 @@ flow rather than carried through sign-up, email confirmation and MFA.
 > ⚠️ **Read Q1, Q2, Q5, Q6 and Q7 as a record of what was FOUND, not as the shipped design.** They
 > describe 0043's token-bearing delivery path as it existed at recon time. The confirmed
 > architecture is **token-free** — migration 0044 replaced the issue step, the link carries no
-> secret, and `INVITATION_LINK_BASE_URL` is `https://app.afterworth.com/invitations` with nothing
+> secret, and `INVITATION_LINK_BASE_URL` is `https://app.after-worth.com/invitations` with nothing
 > appended. See `invitation-link-architecture.md`. This section is preserved because the reasoning
 > that led to the change is the reasoning that justifies it.
 
@@ -161,12 +176,12 @@ The same mechanism serves the two link-verification files, which must be static 
 Proposed, **not to be set until the route is deployed and returns 200**:
 
 ```
-INVITATION_LINK_BASE_URL=https://app.afterworth.com/invitations
+INVITATION_LINK_BASE_URL=https://app.after-worth.com/invitations
 ```
 
-producing `https://app.afterworth.com/invitations`.
+producing `https://app.after-worth.com/invitations`.
 
-`mail.minifam.com` is deliberately **not** reused as the clickable origin: it is the Resend sending
+`mail.after-worth.com` is deliberately **not** reused as the clickable origin: it is the Resend sending
 domain, its DNS is owned by mail authentication (SPF/DKIM/DMARC), and binding an Apple associated
 domain to it would couple two unrelated trust decisions.
 
