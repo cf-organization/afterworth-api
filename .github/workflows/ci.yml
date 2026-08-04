@@ -1,0 +1,75 @@
+name: CI
+
+# The repository had no CI before this change: the only checks on a PR were Vercel's deployment
+# ones, which build but never run a test or look for a leaked credential. Adding invitation
+# delivery — which handles a provider API key and mints invitation tokens — is the wrong moment to
+# keep relying on that.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The deployment-budget and "resolve is unchanged" audits diff against origin/main.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Tests
+        run: npm test
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pattern scan for the credential shapes this project actually handles. Deliberately not a
+      # generic entropy scanner: those drown a small repo in false positives and get ignored, which
+      # is worse than no scan. test/ is excluded only for the `re_` fixture, which is a literal
+      # non-key string asserted on by the provider tests.
+      - name: Scan for credential shapes
+        run: |
+          set -uo pipefail
+          fail=0
+          scan() {
+            local label="$1" pattern="$2"
+            local hits
+            # package-lock.json is excluded: it is full of base64 sha512 integrity hashes, which
+            # collide with token shapes and produce noise no reviewer will keep reading.
+            hits=$(git grep -nIE "$pattern" -- . ':!test/**' ':!package-lock.json' ':!.github/workflows/ci.yml' || true)
+            if [ -n "$hits" ]; then
+              echo "::error::possible $label committed:"
+              echo "$hits"
+              fail=1
+            fi
+          }
+          scan "Resend API key"        're_[A-Za-z0-9]{20,}'
+          scan "Supabase secret key"   'sb_secret_[A-Za-z0-9_-]{10,}'
+          scan "Supabase service JWT"  'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.'
+          scan "Upstash token"         'AY[A-Za-z0-9_-]{30,}'
+          scan "generic private key"   'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+          exit $fail
+
+      - name: Assert no .env file is tracked
+        run: |
+          tracked=$(git ls-files | grep -E '(^|/)\.env(\..*)?$' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::env file is tracked in git: $tracked"
+            exit 1
+          fi
