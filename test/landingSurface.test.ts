@@ -169,13 +169,28 @@ describe("association files", () => {
     expect(LINKS[0].target.package_name).toBe("com.afterworth.mobile");
   });
 
-  it("★ still carries deployment placeholders — link verification CANNOT work until replaced", () => {
-    // Deliberately asserted as PRESENT. These are unknowable from the repository (Apple Team ID,
-    // Android signing fingerprint), and a silently-wrong value would fail verification with no
-    // error anywhere. This test is the reminder; docs/invitations/invitation-domain-setup.md is
-    // the procedure. Flip both assertions when the real values land.
-    expect(AASA.applinks.details[0].appIDs[0]).toContain("REPLACE_WITH_APPLE_TEAM_ID");
-    expect(LINKS[0].target.sha256_cert_fingerprints[0]).toContain("REPLACE_WITH_ANDROID");
+  /**
+   * ★ INVERTED 2026-08-03, when the real values landed. This assertion used to require the
+   * placeholders to be PRESENT — it was the reminder that link verification could not work yet.
+   * It now requires the opposite, because the failure mode has moved: a placeholder reaching
+   * production is silent. Apple and Google fetch these files themselves, and a malformed appID or
+   * fingerprint yields no error anywhere in the app — universal links simply never open, which is
+   * indistinguishable from a user who has not installed the app.
+   *
+   * Shape, not literal equality: pinning the exact Team ID here would only assert the file equals
+   * itself. The shapes below are what Apple and Google actually reject.
+   */
+  it("★ carries no deployment placeholder — a placeholder in production fails silently", () => {
+    const appId = AASA.applinks.details[0].appIDs[0];
+    const fingerprint = LINKS[0].target.sha256_cert_fingerprints[0];
+
+    expect(appId).not.toMatch(/REPLACE_WITH/i);
+    expect(fingerprint).not.toMatch(/REPLACE_WITH/i);
+
+    // `<TEAMID>.<bundle id>` — Apple Team IDs are exactly 10 uppercase alphanumerics.
+    expect(appId).toMatch(/^[A-Z0-9]{10}\.com\.afterworth\.mobile$/);
+    // 32 colon-separated uppercase hex pairs, as `keytool`/Play Console print them.
+    expect(fingerprint).toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
   });
 });
 
@@ -196,10 +211,49 @@ describe("★ the deployment cost is still zero functions", () => {
     expect(fs.existsSync(path.join(ROOT, "public"))).toBe(true);
   });
 
-  it("the rewrite points the bare /i path at the static file", () => {
+  // Named for `/invitations`, not the retired `/i` short path — the old name outlived the route it
+  // described and read as if a second, undefended entry point still existed.
+  it("the rewrite points /invitations at the static file", () => {
     expect(VERCEL.rewrites).toContainEqual({
       source: "/invitations",
       destination: "/invitations/index.html",
     });
+    // The retired short path must not come back: it was never in AASA, so an OS following it would
+    // land on the web page while the app sat installed and unused.
+    const sources = (VERCEL.rewrites ?? []).map((r: { source: string }) => r.source);
+    expect(sources).not.toContain("/i");
+  });
+});
+
+/**
+ * The deployment shape itself. Every 404 this surface has produced in practice came from a build
+ * that simply did not contain these files — not from a bad rewrite — so the files' presence is
+ * asserted directly rather than inferred from the routes that serve them.
+ */
+describe("★ the static output actually contains the deployed surface", () => {
+  it("ships the landing page and both association files", () => {
+    for (const rel of [
+      ["public", "invitations", "index.html"],
+      ["public", ".well-known", "apple-app-site-association"],
+      ["public", ".well-known", "assetlinks.json"],
+    ]) {
+      expect(fs.existsSync(path.join(ROOT, ...rel)), rel.join("/")).toBe(true);
+    }
+  });
+
+  it("the association files are extensionless/JSON exactly as Apple and Google fetch them", () => {
+    // Apple requires the AASA to have NO extension and be served as JSON. A stray `.json` here
+    // would still deploy, still return 200, and still never verify.
+    expect(fs.existsSync(path.join(ROOT, "public", ".well-known", "apple-app-site-association.json"))).toBe(false);
+    expect(() => JSON.parse(fs.readFileSync(path.join(ROOT, "public", ".well-known", "apple-app-site-association"), "utf8"))).not.toThrow();
+    expect(() => JSON.parse(fs.readFileSync(path.join(ROOT, "public", ".well-known", "assetlinks.json"), "utf8"))).not.toThrow();
+  });
+
+  it("★ the canonical production host is app.after-worth.com", () => {
+    // Pinned so a future edit cannot quietly reintroduce a host the mobile parser rejects. The
+    // mobile client matches this host by exact equality; there is no prefix or suffix tolerance.
+    const setup = fs.readFileSync(path.join(ROOT, "docs", "invitations", "invitation-domain-setup.md"), "utf8");
+    expect(setup).toContain("https://app.after-worth.com/invitations");
+    expect(setup).toContain("invitations@mail.after-worth.com");
   });
 });

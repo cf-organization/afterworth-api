@@ -16,15 +16,18 @@ nameservers). Every host below lives in that one zone.
 | Invitation sender | `AfterWorth <invitations@mail.after-worth.com>` |
 | Future API host, if introduced | `api.after-worth.com` |
 
-Two values in the repository are deliberate placeholders that only you can supply. Until both are
-replaced, iOS and Android link verification **cannot** work — and they fail silently, with no error
-surfaced anywhere. A test asserts the placeholders are still present so this cannot be forgotten
-quietly:
+Two values in the repository were deliberate placeholders that only the operator could supply.
+**Both were substituted on 2026-08-03** and are now committed:
 
-| File | Placeholder | Where the real value comes from |
+| File | Value now committed | Source |
 |---|---|---|
-| `public/.well-known/apple-app-site-association` | `REPLACE_WITH_APPLE_TEAM_ID` | Apple Developer → Membership → Team ID |
-| `public/.well-known/assetlinks.json` | `REPLACE_WITH_ANDROID_SIGNING_SHA256_FINGERPRINT` | The SHA-256 of the signing cert that actually ships the build |
+| `public/.well-known/apple-app-site-association` | real Apple Team ID, prefixing `.com.afterworth.mobile` | Apple Developer → Membership → Team ID |
+| `public/.well-known/assetlinks.json` | real SHA-256 signing fingerprint | The cert that actually ships the build |
+
+The gate in `test/landingSurface.test.ts` was **inverted** at the same time. It used to assert the
+placeholders were still present; it now asserts neither reappears and that both match the shapes
+Apple and Google accept. The failure mode moved: a placeholder that reaches production is silent —
+the file still returns `200`, and universal links simply never open.
 
 ---
 
@@ -136,8 +139,10 @@ Use the **production** signing certificate. A debug-keystore fingerprint verifie
 and nothing your users install. If you ship through Play App Signing, use the fingerprint Google
 Play reports under Release → Setup → App signing, not the upload key.
 
-Then flip the two assertions in `test/landingSurface.test.ts` from `toContain("REPLACE_WITH_…")` to
-assert the real shape, and redeploy so the corrected files are served.
+**Both substitutions are done and committed**, and the `test/landingSurface.test.ts` assertions are
+already inverted to reject any placeholder that reappears. What remains is purely a deployment
+step: these files exist only on the feature branch, so they reach users only once the PR stack is
+merged and a production deployment is built from `main`.
 
 ## 6 · Configure the app side
 
