@@ -50,8 +50,16 @@ begin
   assert v_sig = 'p_estate uuid, p_invitation uuid',
     '0.2 signature changed — 0046 must not alter the contract. Got: ' || v_sig;
   assert v_secdef, '0.3 SECURITY DEFINER was lost — the owner gate depends on it';
-  assert array_to_string(v_config, ',') like '%search_path=public, extensions%',
-    '0.4 search_path is no longer pinned. Got: ' || coalesce(array_to_string(v_config, ','), '(null)');
+  -- ★ PINNED, AND PINNED TO THIS FUNCTION'S OWN VALUE. 0042 gives revoke `search_path to 'public'`
+  -- — NOT the `public, extensions` that create_estate_invitation and issue_invitation_delivery use,
+  -- because only those two need digest() from the extensions schema. Asserting the wrong literal
+  -- here failed against a perfectly correct database; the security property is that the path is
+  -- pinned at all and resolves `public` first, so a DEFINER function can never inherit a
+  -- caller-controlled search_path. Written to survive a future migration legitimately appending a
+  -- schema, while still failing if the pin is removed.
+  assert array_to_string(v_config, ',') like '%search_path=public%',
+    '0.4 search_path is no longer pinned to public first. Got: '
+    || coalesce(array_to_string(v_config, ','), '(null)');
   assert v_acl like '%authenticated=X%', '0.5 authenticated lost EXECUTE. ACL: ' || v_acl;
   assert v_acl not like '%anon=X%', '0.5 anon must NOT hold EXECUTE. ACL: ' || v_acl;
 
