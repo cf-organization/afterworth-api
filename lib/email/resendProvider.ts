@@ -78,7 +78,12 @@ function readApiKey(): string | null {
 
 function senderAddress(): string {
   // A non-secret. Kept in env so staging and production differ without a code change.
-  return (process.env.INVITATION_FROM_ADDRESS ?? "").trim() || "AfterWorth <invitations@afterworth.app>";
+  //
+  // ★ The fallback must be the canonical production sender. It previously pointed at
+  // `invitations@afterworth.app` — a domain that is not, and never was, verified in Resend. An
+  // unverified From address is rejected 422, which classifyStatus maps to failedPermanent, so an
+  // unset env var burned the outbox row instead of surfacing a configuration error.
+  return (process.env.INVITATION_FROM_EMAIL ?? "").trim() || "AfterWorth <invitations@mail.after-worth.com>";
 }
 
 /** HTTP status → outcome. The rule is simply whether Resend answered, and whether it can ever succeed. */

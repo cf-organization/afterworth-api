@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "67P9PA6FSQ.com.afterworth.mobile"
+        ],
+        "components": [
+          {
+            "/": "/invitations",
+            "comment": "Invitation entry point. Exact path only \u2014 no trailing slash, no children."
+          }
+        ]
+      }
+    ]
+  }
+}

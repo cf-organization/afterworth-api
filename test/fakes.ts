@@ -48,8 +48,9 @@ export interface FakeOutboxRow {
 export interface FakeDb {
   outbox: FakeOutboxRow[];
   invitations: FakeInvitation[];
-  /** Every raw token this fake ever minted — so a test can grep artifacts for all of them. */
-  mintedTokens: string[];
+  /** Snapshots of invitations.token_hash taken at each notice. The token-free path must leave it
+   *  untouched, so every entry should be identical to the fixture's original. */
+  tokenHashReads: string[];
   /** Rows currently held by an in-flight claim, mirroring `for update skip locked`. */
   locked: Set<string>;
 }
@@ -89,7 +90,7 @@ export function makeDb(overrides: Partial<FakeDb> = {}): FakeDb {
   return {
     outbox: overrides.outbox ?? [row],
     invitations: overrides.invitations ?? [invitation],
-    mintedTokens: [],
+    tokenHashReads: [],
     locked: new Set(),
   };
 }
@@ -102,8 +103,6 @@ function isClaimable(r: FakeOutboxRow, now: Date): boolean {
   }
   return false;
 }
-
-let tokenCounter = 0;
 
 export function makeFakeAdmin(db: FakeDb): SupabaseClient {
   const rpc = async (name: string, args: Record<string, unknown>) => {
@@ -137,7 +136,9 @@ export function makeFakeAdmin(db: FakeDb): SupabaseClient {
       return { data: claimed, error: null };
     }
 
-    if (name === "issue_invitation_delivery_token") {
+    // 0044's TOKEN-FREE issue step. Same guards, same generation/key behaviour as 0043's token
+    // version — minus the secret. Crucially it must not touch invitations.token_hash.
+    if (name === "issue_invitation_delivery_notice") {
       const r = db.outbox.find((x) => x.id === args.p_outbox_id);
       if (!r || r.status !== "processing") {
         return { data: null, error: { code: "P0002", message: "outbox_entry_not_claimed" } };
@@ -152,14 +153,13 @@ export function makeFakeAdmin(db: FakeDb): SupabaseClient {
       r.provider_message_id = null;
       r.failure_class = null;
 
-      const rawToken = `tok_${++tokenCounter}_${"f".repeat(56)}`;
-      db.mintedTokens.push(rawToken);
-      inv.token_hash = `hash-of-${rawToken}`; // only the hash is stored, as in SQL
+      // The hash is snapshotted, never written. A test compares before/after to prove the notice
+      // path leaves any previously issued link alone.
+      db.tokenHashReads.push(inv.token_hash);
 
       return {
         data: [{
           invitation_id: inv.id,
-          raw_token: rawToken,
           delivery_generation: r.delivery_generation,
           idempotency_key: r.idempotency_key,
           invitee_email: inv.invitee_email,
@@ -170,6 +170,13 @@ export function makeFakeAdmin(db: FakeDb): SupabaseClient {
         }],
         error: null,
       };
+    }
+
+    // 0043's minter is retained in the database for backward compatibility, but the production
+    // orchestrator must never reach it. Throwing here turns a regression into a test failure
+    // rather than a silently-minted secret.
+    if (name === "issue_invitation_delivery_token") {
+      throw new Error("issue_invitation_delivery_token must not be called by the token-free flow");
     }
 
     if (name === "record_invitation_delivery_outcome") {

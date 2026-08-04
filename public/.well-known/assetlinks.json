@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.afterworth.mobile",
+      "sha256_cert_fingerprints": ["D5:9F:D1:45:06:D5:BF:17:26:F3:57:D1:C3:8B:92:E4:6C:75:F1:03:BA:BD:68:60:2C:32:5B:D1:39:8D:50:26"]
+    }
+  }
+]

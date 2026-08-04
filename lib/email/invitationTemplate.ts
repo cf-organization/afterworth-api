@@ -19,11 +19,18 @@
  * ★ WHAT IT MAY NOT CLAIM. Nothing here says delivered, received, opened, or accepted. The
  * recipient is being asked, not informed.
  *
- * ★ THE LINK CARRIES THE RAW TOKEN, and that is the verified contract, not a convenience: the
- * recipient path (`invitation_preview(p_token)` / `bind_invitation_token(p_token)`) takes the raw
- * token as its only input. There is no token-free recipient entry point to link to. The token
- * appears here, in transit, and nowhere else — not in the outbox, not in provider metadata, not in
- * logs, not in any response.
+ * ★ THE LINK CARRIES NO SECRET. Every recipient receives the IDENTICAL URL — a plain entry point
+ * with no token, no invitation id, and no per-person path segment. That is possible because
+ * authority is IDENTITY, not possession: accept_invitation, decline_invitation and
+ * bind_invitation_token all require the caller's verified email or phone to match the invitee
+ * (P0006), and POST /api/invitations/resolve surfaces pendingInvitations by that same identity.
+ *
+ * So this message's whole job is to say "sign in and you will find it waiting". A stolen copy of
+ * the email grants nothing, because the URL inside it grants nothing.
+ *
+ * One functional consequence: the copy must tell the recipient to sign in with THIS address, since
+ * that address is what matches them to the invitation. They already know their own address, so
+ * saying so discloses nothing.
  */
 
 export interface InvitationEmailInput {
@@ -85,9 +92,13 @@ export function renderInvitationEmail(input: InvitationEmailInput): RenderedEmai
 
   // Says what happens NEXT and nothing about what is behind the door. The recipient decides after
   // seeing the invitation, and only then does anything become visible to them.
+  //
+  // "with this email address" is FUNCTIONAL, not decoration: the invitation is matched to the
+  // caller's verified address, so signing in with a different one finds nothing. Saying it plainly
+  // here is the difference between a recipient who gets in and one who thinks the link is broken.
   const body = [
     "AfterWorth helps people keep estate information organized and private.",
-    "Opening the link below shows you who invited you and what you are being asked to join. You can accept or decline from there — nothing is shared with you until you accept.",
+    "Open AfterWorth and sign in with this email address. Your invitation will be waiting, and you can read it and accept or decline from there — nothing is shared with you until you accept.",
     `This invitation expires on ${expiry}.`,
     "If you were not expecting this, you can ignore this message and nothing will happen.",
   ];
@@ -111,7 +122,7 @@ export function renderInvitationEmail(input: InvitationEmailInput): RenderedEmai
 <p style="font-size:16px;line-height:1.6;margin:0 0 16px;color:#111820;">${eBody[0]}</p>
 <p style="font-size:16px;line-height:1.6;margin:0 0 24px;color:#111820;">${eBody[1]}</p>
 <p style="margin:0 0 28px;">
-<a href="${eLink}" style="display:inline-block;background:#0c7489;color:#ffffff;font-size:16px;font-weight:600;text-decoration:none;padding:14px 28px;border-radius:8px;">View your invitation</a>
+<a href="${eLink}" style="display:inline-block;background:#0c7489;color:#ffffff;font-size:16px;font-weight:600;text-decoration:none;padding:14px 28px;border-radius:8px;">Open AfterWorth</a>
 </p>
 <p style="font-size:15px;line-height:1.6;margin:0 0 12px;color:#586472;">${eBody[2]}</p>
 <p style="font-size:15px;line-height:1.6;margin:0 0 24px;color:#586472;">${eBody[3]}</p>
@@ -129,7 +140,7 @@ export function renderInvitationEmail(input: InvitationEmailInput): RenderedEmai
     "",
     body[1],
     "",
-    "View your invitation:",
+    "Open AfterWorth:",
     input.link,
     "",
     body[2],
