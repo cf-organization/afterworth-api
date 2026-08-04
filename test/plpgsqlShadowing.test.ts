@@ -32,7 +32,10 @@ interface Fn {
   readonly file: string;
   readonly name: string;
   readonly outs: readonly string[];
+  /** Comment- and literal-scrubbed: used for AMBIGUITY detection, where literals are noise. */
   readonly body: string;
+  /** Raw body: used for LITERAL-shape assertions, where the scrubber would erase the evidence. */
+  readonly raw: string;
 }
 
 /** Strip `--` comments and single-quoted literals so neither can produce a false hit. */
@@ -56,7 +59,8 @@ function collectFunctions(): Fn[] {
       // Body from `begin` onward: the declare block legitimately names things.
       const raw = m[4];
       const begin = raw.indexOf("\nbegin");
-      out.push({ file, name: m[1], outs, body: scrub(begin >= 0 ? raw.slice(begin) : raw) });
+      const sliced = begin >= 0 ? raw.slice(begin) : raw;
+      out.push({ file, name: m[1], outs, body: scrub(sliced), raw: sliced });
     }
   }
   return out;
@@ -118,7 +122,7 @@ describe("★ no bare OUT-variable reference survives in an ambiguous position",
 });
 
 describe("★ detection sanity — the matcher would catch both real defects", () => {
-  const fake = (outs: string[], body: string): Fn => ({ file: "x.sql", name: "public.f", outs, body });
+  const fake = (outs: string[], body: string): Fn => ({ file: "x.sql", name: "public.f", outs, body, raw: body });
 
   it("catches the 0045 defect shape (bare expires_at in a predicate)", () => {
     const hits = ambiguousHits(
@@ -164,6 +168,10 @@ describe("★ the two known fixes are pinned by shape, not by hope", () => {
     const all = FUNCTIONS.filter((f) => f.name === name);
     return all[all.length - 1]?.body ?? "";
   };
+  const finalRaw = (name: string): string => {
+    const all = FUNCTIONS.filter((f) => f.name === name);
+    return all[all.length - 1]?.raw ?? "";
+  };
 
   it("create_estate_invitation qualifies its expiry predicate (0045)", () => {
     const b = finalBody("public.create_estate_invitation");
@@ -172,8 +180,24 @@ describe("★ the two known fixes are pinned by shape, not by hope", () => {
 
   it("revoke_estate_invitation qualifies its outbox predicate (0046)", () => {
     const b = finalBody("public.revoke_estate_invitation");
+    // The property is ALIAS-QUALIFICATION, not the operator. 0047 changed the status comparison
+    // from `= 'pending'` to `in ('queued','retryPending')` to match the vocabulary 0043 introduced;
+    // pinning `=` would have failed on a correct fix.
     expect(b).toMatch(/ob\.invitation_id\s*=/);
-    expect(b).toMatch(/ob\.status\s*=/);
+    expect(b).toMatch(/ob\.status\s*(=|in)\b/);
+  });
+
+  it("revoke cancels the DELIVERABLE outbox set using 0043's vocabulary (0047)", () => {
+    // RAW body: `scrub()` blanks quoted literals for the ambiguity scan, which would erase exactly
+    // the status names this assertion exists to check.
+    const b = finalRaw("public.revoke_estate_invitation");
+    // 'pending' and 'failed' ceased to exist in 0043; using either makes the cancellation a
+    // silent no-op, which is exactly how this shipped.
+    expect(b).toMatch(/status\s*=\s*'cancelled'/);
+    expect(b).toMatch(/'queued'/);
+    expect(b).toMatch(/'retryPending'/);
+    expect(b).not.toMatch(/ob\.status\s*=\s*'pending'/);
+    expect(b).not.toMatch(/set status\s*=\s*'failed'/);
   });
 
   it("extend and redelivery use their OUT names only in safe positions", () => {

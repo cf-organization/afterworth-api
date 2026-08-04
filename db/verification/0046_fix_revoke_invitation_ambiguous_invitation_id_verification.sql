@@ -170,9 +170,14 @@ begin
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner::text)::text, true);
   perform public.revoke_estate_invitation(v_estate, v_inv);
 
-  -- 13 · the revoked invitation's queued delivery is cancelled.
-  assert (select status from public.invitation_delivery_outbox where id = v_ob) = 'failed',
-    '4.1 a queued delivery for the revoked invitation must be cancelled';
+  -- 13 · ★ the revoked invitation's queued delivery is cancelled — REQUIRES 0047.
+  --      0042 wrote this statement against the pre-0043 vocabulary (`= 'pending'` → `'failed'`).
+  --      0043 replaced that vocabulary, so the predicate matched nothing and the cancellation was a
+  --      silent no-op: the drain still sent the email for a revoked invitation. This assertion is
+  --      what surfaced it, and it fails until 0047 is applied.
+  assert (select status from public.invitation_delivery_outbox where id = v_ob) = 'cancelled',
+    '4.1 a queued delivery for the revoked invitation must be cancelled (is 0047 applied?). Got: '
+    || coalesce((select status from public.invitation_delivery_outbox where id = v_ob), '(null)');
   assert (select last_error from public.invitation_delivery_outbox where id = v_ob) = 'invitation_revoked',
     '4.2 the cancellation reason must be recorded';
 
@@ -180,6 +185,12 @@ begin
   --      protects: a mis-scoped UPDATE would cancel every queued email on the estate.
   assert (select status from public.invitation_delivery_outbox where id = v_ob_other) = 'queued',
     '4.3 ★ an unrelated invitation''s queued delivery must NOT be cancelled';
+
+  -- A delivery already past sending must be left alone: its email has gone, and rewriting it would
+  -- erase history and imply a recall that did not happen.
+  assert (select count(*) from public.invitation_delivery_outbox
+          where invitation_id = v_inv and status = 'providerAccepted') = 0,
+    '4.5 fixture sanity: this row was queued, never provider-accepted';
 
   -- 21 · revoke inserts NO new delivery row — it sends no email.
   assert (select count(*) from public.invitation_delivery_outbox where invitation_id = v_inv) = 1,
