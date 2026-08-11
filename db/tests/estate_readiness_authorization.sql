@@ -35,6 +35,82 @@ returns int language sql immutable as $$
 $$;
 
 -- =================================================================================================
+-- FIXTURE INTEGRITY — a suite may not edit another suite's inputs
+-- =================================================================================================
+-- ★ THIS EXISTS BECAUSE THE RESTORE WAS ADDED BY HAND, AND A HAND-WRITTEN RESTORE CAN BE FORGOTTEN
+-- AGAIN — silently.
+--
+-- This suite sets an asset's value to zero to prove that a RECORDED zero is not reported as a
+-- missing value. It then ran to completion, and the payload capture ran afterwards against an estate
+-- whose bank category now totalled 0. The discovery assertion that a bracket must not print the
+-- exact total became vacuous: the exact total WAS zero, so printing it and not printing it looked
+-- identical. Nothing failed. The fixture file simply changed.
+--
+-- A restore statement fixes that instance. It does not fix the CLASS, because the next suite to
+-- mutate shared state will be written by someone who has not read this comment. So the state is
+-- snapshotted before the mutations and compared afterwards, and any unrestored difference is a
+-- failure attributed to THIS suite rather than a puzzle discovered three files later.
+--
+-- ★ IT SNAPSHOTS RATHER THAN ENUMERATING A BASELINE. Hand-listing "the bank account should be
+-- 1299900" would be a second copy of the fixture that drifts from the first, and would have to be
+-- edited every time the fixture legitimately changes — which is precisely the edit that gets made
+-- carelessly.
+create table if not exists harness.fixture_snapshot (
+  asset_id     uuid primary key,
+  label        text,
+  category     text,
+  value_cents  bigint,
+  institution  text,
+  archived     boolean
+);
+
+create or replace function harness.snapshot_fixture()
+returns void language plpgsql as $$
+begin
+  delete from harness.fixture_snapshot;
+  insert into harness.fixture_snapshot
+  select a.id, a.label, a.category, a.approximate_value_cents, a.institution_name, a.archived_at is not null
+    from public.estate_assets a;
+  -- ★ SCAN-SET ASSERTION. An empty snapshot would make the comparison below pass against nothing —
+  -- the vacuous-audit shape this repository has shipped more than once.
+  if (select count(*) from harness.fixture_snapshot) = 0 then
+    raise exception 'FAIL: fixture snapshot is EMPTY — the integrity control would compare nothing';
+  end if;
+end $$;
+
+create or replace function harness.assert_fixture_restored()
+returns void language plpgsql as $$
+declare v_diff text;
+begin
+  select string_agg(
+           format('%s(%s): %s', coalesce(s.label, c.label), coalesce(s.asset_id, c.id),
+                  case
+                    when s.asset_id is null then 'CREATED and not removed'
+                    when c.id is null        then 'DELETED'
+                    else 'MUTATED'
+                  end), '; ')
+    into v_diff
+    from harness.fixture_snapshot s
+    full outer join public.estate_assets c on c.id = s.asset_id
+   where s.asset_id is null
+      or c.id is null
+      or s.value_cents is distinct from c.approximate_value_cents
+      or s.label       is distinct from c.label
+      or s.category    is distinct from c.category
+      or s.institution is distinct from c.institution_name
+      or s.archived    is distinct from (c.archived_at is not null);
+
+  if v_diff is not null then
+    raise exception
+      'FAIL: this suite left shared fixture state mutated — %. A suite that mutates a shared fixture '
+      'must restore it, or it is editing the inputs of every suite that runs after it.', v_diff;
+  end if;
+  raise notice '  ok   shared fixture state is exactly as this suite found it';
+end $$;
+
+do $$ begin perform harness.snapshot_fixture(); end $$;
+
+-- =================================================================================================
 -- 14 · owner-only authority
 -- =================================================================================================
 do $$
@@ -258,6 +334,48 @@ begin
     raise exception 'FAIL: DEFINER laundered authority';
   end if;
   raise notice '  ok   DEFINER does not launder authority';
+end $$;
+
+-- =================================================================================================
+-- 18 · fixture integrity — this suite leaves the shared fixture exactly as it found it
+-- =================================================================================================
+-- ★ THE CONTROL IS PROVED TO BE CAPABLE OF FAILING BEFORE IT IS BELIEVED. A comparison that can only
+-- ever pass is indistinguishable from one that inspects nothing, and this repository has shipped that
+-- exact shape more than once. So a known mutation is introduced, the control is required to catch
+-- it, and only then is the real assertion made — on a fixture restored inside this block.
+do $$
+declare v_asset uuid;
+        v_before bigint;
+        v_caught boolean := false;
+begin
+  raise notice '18 · fixture integrity';
+
+  select id, approximate_value_cents into v_asset, v_before
+    from public.estate_assets
+   where archived_at is null and approximate_value_cents is not null
+   order by id limit 1;
+  if v_asset is null then
+    raise exception 'FAIL: no live valued asset to mutate — the integrity control cannot be proved';
+  end if;
+
+  -- Positive control: mutate, and require the control to object.
+  update public.estate_assets set approximate_value_cents = v_before + 1 where id = v_asset;
+  begin
+    perform harness.assert_fixture_restored();
+  exception when others then
+    v_caught := true;
+  end;
+  update public.estate_assets set approximate_value_cents = v_before where id = v_asset;
+
+  if not v_caught then
+    raise exception
+      'FAIL: the fixture-integrity control did NOT detect a deliberate mutation. It is not '
+      'inspecting anything, so its silence about this suite proves nothing.';
+  end if;
+  raise notice '  ok   the integrity control detects a deliberate mutation';
+
+  -- The real assertion, now that the control is known to work.
+  perform harness.assert_fixture_restored();
 end $$;
 
 do $$ begin raise notice 'ALL READINESS ASSERTIONS PASSED'; end $$;
