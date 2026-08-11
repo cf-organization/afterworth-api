@@ -33,6 +33,7 @@ const PARTS = [
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
   'db/tests/estate_readiness_authorization.sql',
+  'db/tests/professional_workspace_authorization.sql',
 ];
 
 // ★ CAPTURE, NOT ASSERT. Run with --capture to emit one REAL payload per viewer class into a JSON

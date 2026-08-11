@@ -30,6 +30,7 @@ const PARTS = [
   'db/migrations/0049_20260811_estate_discovery.sql',
   'db/functions/estate_discovery_rpcs.sql',
   'db/functions/estate_readiness_rpcs.sql',
+  'db/functions/professional_workspace_rpcs.sql',
 ];
 
 const missing = PARTS.filter((p) => !existsSync(join(ROOT, p)));
@@ -53,6 +54,7 @@ const CONTROLS = [
   ['db/functions/estate_discovery_rpcs.sql', 'create or replace function public.get_estate_discovery'],
   ['db/functions/estate_discovery_rpcs.sql', 'create or replace function public.inventory_disclosure_tier'],
   ['db/functions/estate_readiness_rpcs.sql', 'create or replace function public.get_estate_readiness'],
+  ['db/functions/professional_workspace_rpcs.sql', 'create or replace function public.get_professional_workspace'],
 ];
 const sources = new Map(PARTS.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
 const failed = CONTROLS.filter(([file, needle]) => !sources.get(file).includes(needle));
