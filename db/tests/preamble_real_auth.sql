@@ -41,7 +41,12 @@ as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$
 
 create table if not exists public.estates (
   id       uuid primary key default gen_random_uuid(),
-  owner_id uuid not null references auth.users(id)
+  owner_id uuid not null references auth.users(id),
+  -- ★ `name`, NOT `display_name`. The WIRE calls it `estateDisplayName` (`resolve_membership`) and
+  -- the COLUMN is `name`; a harness that spelled it the wire's way would let a function referencing
+  -- the wrong column pass here and fail on the deployed schema, which is the same shape of miss as
+  -- a stub that is "a different schema, not a smaller one".
+  name     text not null default 'Fixture Estate'
 );
 alter table public.estates enable row level security;
 
@@ -150,6 +155,41 @@ create table if not exists public.access_grants (
     check ((document_id is not null) <> (category is not null))
 );
 alter table public.access_grants enable row level security;
+
+-- ★ FIDUCIARY CAPACITY LIVES HERE AND NOWHERE ELSE. `get_professional_workspace` reads this table
+-- directly, and `is_estate_executor` is the canonical predicate over it. A harness that omitted it
+-- would let a function claiming "executor and trustee come only from designations" pass without any
+-- designation ever existing — the assertion would be true and vacuous.
+create table if not exists public.estate_designations (
+  id               uuid primary key default gen_random_uuid(),
+  estate_id        uuid not null references public.estates(id) on delete cascade,
+  user_id          uuid not null references auth.users(id),
+  designation_type text not null check (designation_type in ('executor','trustee')),
+  status           text not null default 'active' check (status in ('active','revoked'))
+);
+alter table public.estate_designations enable row level security;
+
+create or replace function public.is_estate_executor(p_estate uuid, p_user uuid)
+ returns boolean language sql security definer stable set search_path to 'public'
+as $$
+  select exists (
+    select 1 from public.estate_designations d
+    where d.estate_id = p_estate and d.user_id = p_user
+      and d.designation_type in ('executor','trustee') and d.status = 'active'
+  );
+$$;
+
+-- ★ THE DELEGATE'S ONE REAL MUTATION LEAVES A ROW HERE, and the workspace reports its state back to
+-- the caller who created it. Only the columns the projection reads are modelled.
+create table if not exists public.access_requests (
+  id                uuid primary key default gen_random_uuid(),
+  estate_id         uuid not null references public.estates(id) on delete cascade,
+  requester_user_id uuid not null,
+  category          text not null check (category in ('estate_documents')),
+  status            text not null default 'pending' check (status in ('pending','approved','denied')),
+  created_at        timestamptz not null default now()
+);
+alter table public.access_requests enable row level security;
 
 create table if not exists public.claim_packets (
   id           uuid primary key default gen_random_uuid(),
