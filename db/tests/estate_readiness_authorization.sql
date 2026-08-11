@@ -167,6 +167,13 @@ begin
     raise exception 'FAIL: a recorded ZERO was reported as a missing value';
   end if;
   raise notice '  ok   a recorded zero is not reported as a missing value';
+
+  -- ★ RESTORE THE FIXTURE VALUE. This suite runs BEFORE the payload capture, so leaving the asset at
+  -- zero silently rewrote what the discovery fixtures record — and a discovery assertion that a
+  -- bracket must not print the exact total became vacuous, because the exact total was 0. A test
+  -- that mutates shared fixture state must put it back, or it is editing another suite's inputs.
+  perform harness.expect_ok('owner restores the fixture value', OWNER_A,
+    format('select public.update_estate_asset(%L::uuid, null, null, null, null, null, null, null, null, 1299900)', v_asset));
 end $$;
 
 -- =================================================================================================

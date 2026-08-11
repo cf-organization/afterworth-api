@@ -2,13 +2,13 @@
   "owner": {
     "items": [
       {
-        "id": "32416f88-bece-4d7e-a88b-7ea02fd22aa2",
+        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
         "currency": "USD",
         "institution": "Northbank",
-        "value_cents": 0,
+        "value_cents": 1299900,
         "country_code": null,
         "jurisdiction": null,
         "document_count": 1,
@@ -16,7 +16,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "b72cc3fe-4dde-4206-96d1-fd488a637aea",
+        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -30,7 +30,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "ce402ef9-c833-42be-bec5-b77df83bef1b",
+        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -51,7 +51,7 @@
         "category": "bankAccount",
         "item_count": 1,
         "sort_order": "0001",
-        "total_cents": 0,
+        "total_cents": 1299900,
         "display_name": "Bank or financial account",
         "range_low_cents": null,
         "range_high_cents": null
@@ -98,7 +98,7 @@
         "kind": "missing_evidence",
         "category": "realEstate",
         "sort_key": "10005Family home",
-        "subject_id": "b72cc3fe-4dde-4206-96d1-fd488a637aea",
+        "subject_id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "subject_kind": "asset",
         "subject_label": "Family home",
         "category_label": "Real estate"
@@ -107,7 +107,7 @@
         "kind": "missing_location",
         "category": "physicalValuable",
         "sort_key": "20008Wedding ring",
-        "subject_id": "ce402ef9-c833-42be-bec5-b77df83bef1b",
+        "subject_id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "subject_kind": "asset",
         "subject_label": "Wedding ring",
         "category_label": "Physical valuable"
@@ -116,7 +116,7 @@
         "kind": "missing_value",
         "category": "physicalValuable",
         "sort_key": "30008Wedding ring",
-        "subject_id": "ce402ef9-c833-42be-bec5-b77df83bef1b",
+        "subject_id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "subject_kind": "asset",
         "subject_label": "Wedding ring",
         "category_label": "Physical valuable"
@@ -201,13 +201,13 @@
   "professional_full_detail": {
     "items": [
       {
-        "id": "32416f88-bece-4d7e-a88b-7ea02fd22aa2",
+        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
         "currency": "USD",
         "institution": "Northbank",
-        "value_cents": 0,
+        "value_cents": 1299900,
         "country_code": null,
         "jurisdiction": null,
         "document_count": 1,
@@ -215,7 +215,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "b72cc3fe-4dde-4206-96d1-fd488a637aea",
+        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -229,7 +229,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "ce402ef9-c833-42be-bec5-b77df83bef1b",
+        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -250,7 +250,7 @@
         "category": "bankAccount",
         "item_count": 1,
         "sort_order": "0001",
-        "total_cents": 0,
+        "total_cents": 1299900,
         "display_name": "Bank or financial account",
         "range_low_cents": null,
         "range_high_cents": null
@@ -281,7 +281,7 @@
   "professional_limited_detail": {
     "items": [
       {
-        "id": "32416f88-bece-4d7e-a88b-7ea02fd22aa2",
+        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -295,7 +295,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "b72cc3fe-4dde-4206-96d1-fd488a637aea",
+        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -309,7 +309,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "ce402ef9-c833-42be-bec5-b77df83bef1b",
+        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -332,8 +332,8 @@
         "sort_order": "0001",
         "total_cents": null,
         "display_name": "Bank or financial account",
-        "range_low_cents": 0,
-        "range_high_cents": 1000000
+        "range_low_cents": 1000000,
+        "range_high_cents": 5000000
       },
       {
         "category": "realEstate",
@@ -369,8 +369,8 @@
         "sort_order": "0001",
         "total_cents": null,
         "display_name": "Bank or financial account",
-        "range_low_cents": 0,
-        "range_high_cents": 1000000
+        "range_low_cents": 1000000,
+        "range_high_cents": 5000000
       },
       {
         "category": "realEstate",
