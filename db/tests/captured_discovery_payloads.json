@@ -1,0 +1,338 @@
+{
+  "owner": {
+    "items": [
+      {
+        "id": "bd9942ec-cd2b-4f73-9b8b-62ad3b507653",
+        "label": "Everyday account",
+        "subtype": "chequingAccount",
+        "category": "bankAccount",
+        "currency": "USD",
+        "institution": "Northbank",
+        "value_cents": 1299900,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 0,
+        "reference_hint": "1234",
+        "verification_status": "unverified"
+      },
+      {
+        "id": "44d8ea20-fd22-4112-8d60-60108fdfb3f2",
+        "label": "Family home",
+        "subtype": "primaryResidence",
+        "category": "realEstate",
+        "currency": "USD",
+        "institution": null,
+        "value_cents": 74500000,
+        "country_code": "US",
+        "jurisdiction": "Vermont",
+        "document_count": 0,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      },
+      {
+        "id": "500efe5f-eb07-4931-a6ef-a98dcd3adb97",
+        "label": "Wedding ring",
+        "subtype": "jewellery",
+        "category": "physicalValuable",
+        "currency": "USD",
+        "institution": null,
+        "value_cents": null,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 1,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      }
+    ],
+    "is_owner": true,
+    "authorized": true,
+    "categories": [
+      {
+        "category": "bankAccount",
+        "item_count": 1,
+        "sort_order": "0001",
+        "total_cents": 1299900,
+        "display_name": "Bank or financial account",
+        "range_low_cents": null,
+        "range_high_cents": null
+      },
+      {
+        "category": "realEstate",
+        "item_count": 1,
+        "sort_order": "0005",
+        "total_cents": 74500000,
+        "display_name": "Real estate",
+        "range_low_cents": null,
+        "range_high_cents": null
+      },
+      {
+        "category": "physicalValuable",
+        "item_count": 1,
+        "sort_order": "0008",
+        "total_cents": 0,
+        "display_name": "Physical valuable",
+        "range_low_cents": null,
+        "range_high_cents": null
+      }
+    ],
+    "release_state": "claim_approved",
+    "document_count": 1,
+    "inventory_tier": "full_detail"
+  },
+  "stranger": {
+    "authorized": false
+  },
+  "anonymous": {
+    "authorized": false
+  },
+  "member_no_grant": {
+    "is_owner": false,
+    "authorized": true,
+    "release_state": "claim_approved",
+    "document_count": 0,
+    "inventory_tier": "hidden"
+  },
+  "owner_empty_estate": {
+    "items": [],
+    "is_owner": true,
+    "authorized": true,
+    "categories": [],
+    "release_state": "active",
+    "document_count": 1,
+    "inventory_tier": "full_detail"
+  },
+  "beneficiary_range_only": {
+    "items": [],
+    "is_owner": false,
+    "authorized": true,
+    "categories": [
+      {
+        "category": "bankAccount",
+        "item_count": null,
+        "sort_order": "0001",
+        "total_cents": null,
+        "display_name": "Bank or financial account",
+        "range_low_cents": null,
+        "range_high_cents": null
+      },
+      {
+        "category": "realEstate",
+        "item_count": null,
+        "sort_order": "0005",
+        "total_cents": null,
+        "display_name": "Real estate",
+        "range_low_cents": null,
+        "range_high_cents": null
+      },
+      {
+        "category": "physicalValuable",
+        "item_count": null,
+        "sort_order": "0008",
+        "total_cents": null,
+        "display_name": "Physical valuable",
+        "range_low_cents": null,
+        "range_high_cents": null
+      }
+    ],
+    "release_state": "claim_approved",
+    "document_count": 0,
+    "inventory_tier": "range_only"
+  },
+  "professional_full_detail": {
+    "items": [
+      {
+        "id": "bd9942ec-cd2b-4f73-9b8b-62ad3b507653",
+        "label": "Everyday account",
+        "subtype": "chequingAccount",
+        "category": "bankAccount",
+        "currency": "USD",
+        "institution": "Northbank",
+        "value_cents": 1299900,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 0,
+        "reference_hint": "1234",
+        "verification_status": "unverified"
+      },
+      {
+        "id": "44d8ea20-fd22-4112-8d60-60108fdfb3f2",
+        "label": "Family home",
+        "subtype": "primaryResidence",
+        "category": "realEstate",
+        "currency": "USD",
+        "institution": null,
+        "value_cents": 74500000,
+        "country_code": "US",
+        "jurisdiction": "Vermont",
+        "document_count": 0,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      },
+      {
+        "id": "500efe5f-eb07-4931-a6ef-a98dcd3adb97",
+        "label": "Wedding ring",
+        "subtype": "jewellery",
+        "category": "physicalValuable",
+        "currency": "USD",
+        "institution": null,
+        "value_cents": null,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 1,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      }
+    ],
+    "is_owner": false,
+    "authorized": true,
+    "categories": [
+      {
+        "category": "bankAccount",
+        "item_count": 1,
+        "sort_order": "0001",
+        "total_cents": 1299900,
+        "display_name": "Bank or financial account",
+        "range_low_cents": null,
+        "range_high_cents": null
+      },
+      {
+        "category": "realEstate",
+        "item_count": 1,
+        "sort_order": "0005",
+        "total_cents": 74500000,
+        "display_name": "Real estate",
+        "range_low_cents": null,
+        "range_high_cents": null
+      },
+      {
+        "category": "physicalValuable",
+        "item_count": 1,
+        "sort_order": "0008",
+        "total_cents": 0,
+        "display_name": "Physical valuable",
+        "range_low_cents": null,
+        "range_high_cents": null
+      }
+    ],
+    "release_state": "claim_approved",
+    "document_count": 0,
+    "inventory_tier": "full_detail"
+  },
+  "professional_limited_detail": {
+    "items": [
+      {
+        "id": "bd9942ec-cd2b-4f73-9b8b-62ad3b507653",
+        "label": "Everyday account",
+        "subtype": "chequingAccount",
+        "category": "bankAccount",
+        "currency": "USD",
+        "institution": "Northbank",
+        "value_cents": null,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 0,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      },
+      {
+        "id": "44d8ea20-fd22-4112-8d60-60108fdfb3f2",
+        "label": "Family home",
+        "subtype": "primaryResidence",
+        "category": "realEstate",
+        "currency": "USD",
+        "institution": null,
+        "value_cents": null,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 0,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      },
+      {
+        "id": "500efe5f-eb07-4931-a6ef-a98dcd3adb97",
+        "label": "Wedding ring",
+        "subtype": "jewellery",
+        "category": "physicalValuable",
+        "currency": "USD",
+        "institution": null,
+        "value_cents": null,
+        "country_code": null,
+        "jurisdiction": null,
+        "document_count": 1,
+        "reference_hint": null,
+        "verification_status": "unverified"
+      }
+    ],
+    "is_owner": false,
+    "authorized": true,
+    "categories": [
+      {
+        "category": "bankAccount",
+        "item_count": 1,
+        "sort_order": "0001",
+        "total_cents": null,
+        "display_name": "Bank or financial account",
+        "range_low_cents": 1000000,
+        "range_high_cents": 5000000
+      },
+      {
+        "category": "realEstate",
+        "item_count": 1,
+        "sort_order": "0005",
+        "total_cents": null,
+        "display_name": "Real estate",
+        "range_low_cents": 50000000,
+        "range_high_cents": 100000000
+      },
+      {
+        "category": "physicalValuable",
+        "item_count": 1,
+        "sort_order": "0008",
+        "total_cents": null,
+        "display_name": "Physical valuable",
+        "range_low_cents": 0,
+        "range_high_cents": 1000000
+      }
+    ],
+    "release_state": "claim_approved",
+    "document_count": 0,
+    "inventory_tier": "limited_detail"
+  },
+  "beneficiary_category_summary": {
+    "items": [],
+    "is_owner": false,
+    "authorized": true,
+    "categories": [
+      {
+        "category": "bankAccount",
+        "item_count": 1,
+        "sort_order": "0001",
+        "total_cents": null,
+        "display_name": "Bank or financial account",
+        "range_low_cents": 1000000,
+        "range_high_cents": 5000000
+      },
+      {
+        "category": "realEstate",
+        "item_count": 1,
+        "sort_order": "0005",
+        "total_cents": null,
+        "display_name": "Real estate",
+        "range_low_cents": 50000000,
+        "range_high_cents": 100000000
+      },
+      {
+        "category": "physicalValuable",
+        "item_count": 1,
+        "sort_order": "0008",
+        "total_cents": null,
+        "display_name": "Physical valuable",
+        "range_low_cents": 0,
+        "range_high_cents": 1000000
+      }
+    ],
+    "release_state": "claim_approved",
+    "document_count": 0,
+    "inventory_tier": "category_summary"
+  }
+}

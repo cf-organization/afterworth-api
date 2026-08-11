@@ -1068,14 +1068,20 @@ begin
              -- Counts begin at category_summary. At range_only the fact a category EXISTS is the
              -- entire disclosure.
              'item_count',   case when v_tier = 'range_only' then null else count(*) end,
-             -- Exact totals only at the tiers that already disclose exact value; otherwise a coarse
-             -- bracket over the category total, reusing the established bracket helpers so the
-             -- bucket boundaries cannot drift from the connected-asset path.
-             'total_cents',  case when v_tier in ('limited_detail','full_detail')
+             -- ★ EXACT TOTALS ONLY AT full_detail — AND THIS WAS A REAL LEAK.
+             -- This read `v_tier in ('limited_detail','full_detail')`, so `limited_detail` withheld
+             -- every per-item `value_cents` and then disclosed the exact CATEGORY TOTAL. For a
+             -- category holding one asset the total IS that asset's withheld value, so the tier
+             -- leaked precisely what it was suppressing one field away. Found by decoding a captured
+             -- payload rather than by reading the code.
+             --
+             -- limited_detail now brackets, exactly as category_summary does: it adds labels and
+             -- institutions over the tier below, and adds NO value precision.
+             'total_cents',  case when v_tier = 'full_detail'
                                   then coalesce(sum(a.approximate_value_cents), 0) else null end,
-             'range_low_cents',  case when v_tier = 'category_summary'
+             'range_low_cents',  case when v_tier in ('category_summary','limited_detail')
                                       then public.asset_bracket_low(coalesce(sum(a.approximate_value_cents), 0)::bigint) end,
-             'range_high_cents', case when v_tier = 'category_summary'
+             'range_high_cents', case when v_tier in ('category_summary','limited_detail')
                                       then public.asset_bracket_high(coalesce(sum(a.approximate_value_cents), 0)::bigint) end
            ) as x
       from public.estate_assets a

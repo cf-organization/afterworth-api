@@ -189,7 +189,19 @@ begin
   if exists (select 1 from jsonb_array_elements(d->'items') i where i->>'reference_hint' is not null) then
     raise exception 'FAIL: limited_detail leaked a reference hint';
   end if;
-  raise notice '  ok   limited_detail: labels + institutions, no values, no reference hints';
+
+  -- ★ AND THE CATEGORY TOTAL MUST NOT BE EXACT EITHER. This assertion is here because its absence
+  -- hid a real leak: `limited_detail` withheld every per-item value and then published the exact
+  -- category total, which for a single-asset category IS that value. Withholding a field at one
+  -- level and republishing it as an aggregate at another is the whole failure mode.
+  cat := (select c from jsonb_array_elements(d->'categories') c where c->>'category' = 'bankAccount');
+  if cat->>'total_cents' is not null then
+    raise exception 'FAIL: limited_detail leaked an EXACT category total: %', cat;
+  end if;
+  if cat->>'range_low_cents' is null then
+    raise exception 'FAIL: limited_detail should still disclose a bracket';
+  end if;
+  raise notice '  ok   limited_detail: labels + institutions, no exact values ANYWHERE, no hints';
 
   -- ── full_detail: adds exact value, hint and jurisdiction ──────────────────────────────────
   perform harness.grant_inventory('55555555-5555-4555-8555-555555555555', 'professional_delegate', 'full_detail');
