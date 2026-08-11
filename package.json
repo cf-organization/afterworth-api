@@ -6,7 +6,8 @@
   "description": "Vercel edge functions for AfterWorth iOS app",
   "scripts": {
     "type-check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:sql-auth": "node scripts/verifySqlAuthorization.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.106.2",

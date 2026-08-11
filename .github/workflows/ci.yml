@@ -32,6 +32,16 @@ jobs:
       - name: Tests
         run: npm test
 
+      # ★ THE AUTHORIZATION SUITE RUNS THE REAL is_estate_owner AGAINST A REAL POSTGRES, under
+      # `SET ROLE authenticated` so RLS is actually enforced. It is a separate step from `npm test`
+      # because it needs a database, and because a failure here means something categorically worse
+      # than a unit-test failure.
+      #
+      # It exits 2 — not 0 — when it cannot reach a database, so a runner without Docker FAILS the
+      # job rather than reporting a green "authorization verified" that inspected nothing.
+      - name: SQL authorization suite
+        run: npm run test:sql-auth
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:
