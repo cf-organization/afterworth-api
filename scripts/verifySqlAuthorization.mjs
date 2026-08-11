@@ -32,6 +32,7 @@ const PARTS = [
   'db/bundles/estate_inventory_and_discovery_bundle.sql',
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
+  'db/tests/estate_readiness_authorization.sql',
 ];
 
 // ★ CAPTURE, NOT ASSERT. Run with --capture to emit one REAL payload per viewer class into a JSON
@@ -150,8 +151,8 @@ for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
 // the matcher tolerates both rather than silently counting zero, which is how this check first
 // reported "0 assertions" against a suite that had in fact run every one of them.
 const okCount = (combined.match(/NOTICE:\s+ok\s{2,}/g) ?? []).length;
-const MIN_ASSERTIONS = 45;
-for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED']) {
+const MIN_ASSERTIONS = 60;
+for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED', 'ALL READINESS ASSERTIONS PASSED']) {
   if (!combined.includes(sentinel)) {
     cleanup();
     console.error(`✗ the suite did not reach "${sentinel}" — it did not run to completion.`);
@@ -190,7 +191,7 @@ if (CAPTURE) {
   // ★ ASSERT THE CAPTURE IS NON-VACUOUS. An empty object parses fine and would silently become a
   // fixture that proves nothing about the contract.
   const scenarios = Object.keys(parsed);
-  if (scenarios.length < 8) {
+  if (scenarios.length < 13) {
     cleanup();
     console.error(`✗ capture holds only ${scenarios.length} scenarios; expected every viewer class.`);
     process.exit(1);
