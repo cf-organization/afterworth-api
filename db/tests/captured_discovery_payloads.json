@@ -2,7 +2,7 @@
   "owner": {
     "items": [
       {
-        "id": "bd9942ec-cd2b-4f73-9b8b-62ad3b507653",
+        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -11,12 +11,12 @@
         "value_cents": 1299900,
         "country_code": null,
         "jurisdiction": null,
-        "document_count": 0,
+        "document_count": 1,
         "reference_hint": "1234",
         "verification_status": "unverified"
       },
       {
-        "id": "44d8ea20-fd22-4112-8d60-60108fdfb3f2",
+        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -30,7 +30,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "500efe5f-eb07-4931-a6ef-a98dcd3adb97",
+        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -92,6 +92,48 @@
     "document_count": 0,
     "inventory_tier": "hidden"
   },
+  "readiness_owner": {
+    "findings": [
+      {
+        "kind": "missing_evidence",
+        "category": "realEstate",
+        "sort_key": "10005Family home",
+        "subject_id": "68218df1-e3e5-47e5-a957-13b23325c11e",
+        "subject_kind": "asset",
+        "subject_label": "Family home",
+        "category_label": "Real estate"
+      },
+      {
+        "kind": "missing_location",
+        "category": "physicalValuable",
+        "sort_key": "20008Wedding ring",
+        "subject_id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "subject_kind": "asset",
+        "subject_label": "Wedding ring",
+        "category_label": "Physical valuable"
+      },
+      {
+        "kind": "missing_value",
+        "category": "physicalValuable",
+        "sort_key": "30008Wedding ring",
+        "subject_id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "subject_kind": "asset",
+        "subject_label": "Wedding ring",
+        "category_label": "Physical valuable"
+      },
+      {
+        "kind": "sharing_not_configured",
+        "category": null,
+        "sort_key": "4Fixture document",
+        "subject_id": "dddddddd-1111-4111-8111-dddddddddddd",
+        "subject_kind": "document",
+        "subject_label": "Fixture document",
+        "category_label": null
+      }
+    ],
+    "authorized": true,
+    "finding_count": 4
+  },
   "owner_empty_estate": {
     "items": [],
     "is_owner": true,
@@ -100,6 +142,24 @@
     "release_state": "active",
     "document_count": 1,
     "inventory_tier": "full_detail"
+  },
+  "readiness_anonymous": {
+    "authorized": false
+  },
+  "readiness_owner_empty": {
+    "findings": [
+      {
+        "kind": "sharing_not_configured",
+        "category": null,
+        "sort_key": "4Fixture document",
+        "subject_id": "dddddddd-2222-4222-8222-dddddddddddd",
+        "subject_kind": "document",
+        "subject_label": "Fixture document",
+        "category_label": null
+      }
+    ],
+    "authorized": true,
+    "finding_count": 1
   },
   "beneficiary_range_only": {
     "items": [],
@@ -141,7 +201,7 @@
   "professional_full_detail": {
     "items": [
       {
-        "id": "bd9942ec-cd2b-4f73-9b8b-62ad3b507653",
+        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -150,12 +210,12 @@
         "value_cents": 1299900,
         "country_code": null,
         "jurisdiction": null,
-        "document_count": 0,
+        "document_count": 1,
         "reference_hint": "1234",
         "verification_status": "unverified"
       },
       {
-        "id": "44d8ea20-fd22-4112-8d60-60108fdfb3f2",
+        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -169,7 +229,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "500efe5f-eb07-4931-a6ef-a98dcd3adb97",
+        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -221,7 +281,7 @@
   "professional_limited_detail": {
     "items": [
       {
-        "id": "bd9942ec-cd2b-4f73-9b8b-62ad3b507653",
+        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -230,12 +290,12 @@
         "value_cents": null,
         "country_code": null,
         "jurisdiction": null,
-        "document_count": 0,
+        "document_count": 1,
         "reference_hint": null,
         "verification_status": "unverified"
       },
       {
-        "id": "44d8ea20-fd22-4112-8d60-60108fdfb3f2",
+        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -249,7 +309,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "500efe5f-eb07-4931-a6ef-a98dcd3adb97",
+        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -334,5 +394,11 @@
     "release_state": "claim_approved",
     "document_count": 0,
     "inventory_tier": "category_summary"
+  },
+  "readiness_beneficiary_refused": {
+    "authorized": false
+  },
+  "readiness_professional_refused": {
+    "authorized": false
   }
 }

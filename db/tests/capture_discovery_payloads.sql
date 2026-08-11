@@ -52,6 +52,17 @@ begin
   return query select p_label, v;
 end $$;
 
+create or replace function harness.capture_readiness(p_label text, p_uid uuid, p_estate uuid)
+returns table (label text, payload jsonb) language plpgsql as $$
+declare v jsonb;
+begin
+  perform set_config('request.jwt.claim.sub', coalesce(p_uid::text, ''), true);
+  set local role authenticated;
+  select public.get_estate_readiness(p_estate) into v;
+  reset role;
+  return query select p_label, v;
+end $$;
+
 select jsonb_pretty(jsonb_object_agg(label, payload)) as captured
 from (
   -- Owner — the maximal payload.
@@ -92,4 +103,19 @@ from (
   -- An estate with NO assets at all — the genuinely empty projection.
   select * from harness.capture('owner_empty_estate',
     '22222222-2222-4222-8222-222222222222', 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb')
+  union all
+  -- ── Phase 10-C readiness, same discipline: the decoder is written against real payloads ────────
+  select * from harness.capture_readiness('readiness_owner',
+    '11111111-1111-4111-8111-111111111111', 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa')
+  union all
+  select * from harness.capture_readiness('readiness_owner_empty',
+    '22222222-2222-4222-8222-222222222222', 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb')
+  union all
+  select * from harness.capture_readiness('readiness_beneficiary_refused',
+    '44444444-4444-4444-8444-444444444444', 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa')
+  union all
+  select * from harness.capture_readiness('readiness_professional_refused',
+    '55555555-5555-4555-8555-555555555555', 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa')
+  union all
+  select * from harness.capture_readiness('readiness_anonymous', null, 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa')
 ) s;

@@ -74,6 +74,10 @@ on conflict (value) do nothing;
 create table if not exists public.documents (
   id          uuid primary key default gen_random_uuid(),
   estate_id   uuid not null references public.estates(id) on delete cascade,
+  -- ★ `title` IS NOT DECORATION HERE. The readiness projection reads it, and the first version of
+  -- this stub omitted it — `column d.title does not exist`. A harness that is missing a column the
+  -- code under test reads is not a smaller version of the schema, it is a different one.
+  title       text not null default 'Fixture document',
   sensitivity text not null default 'sealed' references public.document_sensitivity(value)
 );
 alter table public.documents enable row level security;
