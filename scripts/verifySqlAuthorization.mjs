@@ -20,7 +20,7 @@
  * NEVER point --database-url at production. The suite creates roles, tables and users.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +33,13 @@ const PARTS = [
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
 ];
+
+// ★ CAPTURE, NOT ASSERT. Run with --capture to emit one REAL payload per viewer class into a JSON
+// fixture the mobile decoder is written against. A decoder built from a hand-written fixture agrees
+// with whatever the client already believes; only a payload the database produced can teach it the
+// real nullability.
+const CAPTURE = process.argv.includes('--capture');
+const CAPTURE_PART = 'db/tests/capture_discovery_payloads.sql';
 
 const missing = PARTS.filter((p) => !existsSync(join(ROOT, p)));
 if (missing.length) {
@@ -82,7 +89,7 @@ if (urlIdx > -1) {
     console.error('✗ --database-url requires a value');
     process.exit(2);
   }
-  psql = (file) => spawnSync('psql', [url, '-v', 'ON_ERROR_STOP=1', '-f', file], { encoding: 'utf8' });
+  psql = (file, extra = []) => spawnSync('psql', [url, '-v', 'ON_ERROR_STOP=1', ...extra, '-f', file], { encoding: 'utf8' });
 } else {
   if (!dockerAvailable()) {
     console.error('✗ CANNOT VERIFY — Docker is not running and no --database-url was given.');
@@ -114,16 +121,21 @@ if (urlIdx > -1) {
     console.error('✗ CANNOT VERIFY — postgres never became ready.');
     process.exit(2);
   }
-  psql = (file) =>
-    spawnSync('docker', ['exec', '-i', CONTAINER, 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-f', '-'], {
+  psql = (file, extra = []) =>
+    spawnSync('docker',
+      ['exec', '-i', CONTAINER, 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', ...extra, '-f', '-'], {
       input: readFileSync(file, 'utf8'),
       encoding: 'utf8',
     });
 }
 
 let combined = '';
-for (const part of PARTS) {
-  const r = psql(join(ROOT, part));
+let capturedJson = '';
+for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
+  const isCapture = part === CAPTURE_PART;
+  // -A -t: unaligned, tuples-only. Aligned output pads with '+' continuation markers and is not JSON.
+  const r = psql(join(ROOT, part), isCapture ? ['-A', '-t'] : []);
+  if (isCapture) capturedJson = r.stdout ?? '';
   combined += (r.stdout ?? '') + (r.stderr ?? '');
   if (r.status !== 0) {
     cleanup();
@@ -156,6 +168,35 @@ if (okCount < MIN_ASSERTIONS) {
   console.error(`✗ only ${okCount} assertions reported ok (expected >= ${MIN_ASSERTIONS}).`);
   console.error('  The suite completed but inspected far less than it should — treat as a failure.');
   process.exit(1);
+}
+
+if (CAPTURE) {
+  // psql prints the jsonb_pretty result between the column header and the row count.
+  // The capture file also runs DDL, whose command tags ("DO", "CREATE FUNCTION") share stdout with
+  // the result. Take the outermost JSON object rather than assuming the stream is pure.
+  const raw = capturedJson;
+  const first = raw.indexOf('{');
+  const last = raw.lastIndexOf('}');
+  const text = first >= 0 && last > first ? raw.slice(first, last + 1) : '';
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    cleanup();
+    console.error('✗ capture did not produce parseable JSON — refusing to write a fixture from nothing.');
+    console.error(text.slice(0, 300));
+    process.exit(1);
+  }
+  // ★ ASSERT THE CAPTURE IS NON-VACUOUS. An empty object parses fine and would silently become a
+  // fixture that proves nothing about the contract.
+  const scenarios = Object.keys(parsed);
+  if (scenarios.length < 8) {
+    cleanup();
+    console.error(`✗ capture holds only ${scenarios.length} scenarios; expected every viewer class.`);
+    process.exit(1);
+  }
+  writeFileSync(join(ROOT, 'db/tests/captured_discovery_payloads.json'), `${JSON.stringify(parsed, null, 2)}\n`);
+  console.log('✓ wrote db/tests/captured_discovery_payloads.json');
 }
 
 cleanup();
