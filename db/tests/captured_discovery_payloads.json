@@ -2,7 +2,7 @@
   "owner": {
     "items": [
       {
-        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
+        "id": "1835b22e-07e5-4f78-8c6b-6bdd5473d80d",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -16,7 +16,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
+        "id": "72f39820-7b14-4adf-ac62-300986e0757a",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -30,7 +30,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "id": "dc7b7c74-567f-4cfe-9b39-35cf404a6a88",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -98,7 +98,7 @@
         "kind": "missing_evidence",
         "category": "realEstate",
         "sort_key": "10005Family home",
-        "subject_id": "68218df1-e3e5-47e5-a957-13b23325c11e",
+        "subject_id": "72f39820-7b14-4adf-ac62-300986e0757a",
         "subject_kind": "asset",
         "subject_label": "Family home",
         "category_label": "Real estate"
@@ -107,7 +107,7 @@
         "kind": "missing_location",
         "category": "physicalValuable",
         "sort_key": "20008Wedding ring",
-        "subject_id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "subject_id": "dc7b7c74-567f-4cfe-9b39-35cf404a6a88",
         "subject_kind": "asset",
         "subject_label": "Wedding ring",
         "category_label": "Physical valuable"
@@ -116,7 +116,7 @@
         "kind": "missing_value",
         "category": "physicalValuable",
         "sort_key": "30008Wedding ring",
-        "subject_id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "subject_id": "dc7b7c74-567f-4cfe-9b39-35cf404a6a88",
         "subject_kind": "asset",
         "subject_label": "Wedding ring",
         "category_label": "Physical valuable"
@@ -198,10 +198,13 @@
     "document_count": 0,
     "inventory_tier": "range_only"
   },
+  "workspace_owner_refused": {
+    "authorized": false
+  },
   "professional_full_detail": {
     "items": [
       {
-        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
+        "id": "1835b22e-07e5-4f78-8c6b-6bdd5473d80d",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -215,7 +218,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
+        "id": "72f39820-7b14-4adf-ac62-300986e0757a",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -229,7 +232,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "id": "dc7b7c74-567f-4cfe-9b39-35cf404a6a88",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -278,10 +281,13 @@
     "document_count": 0,
     "inventory_tier": "full_detail"
   },
+  "workspace_stranger_refused": {
+    "authorized": false
+  },
   "professional_limited_detail": {
     "items": [
       {
-        "id": "abbcf7b1-7ebc-4b71-8955-9dcd6563b959",
+        "id": "1835b22e-07e5-4f78-8c6b-6bdd5473d80d",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -295,7 +301,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "68218df1-e3e5-47e5-a957-13b23325c11e",
+        "id": "72f39820-7b14-4adf-ac62-300986e0757a",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -309,7 +315,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "bbc72712-0214-4699-8e47-c42ce10de826",
+        "id": "dc7b7c74-567f-4cfe-9b39-35cf404a6a88",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -358,6 +364,9 @@
     "document_count": 0,
     "inventory_tier": "limited_detail"
   },
+  "workspace_anonymous_refused": {
+    "authorized": false
+  },
   "beneficiary_category_summary": {
     "items": [],
     "is_owner": false,
@@ -398,7 +407,187 @@
   "readiness_beneficiary_refused": {
     "authorized": false
   },
+  "workspace_beneficiary_refused": {
+    "authorized": false
+  },
   "readiness_professional_refused": {
     "authorized": false
+  },
+  "workspace_cross_estate_refused": {
+    "authorized": false
+  },
+  "workspace_delegate_full_detail": {
+    "documents": [],
+    "inventory": {
+      "tier": "full_detail",
+      "items": [
+        {
+          "id": "1835b22e-07e5-4f78-8c6b-6bdd5473d80d",
+          "label": "Everyday account",
+          "subtype": "chequingAccount",
+          "category": "bankAccount",
+          "currency": "USD",
+          "institution": "Northbank",
+          "value_cents": 1299900,
+          "country_code": null,
+          "jurisdiction": null,
+          "document_count": 1,
+          "reference_hint": "1234",
+          "verification_status": "unverified"
+        },
+        {
+          "id": "72f39820-7b14-4adf-ac62-300986e0757a",
+          "label": "Family home",
+          "subtype": "primaryResidence",
+          "category": "realEstate",
+          "currency": "USD",
+          "institution": null,
+          "value_cents": 74500000,
+          "country_code": "US",
+          "jurisdiction": "Vermont",
+          "document_count": 0,
+          "reference_hint": null,
+          "verification_status": "unverified"
+        },
+        {
+          "id": "dc7b7c74-567f-4cfe-9b39-35cf404a6a88",
+          "label": "Wedding ring",
+          "subtype": "jewellery",
+          "category": "physicalValuable",
+          "currency": "USD",
+          "institution": null,
+          "value_cents": null,
+          "country_code": null,
+          "jurisdiction": null,
+          "document_count": 1,
+          "reference_hint": null,
+          "verification_status": "unverified"
+        }
+      ],
+      "categories": [
+        {
+          "category": "bankAccount",
+          "item_count": 1,
+          "sort_order": "0001",
+          "total_cents": 1299900,
+          "display_name": "Bank or financial account",
+          "range_low_cents": null,
+          "range_high_cents": null
+        },
+        {
+          "category": "realEstate",
+          "item_count": 1,
+          "sort_order": "0005",
+          "total_cents": 74500000,
+          "display_name": "Real estate",
+          "range_low_cents": null,
+          "range_high_cents": null
+        },
+        {
+          "category": "physicalValuable",
+          "item_count": 1,
+          "sort_order": "0008",
+          "total_cents": 0,
+          "display_name": "Physical valuable",
+          "range_low_cents": null,
+          "range_high_cents": null
+        }
+      ]
+    },
+    "authorized": true,
+    "capacities": [],
+    "relationship": "professional_delegate",
+    "document_count": 0,
+    "access_request_at": null,
+    "estate_display_name": "Fixture Estate",
+    "access_request_state": "none",
+    "can_request_document_access": true
+  },
+  "workspace_delegate_with_trustee": {
+    "documents": [],
+    "authorized": true,
+    "capacities": [
+      "trustee"
+    ],
+    "relationship": "professional_delegate",
+    "document_count": 0,
+    "access_request_at": null,
+    "estate_display_name": "Fixture Estate",
+    "access_request_state": "none",
+    "can_request_document_access": true
+  },
+  "workspace_executor_only_refused": {
+    "authorized": false
+  },
+  "workspace_delegate_nothing_shared": {
+    "documents": [],
+    "authorized": true,
+    "capacities": [],
+    "relationship": "professional_delegate",
+    "document_count": 0,
+    "access_request_at": null,
+    "estate_display_name": "Fixture Estate",
+    "access_request_state": "none",
+    "can_request_document_access": true
+  },
+  "workspace_delegate_category_summary": {
+    "documents": [],
+    "inventory": {
+      "tier": "category_summary",
+      "items": [],
+      "categories": [
+        {
+          "category": "bankAccount",
+          "item_count": 1,
+          "sort_order": "0001",
+          "total_cents": null,
+          "display_name": "Bank or financial account",
+          "range_low_cents": 1000000,
+          "range_high_cents": 5000000
+        },
+        {
+          "category": "realEstate",
+          "item_count": 1,
+          "sort_order": "0005",
+          "total_cents": null,
+          "display_name": "Real estate",
+          "range_low_cents": 50000000,
+          "range_high_cents": 100000000
+        },
+        {
+          "category": "physicalValuable",
+          "item_count": 1,
+          "sort_order": "0008",
+          "total_cents": null,
+          "display_name": "Physical valuable",
+          "range_low_cents": 0,
+          "range_high_cents": 1000000
+        }
+      ]
+    },
+    "authorized": true,
+    "capacities": [],
+    "relationship": "professional_delegate",
+    "document_count": 0,
+    "access_request_at": null,
+    "estate_display_name": "Fixture Estate",
+    "access_request_state": "none",
+    "can_request_document_access": true
+  },
+  "workspace_delegate_granted_empty_estate": {
+    "documents": [],
+    "inventory": {
+      "tier": "category_summary",
+      "items": [],
+      "categories": []
+    },
+    "authorized": true,
+    "capacities": [],
+    "relationship": "professional_delegate",
+    "document_count": 0,
+    "access_request_at": null,
+    "estate_display_name": "Fixture Estate",
+    "access_request_state": "none",
+    "can_request_document_access": true
   }
 }

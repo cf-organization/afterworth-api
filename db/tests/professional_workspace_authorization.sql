@@ -44,7 +44,11 @@ end $$;
 -- release is independently pinned one file earlier.
 insert into auth.users (id) values
   ('66666666-6666-4666-8666-666666666666'),  -- executor of estate A, NO membership at all
-  ('77777777-7777-4777-8777-777777777777')   -- professional delegate of A **and** trustee of A
+  ('77777777-7777-4777-8777-777777777777'),  -- professional delegate of A **and** trustee of A
+  -- ★ USED ONLY BY THE PAYLOAD CAPTURE, on estate B. Kept off estate A deliberately so it cannot
+  -- perturb any assertion in this file, and kept OUT of the estate-A delegate so the cross-estate
+  -- refusal scenario keeps meaning what its name says.
+  ('88888888-8888-4888-8888-888888888888')
 on conflict do nothing;
 
 insert into public.estate_memberships (estate_id, user_id, role, status) values
