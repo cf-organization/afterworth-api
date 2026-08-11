@@ -29,8 +29,9 @@ const ROOT = resolve(HERE, '..');
 
 const PARTS = [
   'db/tests/preamble_real_auth.sql',
-  'db/bundles/0048_estate_assets_bundle.sql',
+  'db/bundles/estate_inventory_and_discovery_bundle.sql',
   'db/tests/estate_assets_authorization.sql',
+  'db/tests/estate_discovery_authorization.sql',
 ];
 
 const missing = PARTS.filter((p) => !existsSync(join(ROOT, p)));
@@ -137,8 +138,15 @@ for (const part of PARTS) {
 // the matcher tolerates both rather than silently counting zero, which is how this check first
 // reported "0 assertions" against a suite that had in fact run every one of them.
 const okCount = (combined.match(/NOTICE:\s+ok\s{2,}/g) ?? []).length;
-const MIN_ASSERTIONS = 25;
-if (!combined.includes('ALL AUTHORIZATION ASSERTIONS PASSED')) {
+const MIN_ASSERTIONS = 45;
+for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED']) {
+  if (!combined.includes(sentinel)) {
+    cleanup();
+    console.error(`✗ the suite did not reach "${sentinel}" — it did not run to completion.`);
+    process.exit(1);
+  }
+}
+if (false) {
   cleanup();
   console.error('✗ the suite did not reach its terminal sentinel — it did not run to completion.');
   process.exit(1);
