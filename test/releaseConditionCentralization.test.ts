@@ -363,16 +363,31 @@ describe("4 · the death/incapacity split is real for new data and safe for old"
     expect(remap.test(`when release_condition = '${DEPRECATED_FUSED}' then 'after_verified_death'`)).toBe(true);
   });
 
-  it("neither split condition is satisfiable in the canonical predicate", () => {
+  it("the death condition is satisfiable ONLY conjoined with death_verified; everything else stays out", () => {
+    /**
+     * ★ REWRITTEN DELIBERATELY IN PHASE 11-D — the 11-B version asserted the death condition was
+     * absent from the satisfying predicate, and it fired when 11-D added it, which is what it was
+     * for. The 11-D shape: `after_verified_death` appears in the body EXACTLY ONCE, conjoined with
+     * the authoritative lifecycle in one expression, under the standard arm only. Incapacity, the
+     * fused value, claim, identity and never remain absent — satisfiable by nothing.
+     */
     const canonical = load(CANONICAL).code;
     const fn = canonical.slice(canonical.indexOf("function public.release_condition_satisfied"));
     const body = fn.slice(0, fn.indexOf("$function$;"));
     expect(body.length).toBeGreaterThan(100);
-    for (const c of ["after_verified_death", "after_verified_incapacity", DEPRECATED_FUSED,
+    for (const c of ["after_verified_incapacity", DEPRECATED_FUSED,
                      "after_claim_case_approval", "after_identity_verification", "never"]) {
       expect(body, `${c} appears in the SATISFYING predicate`).not.toContain(`'${c}'`);
     }
-    // ★ …and the body is not empty of conditions altogether, which would pass the loop above
+    const deathMentions = body.match(/'after_verified_death'/g) ?? [];
+    expect(deathMentions.length, "the death condition must appear exactly once in the satisfying body").toBe(1);
+    expect(body).toMatch(
+      /p_release_condition\s*=\s*'after_verified_death'\s*\n?\s*and\s+p_lifecycle_state\s*=\s*'death_verified'/
+    );
+    const legacyArm = body.slice(body.indexOf("when 'legacy_immediate_only' then"));
+    expect(legacyArm, "the death condition reached the legacy arm — the policies were harmonized (R12)")
+      .not.toContain("'after_verified_death'");
+    // ★ …and the body is not empty of conditions altogether, which would pass the loops above
     // trivially. The two it MUST name are named.
     expect(body).toContain("'immediately'");
     expect(body).toContain("'after_owner_approval'");
@@ -427,14 +442,17 @@ describe("5 · the bundles ship the authority with the code that calls it", () =
   });
 });
 
-describe("6 · the release seam is still REPORTED, never CONSULTED", () => {
+describe("6 · the predicate consumes the lifecycle as an ARGUMENT and still reads nothing", () => {
   /**
-   * ★ THE 11-A GUARANTEE, RE-ASSERTED FROM THE NEW ARCHITECTURE. Centralizing the predicate makes it
-   * one edit away from consuming a lifecycle state — which is the 11-D change and must be deliberate.
-   * The canonical module takes NO lifecycle argument, and this is what makes that a checked fact
-   * rather than a comment.
+   * ★ REWRITTEN DELIBERATELY IN PHASE 11-D — the 11-B version pinned "no lifecycle argument" and
+   * fired when the 11-D widening arrived, which is what it was for. What survives the widening,
+   * pinned here: the predicate takes the lifecycle STATE (text), never an estate id — a predicate
+   * that resolved estate → lifecycle itself would be a client-executable death-status oracle — and
+   * it remains a PURE function: no table read, no claim projection, no designation check. The
+   * lifecycle READ lives in SECURITY DEFINER consumers, through the one revoked-from-clients
+   * reader, beside the grant lookup it scopes.
    */
-  it("the canonical predicate takes no lifecycle or estate argument", () => {
+  it("the canonical predicate takes the lifecycle STATE, and no estate id", () => {
     const canonical = load(CANONICAL).code;
     const sig = canonical.slice(
       canonical.indexOf("create or replace function public.release_condition_satisfied"),
@@ -444,8 +462,11 @@ describe("6 · the release seam is still REPORTED, never CONSULTED", () => {
     expect(sig).toContain("p_release_condition");
     expect(sig).toContain("p_approved_at");
     expect(sig).toContain("p_policy");
-    expect(sig, "the predicate gained an estate/lifecycle argument — that is the 11-D change")
-      .not.toMatch(/p_estate|lifecycle|release_state|claim/i);
+    expect(sig, "the 11-D lifecycle argument is gone — the predicate went lifecycle-blind again")
+      .toContain("p_lifecycle_state");
+    expect(sig, "the predicate gained an ESTATE argument — resolving estate → lifecycle inside a "
+      + "client-executable function is a death-status oracle").not.toMatch(/p_estate\b|uuid/i);
+    expect(sig).not.toMatch(/release_state|claim/i);
   });
 
   it("the canonical module consults no table and no other authority", () => {
@@ -453,6 +474,84 @@ describe("6 · the release seam is still REPORTED, never CONSULTED", () => {
     expect(canonical, "the authority reads a table — it must be a pure function of its arguments")
       .not.toMatch(/\bfrom\s+public\./i);
     expect(canonical).not.toMatch(/estate_release_state|claim_packets|estate_designations|is_estate_executor/);
+    // The reader is named only in prose (stripped) — never called: the module receives the state.
+    expect(canonical).not.toMatch(/public\.estate_lifecycle_state\s*\(/);
+  });
+
+  /**
+   * ★ THE LIFECYCLE ARGUMENT DISCIPLINE — every call site, censused with balanced parentheses.
+   *
+   * The policy-argument rule below this one captures `([^)]*)`, which stops at the first close
+   * paren and cannot see a nested `estate_lifecycle_state(...)` call. This rule extracts each call's
+   * FULL argument list by balancing parens, then requires the fourth argument to be one of exactly
+   * two shapes:
+   *
+   *   · `public.estate_lifecycle_state(<estate expr>)` — the authoritative seam, resolved by the
+   *     SECURITY DEFINER consumer for the estate whose grant it is evaluating;
+   *   · the literal `'active'` — ONLY in `lifecycle_notification_rpcs.sql`: the emission predicate
+   *     is pinned to the base state by decision (a "You have access" born from death_verified is
+   *     the release announcement 11-F owns), and that pin is load-bearing for the
+   *     source↔deployment reconciler, which requires notification_grant_is_live to stay
+   *     behaviourally byte-identical to the deployed 10-E body.
+   *
+   * Anything else — a pinned 'death_verified', a local variable holding a guess, a missing fourth
+   * argument — is release policy leaking out of the canonical module.
+   */
+  const fullArgs = (code: string): string[] => {
+    const out: string[] = [];
+    const re = /(?<!function\s)public\.release_condition_satisfied\s*\(/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code)) !== null) {
+      let depth = 1;
+      let i = m.index + m[0].length;
+      const start = i;
+      while (i < code.length && depth > 0) {
+        if (code[i] === "(") depth += 1;
+        else if (code[i] === ")") depth -= 1;
+        i += 1;
+      }
+      out.push(code.slice(start, i - 1));
+    }
+    return out;
+  };
+
+  it("every consumer passes the seam as the lifecycle argument (the notification pin excepted)", () => {
+    const calls = SQL_SOURCES.flatMap((f) => fullArgs(load(f).code).map((args) => ({ file: f, args })));
+    expect(calls.length, "fewer call sites than the rewiring created — this rule would be vacuous")
+      .toBeGreaterThanOrEqual(7);
+    for (const { file, args } of calls) {
+      // Split top-level commas (depth 0) to isolate the fourth argument.
+      const parts: string[] = [];
+      let depth = 0;
+      let cur = "";
+      for (const ch of args) {
+        if (ch === "(") depth += 1;
+        if (ch === ")") depth -= 1;
+        if (ch === "," && depth === 0) { parts.push(cur.trim()); cur = ""; continue; }
+        cur += ch;
+      }
+      parts.push(cur.trim());
+      expect(parts.length, `${file}: a predicate call has ${parts.length} argument(s), expected 4`).toBe(4);
+      const lifecycle = parts[3].replace(/\s+/g, " ");
+      if (file === "db/functions/lifecycle_notification_rpcs.sql") {
+        expect(lifecycle, `${file}: the emission pin must be the base-state literal`).toBe("'active'");
+      } else {
+        expect(
+          /^public\.estate_lifecycle_state\(\s*\w+(\.\w+)?\s*\)$/.test(lifecycle),
+          `${file} passes a lifecycle that is not the authoritative seam: ${lifecycle}`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("detection sanity: a pinned or hand-rolled lifecycle argument WOULD be caught", () => {
+    const pinned = fullArgs("x := public.release_condition_satisfied(c, a, 'standard', 'death_verified');");
+    expect(pinned).toEqual(["c, a, 'standard', 'death_verified'"]);
+    const nested = fullArgs("x := public.release_condition_satisfied(c, a, 'standard', public.estate_lifecycle_state(v_estate));");
+    expect(nested[0]).toContain("public.estate_lifecycle_state(v_estate)");
+    // And a three-argument survivor (an un-rewired caller) fails the arity check above by shape.
+    const three = fullArgs("x := public.release_condition_satisfied(c, a, 'standard');");
+    expect(three[0].split(",").length).toBe(3);
   });
 
   it("no function other than get_estate_discovery calls estate_release_state", () => {

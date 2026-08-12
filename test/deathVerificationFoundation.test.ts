@@ -53,32 +53,93 @@ describe("0 · the audit is reading something", () => {
   });
 });
 
-describe("1 · the NEW seam is consulted by NOBODY", () => {
+describe("1 · the seam is consulted by the SANCTIONED set, and only as the predicate's argument", () => {
   /**
-   * ★ THE 11-D CHANGE IS A WIDENING, NOT A DISCOVERY. Until release re-evaluation is designed,
-   * `estate_lifecycle` has exactly one writer (the transition routine) and its reader function has
-   * exactly zero production callers outside the module. A disclosure projection naming either is
-   * the release seam being wired early — the precise accident this phase's brief forbids.
+   * ★ REWRITTEN DELIBERATELY IN PHASE 11-D — the 11-C version pinned "consulted by NOBODY" and
+   * fired when the widening arrived, which is what it was for. The 11-D discipline it becomes:
+   *
+   *   · a CLOSED SET of consumers may name the reader — the death module (runtime callers), the
+   *     reader's own source file, and the disclosure evaluators that pass it INTO the canonical
+   *     predicate. A new consumer must change this list, loudly.
+   *   · outside the death module and the reader's own file, `estate_lifecycle_state` may appear
+   *     ONLY as an argument inside a `release_condition_satisfied` call. A local comparison —
+   *     `if estate_lifecycle_state(e) = 'death_verified' then …` — is release policy leaking back
+   *     out of the canonical module one `if` at a time, and it is the single most likely 11-E
+   *     accident. (`lifecycle_notification_rpcs.sql` is deliberately NOT here: emission pins the
+   *     base state and never consults the seam at all.)
+   *   · the TABLE (`estate_lifecycle`) is still named by nobody outside the death module and the
+   *     reader — consumers go through the reader, never around it.
    */
-  const namesTheSeam = (code: string) =>
-    /\bestate_lifecycle\b|\bpublic\.estate_lifecycle_state\s*\(/.test(code);
+  const SANCTIONED_READER_CALLERS = [
+    "can_access_document.sql",
+    "death_verification.sql",
+    "estate_discovery_rpcs.sql",
+    "estate_lifecycle_state.sql",
+    "get_estate_net_worth.sql",
+    "list_estate_assets.sql",
+  ] as const;
 
-  it("no function outside the module names estate_lifecycle or its reader", () => {
-    const offenders = sources.filter((s) => s.file !== "death_verification.sql" && namesTheSeam(s.code));
-    expect(offenders.map((o) => o.file)).toEqual([]);
+  const namesTheReader = (code: string) => /\bpublic\.estate_lifecycle_state\s*\(/.test(code);
+  const namesTheTable = (code: string) => /\bpublic\.estate_lifecycle\b(?!_state)/.test(code);
+
+  it("exactly the sanctioned set names the reader", () => {
+    const callers = sources.filter((s) => namesTheReader(s.code)).map((s) => s.file).sort();
+    expect(callers).toEqual([...SANCTIONED_READER_CALLERS].sort());
   });
 
-  it("no migration before 0052 names the seam (it did not exist)", () => {
-    const offenders = migrations.filter(
-      (m) => m.file < "0052" && namesTheSeam(m.code)
+  it("only the reader and the transition writer touch the TABLE", () => {
+    const offenders = sources.filter(
+      (s) => !["death_verification.sql", "estate_lifecycle_state.sql"].includes(s.file) && namesTheTable(s.code)
     );
     expect(offenders.map((o) => o.file)).toEqual([]);
   });
 
-  it("detection sanity: a projection consulting the seam WOULD be caught", () => {
-    const disco = sources.find((s) => s.file === "estate_discovery_rpcs.sql")!.code;
-    expect(namesTheSeam(disco + "\n  if public.estate_lifecycle_state(p_estate) = 'death_verified' then")).toBe(true);
-    expect(namesTheSeam(disco)).toBe(false);
+  it("every disclosure consumer uses the reader ONLY as the predicate's lifecycle argument", () => {
+    /**
+     * For each reader mention in a disclosure evaluator, the enclosing text must be a
+     * `release_condition_satisfied(...)` argument list — checked by requiring the predicate call
+     * to OPEN, unclosed, within the 200 characters before the mention. A local `if`/`case`
+     * comparison has no such unclosed call in front of it.
+     */
+    const evaluators = SANCTIONED_READER_CALLERS.filter(
+      (f) => f !== "death_verification.sql" && f !== "estate_lifecycle_state.sql"
+    );
+    for (const f of evaluators) {
+      const code = sources.find((s) => s.file === f)!.code;
+      for (const m of code.matchAll(/public\.estate_lifecycle_state\s*\(/g)) {
+        const before = code.slice(Math.max(0, m.index! - 200), m.index!);
+        const call = before.lastIndexOf("release_condition_satisfied");
+        expect(call, `${f}: the reader is used outside the canonical predicate's argument list`).toBeGreaterThan(-1);
+        const between = before.slice(call);
+        const opens = (between.match(/\(/g) ?? []).length;
+        const closes = (between.match(/\)/g) ?? []).length;
+        expect(opens, `${f}: the reader mention is not INSIDE the predicate call`).toBeGreaterThan(closes);
+      }
+    }
+  });
+
+  it("no migration before 0052 names the seam (it did not exist)", () => {
+    const offenders = migrations.filter(
+      (m) => m.file < "0052" && (namesTheReader(m.code) || namesTheTable(m.code))
+    );
+    expect(offenders.map((o) => o.file)).toEqual([]);
+  });
+
+  it("detection sanity: a local lifecycle comparison and a table bypass WOULD be caught", () => {
+    // The 11-E accident: comparing the seam locally instead of passing it in.
+    const local = "  if public.estate_lifecycle_state(p_estate) = 'death_verified' then v_tier := 'full_detail'; end if;";
+    const before = local.slice(0, local.indexOf("public.estate_lifecycle_state"));
+    expect(before.lastIndexOf("release_condition_satisfied")).toBe(-1);
+    // A consumer reading the table around the reader.
+    expect(namesTheTable("select state from public.estate_lifecycle where estate_id = e")).toBe(true);
+    expect(namesTheTable("public.estate_lifecycle_state(v_estate)")).toBe(false);
+    // And the sanctioned shape passes: an unclosed predicate call precedes the mention.
+    const sanctioned = "return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard', public.estate_lifecycle_state(v_estate));";
+    const b2 = sanctioned.slice(0, sanctioned.indexOf("public.estate_lifecycle_state"));
+    const call = b2.lastIndexOf("release_condition_satisfied");
+    expect(call).toBeGreaterThan(-1);
+    const between = b2.slice(call);
+    expect((between.match(/\(/g) ?? []).length).toBeGreaterThan((between.match(/\)/g) ?? []).length);
   });
 });
 
@@ -208,9 +269,16 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
   });
 
   it("the internal routines are revoked from every client role", () => {
-    expect(dv!.code).toMatch(
+    // ★ THE READER MOVED IN 11-D: it ships with the release-conditions bundle now, from its own
+    // source file — same revoke, held there. Its callers are DEFINER routines; a client that can
+    // execute it holds a death-status oracle for arbitrary estates.
+    const reader = sources.find((s) => s.file === "estate_lifecycle_state.sql");
+    expect(reader, "estate_lifecycle_state.sql is missing — the seam has no source file").toBeDefined();
+    expect(reader!.code).toMatch(
       /revoke execute on function public\.estate_lifecycle_state\(uuid\)\s+from public, anon, authenticated/
     );
+    expect(reader!.code, "the reader must be SECURITY DEFINER (its callers gate; it must reach the table)")
+      .toContain("security definer");
     expect(dv!.code).toMatch(
       /revoke execute on function public\.apply_estate_lifecycle_transition\(uuid, text, uuid, text\)\s*\n?\s*from public, anon, authenticated/
     );

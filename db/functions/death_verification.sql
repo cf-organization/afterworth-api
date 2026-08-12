@@ -25,29 +25,15 @@
 -- level meets it. The initiation-time snapshot on the case row is a record for the case file,
 -- never the enforcement input — a policy tightened mid-case tightens the case.
 --
--- Deploys via `db/bundles/death_verification_bundle.sql` (migration 0052 + this file).
--- Source of truth — re-apply on DB reset.
-
--- ────────────────────────────────────────────────────────────────────────────────────────────────
--- estate_lifecycle_state(p_estate) → text                                     [INTERNAL, 11-D seam]
--- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- Deploys via `db/bundles/death_verification_bundle.sql` (migration 0052 + the lifecycle reader +
+-- this file). Source of truth — re-apply on DB reset.
 --
--- The authoritative lifecycle read: an absent row IS the base state. No client role may execute
--- this — in 11-C its callers are the routines below and the SQL suite. When 11-D wires release
--- re-evaluation, THIS is the fact it consumes — not `claim_packets.status`, not the label-only
--- `estate_release_state()` projection.
-create or replace function public.estate_lifecycle_state(p_estate uuid)
- returns text
- language sql
- security definer
- stable
- set search_path to 'public'
-as $function$
-  select coalesce(
-    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),
-    'active');
-$function$;
-revoke execute on function public.estate_lifecycle_state(uuid) from public, anon, authenticated;
+-- ★ `estate_lifecycle_state` MOVED OUT IN PHASE 11-D — see `db/functions/estate_lifecycle_state.sql`.
+-- The reader now ships with the release-conditions bundle (the disclosure evaluators consume it as
+-- the predicate's lifecycle argument, and the FIRST pasted artifact must carry the seam so no paste
+-- order leaves a consumer referencing a reader that does not exist). The routines below still call
+-- it at execution time; the death bundle carries the same source file so it stays single-paste
+-- runnable.
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- apply_estate_lifecycle_transition(p_estate, p_to, p_case, p_reason) → void          [INTERNAL]

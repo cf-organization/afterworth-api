@@ -17,12 +17,17 @@
 --       admin-gated setter; the decision routine re-derives the requirement LIVE and refuses
 --       `verify` until attained ≥ required (H2 closed).
 --
---   3 · NOTHING HERE CHANGES DISCLOSURE. Case created, evidence received, evidence reviewed,
---       attained level raised, death VERIFIED — after every one of those, each non-authorized
---       viewer's COMPOSED payload (discovery + assets + net worth + documents + readiness +
---       workspace + notifications) is byte-identical to its value before the death-world existed.
---       Paired with a positive control that moves the authorized world and requires the payload
---       to move.
+--   3 · THE WORKFLOW CHANGES NO DISCLOSURE; ONLY THE VERIFIED STATE DOES, AND ONLY FOR QUALIFYING
+--       GRANTS (updated in 11-D). Case created, evidence received, evidence reviewed, attained
+--       level raised — after every one of those, EVERY viewer's COMPOSED payload (discovery +
+--       assets + net worth + documents + readiness + workspace + notifications) is byte-identical
+--       to its value before the death-world existed: progress toward verification discloses
+--       nothing. At death VERIFIED, the payload of a viewer holding an owner-authored
+--       death-conditioned grant moves — in EXACTLY the projection that grant authorizes and no
+--       other — while every viewer without a qualifying grant stays byte-identical, no grant row
+--       is touched, no membership or designation appears, and estate Y's death grants stay
+--       dormant (a foreign lifecycle activates nothing). Paired with positive controls that move
+--       the authorized world and require the payload to move.
 --
 --   4 · EVERY MUTATION IS AUDITED with actor and estate; a DENIED mutation writes nothing.
 --
@@ -328,9 +333,11 @@ declare
   case1 uuid; case2 uuid; case_y uuid; case_y2 uuid; case_z uuid;
   ev1 uuid;
   bene_before jsonb; dele_before jsonb; strg_before jsonb; owner_y_before jsonb;
+  dele_y_before jsonb; dele_after jsonb;
   v jsonb; v2 jsonb; v_res text; v_res2 text; v_res3 text; n int; n2 int;
   audit_before int; notif_before int;
   grants_before jsonb; grants_after jsonb;
+  memb_before jsonb; desig_before jsonb;
   refusal_bytes text; cause_bytes text;
   v_lvl text;
 begin
@@ -381,10 +388,12 @@ begin
   values (X, gen_random_uuid(), 'DV Northbank', 'cashBank', 4200000, 'USD');
 
   -- Grants through the REAL door: one live (the positive-control surface), one death-conditioned
-  -- (the grant Phase 11 exists to eventually activate — it must stay dormant through everything
-  -- this suite does), one for the delegate.
+  -- (the grant Phase 11 exists to activate — dormant through every workflow stage, live at
+  -- death_verified and only there), and a death-conditioned grant on estate Y for the SAME
+  -- delegate, which must stay dormant when X — a different estate — reaches death_verified.
   perform harness_dv.grant_inventory(X, OWNER_X, BENE, 'beneficiary', 'category_summary', 'immediately');
   perform harness_dv.grant_inventory(X, OWNER_X, DELE, 'professional_delegate', 'category_summary', 'after_verified_death');
+  perform harness_dv.grant_inventory(Y, OWNER_Y, DELE, 'professional_delegate', 'category_summary', 'after_verified_death');
 
   -- ★ PRECONDITIONS, ASSERTED (a fixture drift here would quietly re-anchor every test below).
   if public.estate_lifecycle_state(X) <> 'active' then
@@ -411,8 +420,18 @@ begin
   dele_before  := harness_dv.composed(DELE, X);
   strg_before  := harness_dv.composed(STRANGER, X);
   owner_y_before := harness_dv.composed(OWNER_Y, X);
+  -- The delegate's view of estate Y — the cross-estate control: X's death must not move it.
+  dele_y_before := harness_dv.composed(DELE, Y);
   select coalesce(jsonb_agg(to_jsonb(g) order by g.id), '[]'::jsonb) into grants_before
     from public.access_grants g where g.estate_id = X;
+  -- ★ 11-D BRACKETS: activation is EVALUATIVE. Not only must no grant row move — no membership and
+  -- no designation may appear either, or "no new grants manufactured" would be checked one table
+  -- short of the claim.
+  select coalesce(jsonb_agg(to_jsonb(m) order by m.estate_id, m.user_id, m.role), '[]'::jsonb)
+    into memb_before
+    from public.estate_memberships m where m.estate_id in (X, Y, Z);
+  select coalesce(jsonb_agg(to_jsonb(d) order by d.id), '[]'::jsonb) into desig_before
+    from public.estate_designations d where d.estate_id in (X, Y, Z);
   raise notice '  ok   composed BEFORE captured; beneficiary payload carries real disclosure';
 
   -- ===============================================================================================
@@ -718,13 +737,15 @@ begin
   end if;
   raise notice '  ok   attained = required → case verified; lifecycle = death_verified';
 
-  -- ★ THE CENTRAL 11-C PROPERTY. The estate is death_verified and EVERY viewer''s composed payload
-  -- is byte-identical to the pre-case world — the death-conditioned grant included.
+  -- ★ THE CENTRAL PROPERTY, REWRITTEN DELIBERATELY IN 11-D (this is the assertion the 11-C
+  -- tripwire existed to make loud). The estate is death_verified. Viewers WITHOUT a qualifying
+  -- death grant are byte-identical to the pre-case world. The delegate — who holds the
+  -- owner-authored `after_verified_death` inventory grant on X, created through the real door —
+  -- must MOVE, in EXACTLY the discovery projection that grant authorizes, at exactly the tier the
+  -- owner chose, and in no other projection: assets and net worth (legacy policy, R12), documents
+  -- (no document grant), readiness, workspace and notifications all stay frozen.
   if harness_dv.composed(BENE, X)::text is distinct from bene_before::text then
     raise exception 'FAIL[FIREWALL]: death_verified changed the beneficiary composed payload';
-  end if;
-  if harness_dv.composed(DELE, X)::text is distinct from dele_before::text then
-    raise exception 'FAIL[FIREWALL]: death_verified changed the delegate (death-conditioned grant) payload';
   end if;
   if harness_dv.composed(STRANGER, X)::text is distinct from strg_before::text then
     raise exception 'FAIL[FIREWALL]: death_verified changed the stranger composed payload';
@@ -732,12 +753,67 @@ begin
   if harness_dv.composed(OWNER_Y, X)::text is distinct from owner_y_before::text then
     raise exception 'FAIL[FIREWALL]: death_verified changed the foreign-owner composed payload';
   end if;
-  raise notice '  ok   FIREWALL: death_verified changed NO composed payload (4 viewers, 7 surfaces each)';
+  raise notice '  ok   FIREWALL: death_verified moved NO viewer without a qualifying grant (3 viewers, 7 surfaces each)';
+
+  dele_after := harness_dv.composed(DELE, X);
+  if dele_after::text is not distinct from dele_before::text then
+    raise exception 'FAIL[ACTIVATION]: death_verified did NOT move the delegate''s payload — the '
+      'owner-authored death-conditioned grant never became live through the real verification door';
+  end if;
+  -- The inventory grant discloses through TWO projections, both fed by the same
+  -- `inventory_disclosure_tier` call: estate discovery, and the professional workspace''s inventory
+  -- block. Both may move — same grant, same predicate, same authored tier — and NOTHING else may.
+  if (dele_after - 'discovery' - 'workspace')::text
+     is distinct from (dele_before - 'discovery' - 'workspace')::text then
+    raise exception 'FAIL[ACTIVATION]: the delegate moved OUTSIDE the projections the grant '
+      'authorizes. before=% after=%',
+      (dele_before - 'discovery' - 'workspace')::text,
+      (dele_after - 'discovery' - 'workspace')::text;
+  end if;
+  if (dele_after -> 'discovery')::text is not distinct from (dele_before -> 'discovery')::text then
+    raise exception 'FAIL[ACTIVATION-control]: discovery did not move — the outside-projection '
+      'assertion above is vacuous for it';
+  end if;
+  -- The workspace delta is confined to its inventory block, and that block honours the tier.
+  if ((dele_after -> 'workspace') - 'inventory')::text
+     is distinct from ((dele_before -> 'workspace') - 'inventory')::text then
+    raise exception 'FAIL[ACTIVATION]: the workspace moved outside its inventory block. before=% after=%',
+      ((dele_before -> 'workspace') - 'inventory')::text,
+      ((dele_after -> 'workspace') - 'inventory')::text;
+  end if;
+  if (dele_after -> 'workspace' -> 'inventory' ->> 'tier') is distinct from 'category_summary'
+     or position('category_summary' in (dele_after -> 'discovery')::text) = 0 then
+    raise exception 'FAIL[ACTIVATION]: an activated projection does not honour the authored '
+      'category_summary tier. workspace=%, discovery=%',
+      (dele_after -> 'workspace' -> 'inventory')::text, (dele_after -> 'discovery')::text;
+  end if;
+  raise notice '  ok   ACTIVATION: the death-conditioned grant went live at its authored tier, in '
+    'its two authorized projections (discovery + workspace inventory) and nowhere else';
+
+  -- ★ CROSS-ESTATE: the SAME delegate holds the SAME death-conditioned grant on estate Y, and X''s
+  -- death_verified is a fact about X. Y''s lifecycle is active; Y''s grant stays dormant.
+  if harness_dv.composed(DELE, Y)::text is distinct from dele_y_before::text then
+    raise exception 'FAIL[CROSS-ESTATE]: X''s death_verified moved the delegate''s estate-Y payload '
+      '— a foreign lifecycle activated a local grant';
+  end if;
+  raise notice '  ok   CROSS-ESTATE: the identical grant on estate Y stayed dormant (lifecycle is per-estate)';
 
   select coalesce(jsonb_agg(to_jsonb(g) order by g.id), '[]'::jsonb) into grants_after
     from public.access_grants g where g.estate_id = X;
   if grants_after::text is distinct from grants_before::text then
-    raise exception 'FAIL[FIREWALL]: the verification flow touched access_grants';
+    raise exception 'FAIL[FIREWALL]: the verification flow touched access_grants — activation must '
+      'be EVALUATIVE, never a write';
+  end if;
+  -- No membership materialized, no designation materialized — on any fixture estate.
+  if (select coalesce(jsonb_agg(to_jsonb(m) order by m.estate_id, m.user_id, m.role), '[]'::jsonb)
+        from public.estate_memberships m where m.estate_id in (X, Y, Z))::text
+     is distinct from memb_before::text then
+    raise exception 'FAIL[FIREWALL]: the verification flow touched estate_memberships';
+  end if;
+  if (select coalesce(jsonb_agg(to_jsonb(d) order by d.id), '[]'::jsonb)
+        from public.estate_designations d where d.estate_id in (X, Y, Z))::text
+     is distinct from desig_before::text then
+    raise exception 'FAIL[FIREWALL]: the verification flow touched estate_designations';
   end if;
   select count(*) into n from public.notifications;
   if n <> notif_before then

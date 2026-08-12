@@ -124,8 +124,8 @@ const MUTATIONS = Object.freeze([
       + '11-B: the inline rule became a delegation, so the modern form of this edit is widening the '
       + 'delegation — "active is enough" — rather than widening a literal list.',
     file: 'db/functions/lifecycle_notification_rpcs.sql',
-    from: "  select p_status = 'active'\n     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard');",
-    to: "  select p_status = 'active'\n     and (p_release_condition is not null\n          or public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard'));",
+    from: "  select p_status = 'active'\n     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active');",
+    to: "  select p_status = 'active'\n     and (p_release_condition is not null\n          or public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active'));",
   },
   {
     id: 'revoke-link-restored',
@@ -252,8 +252,8 @@ const MUTATIONS = Object.freeze([
       + 'release comparison beside the canonical call — which is the same accident, and the form it '
       + 'will actually take now that a predicate exists to bypass.',
     file: 'db/functions/estate_discovery_rpcs.sql',
-    from: "  if not public.release_condition_satisfied(v_cond, v_approved, 'standard') then",
-    to: "  if not (v_cond = 'after_verified_death_or_incapacity'\n          or public.release_condition_satisfied(v_cond, v_approved, 'standard')) then",
+    from: "  if not public.release_condition_satisfied(v_cond, v_approved, 'standard',\n                                            public.estate_lifecycle_state(p_estate)) then",
+    to: "  if not (v_cond = 'after_verified_death_or_incapacity'\n          or public.release_condition_satisfied(v_cond, v_approved, 'standard',\n                                                public.estate_lifecycle_state(p_estate))) then",
   },
 
   /* ── PHASE 11-B · the canonical release-condition engine ──────────────────────────────────────
@@ -264,9 +264,10 @@ const MUTATIONS = Object.freeze([
    */
   {
     id: 'p11b-death-satisfied-standard',
-    why: 'THE PHASE 11 FAILURE, COMMITTED AT THE CENTRE. Admitting after_verified_death in the '
-      + 'canonical predicate activates every death-conditioned grant on every surface at once — '
-      + 'documents, inventory, notifications — from a one-line edit that looks like progress.',
+    why: 'THE PHASE 11 FAILURE, COMMITTED AT THE CENTRE — 11-D form: death satisfied at EVERY '
+      + 'lifecycle, not only death_verified. Folding the condition into the unconditional list is '
+      + 'the one-line edit that looks like tidying the death arm away, and it activates every '
+      + 'death-conditioned grant on every standard surface while the owner is alive.',
     file: 'db/functions/release_conditions.sql',
     from: "      when 'standard' then\n        p_release_condition = 'immediately'",
     to: "      when 'standard' then\n        p_release_condition in ('immediately', 'after_verified_death')",
@@ -305,7 +306,7 @@ const MUTATIONS = Object.freeze([
       + 'the net-worth grant lookup makes a `never` grant — and a death-conditioned one — disclose '
       + 'the estate total. The edit reads as removing a redundant filter.',
     file: 'db/functions/get_estate_net_worth.sql',
-    from: "    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')\n  limit 1;",
+    from: "    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',\n                                           public.estate_lifecycle_state(p_estate_id))\n  limit 1;",
     to: '  limit 1;',
   },
   {
@@ -316,8 +317,8 @@ const MUTATIONS = Object.freeze([
       + 'delegation control still passes: this mutation tests the RUNTIME layer, and a form the '
       + 'bundler refuses to build would prove the bundler instead (it has its own control).',
     file: 'db/functions/can_access_document.sql',
-    from: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard');",
-    to: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard') or true;",
+    from: "  return public.release_condition_satisfied(\n    g.release_condition, g.approved_at, 'standard', public.estate_lifecycle_state(v_estate));",
+    to: "  return public.release_condition_satisfied(\n    g.release_condition, g.approved_at, 'standard', public.estate_lifecycle_state(v_estate)) or true;",
     /**
      * ★ THE SAME EDIT LANDS IN THE PREAMBLE'S VERBATIM COPY, and this is what `also` exists for.
      *
@@ -331,8 +332,8 @@ const MUTATIONS = Object.freeze([
      */
     also: [{
       file: 'db/tests/preamble_real_auth.sql',
-      from: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard');",
-      to: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard') or true;",
+      from: "  return public.release_condition_satisfied(\n    g.release_condition, g.approved_at, 'standard', public.estate_lifecycle_state(v_estate));",
+      to: "  return public.release_condition_satisfied(\n    g.release_condition, g.approved_at, 'standard', public.estate_lifecycle_state(v_estate)) or true;",
     }],
   },
   {
@@ -521,8 +522,9 @@ const MUTATIONS = Object.freeze([
     target: 'npx',
     why: 'THE LIFECYCLE IS AUTHORITATIVE; THE CLAIM PROJECTION IS A LABEL (D7). Falling back to '
       + 'estate_release_state re-couples the new record to claim_packets.status — the carrier the '
-      + 'phase exists to retire. The seam pin (one caller, ever) must object.',
-    file: 'db/functions/death_verification.sql',
+      + 'phase exists to retire. The seam pin (one caller, ever) must object. (The reader moved to '
+      + 'its own source file in 11-D; the mutation moved with it.)',
+    file: 'db/functions/estate_lifecycle_state.sql',
     from: "  select coalesce(\n    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),\n    'active');",
     to: "  select coalesce(\n    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),\n    public.estate_release_state(p_estate));",
   },
@@ -587,6 +589,203 @@ const MUTATIONS = Object.freeze([
     file: 'db/functions/death_verification.sql',
     from: "    or (v_from = 'death_verification_pending' and p_to = 'death_verified')",
     to: "    or (v_from = 'death_verification_pending' and p_to = 'death_verified')\n    or (v_from = 'death_verified' and p_to = 'released')",
+  },
+
+  /* ── PHASE 11-D · lifecycle-aware release activation ──────────────────────────────────────────
+   * The predicate now has a satisfying death arm, so the mutation surface inverts: 11-B/11-C asked
+   * "would anything notice death becoming satisfiable?"; 11-D must ask "would anything notice the
+   * CONJUNCTION weakening?" — satisfied too early, satisfied under the wrong policy, satisfied for
+   * the wrong estate, or activation acquiring side effects (a grant row, a tier, a membership, an
+   * announcement). Each mutation is the edit a contributor would actually make, and each names the
+   * instrument that must object.
+   */
+  {
+    id: 'p11d-death-satisfied-while-pending',
+    why: 'A PENDING VERIFICATION IS NOT A VERIFIED DEATH (§14). Adding a second arm for the pending '
+      + 'state releases on the strength of an OPEN case — an unreviewed attestation becomes '
+      + 'disclosure. Written to PRESERVE the conjunct the bundler control requires, so the '
+      + 'RUNTIME layer testifies rather than the build refusing (the Stage-17 masking shape).',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')\n        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verification_pending')",
+  },
+  {
+    id: 'p11d-death-ignores-lifecycle',
+    why: 'THE CONJUNCTION IS THE FIREWALL (matrix #11). Dropping the lifecycle conjunct satisfies '
+      + 'the death condition unconditionally under standard — the argument is still accepted, '
+      + 'still passed by every consumer, and decides nothing. The edit reads as simplifying a '
+      + 'redundant check, and the truth table must be what objects (the bundler deliberately '
+      + 'carries no needle for the conjunction, so this layer stays testable).',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+    to: "        or p_release_condition = 'after_verified_death'",
+  },
+  {
+    id: 'p11d-unknown-lifecycle-fails-open',
+    why: 'AN OUT-OF-VOCABULARY LIFECYCLE MUST REFUSE EVERYTHING (matrix #9). Softening the validity '
+      + 'gate to a not-equals makes any miswired consumer — one passing a label, a claim state, a '
+      + 'typo — evaluate as though the lifecycle were fine. Fail-closed on this axis is what makes '
+      + 'a wiring mistake loud instead of permissive.',
+    file: 'db/functions/release_conditions.sql',
+    from: "    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified')",
+    to: "    p_lifecycle_state is distinct from 'released'",
+  },
+  {
+    id: 'p11d-policies-silently-harmonized',
+    why: 'R12 AS A MUTATION (matrix #14). Giving the legacy arm the same death clause as standard '
+      + 'is the "complete the feature" edit — and it changes what a survivor sees on the asset '
+      + 'surfaces, which is a priced product decision, not a tidy-up. The truth table pins the '
+      + 'legacy cell false; the surface matrix pins asset rows dormant at death_verified.',
+    file: 'db/functions/release_conditions.sql',
+    from: "      when 'legacy_immediate_only' then\n        p_release_condition = 'immediately'",
+    to: "      when 'legacy_immediate_only' then\n        p_release_condition = 'immediately'\n        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+  },
+  {
+    id: 'p11d-never-satisfied-at-death',
+    why: 'NEVER MEANS NEVER, INCLUDING AFTER A VERIFIED DEATH (matrix #7). Folding never into the '
+      + 'death arm is the shape of "the owner is gone, surely the block lapses" — it does not: '
+      + 'never is the owner\'s standing refusal, and death does not rewrite owner intent (R3/R4).',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+    to: "        or (p_release_condition in ('after_verified_death', 'never')\n            and p_lifecycle_state = 'death_verified')",
+  },
+  {
+    id: 'p11d-consumer-pins-lifecycle',
+    why: 'THE SEAM IS THE ONLY LIFECYCLE A CONSUMER MAY PASS (matrix #19). Pinning death_verified '
+      + 'at one call site activates that surface\'s death grants for every estate, verified or not '
+      + '— the per-estate fact replaced by a constant that happens to be true somewhere. The '
+      + 'pre-activation dormancy matrix must see estate A\'s grant go live.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if not public.release_condition_satisfied(v_cond, v_approved, 'standard',\n                                            public.estate_lifecycle_state(p_estate)) then",
+    to: "  if not public.release_condition_satisfied(v_cond, v_approved, 'standard',\n                                            coalesce('death_verified', public.estate_lifecycle_state(p_estate))) then",
+  },
+  {
+    id: 'p11d-local-lifecycle-comparison',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    why: 'RELEASE POLICY MUST NOT LEAK BACK OUT OF THE CANONICAL MODULE ONE `if` AT A TIME (matrix '
+      + '#13). A consumer short-circuiting on its own lifecycle comparison bypasses the predicate '
+      + 'AND the ceiling clamp below it. The only-as-argument pin must object — this edit changes '
+      + 'no behaviour in the fixture\'s pre-verification world, so only structure can catch it early.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  -- Read-time ceiling clamp (authoritative).\n  if not public.asset_category_grantable(v_role, 'estate_inventory', v_tier) then",
+    to: "  if public.estate_lifecycle_state(p_estate) = 'death_verified' then\n    return v_tier;\n  end if;\n  -- Read-time ceiling clamp (authoritative).\n  if not public.asset_category_grantable(v_role, 'estate_inventory', v_tier) then",
+  },
+  {
+    id: 'p11d-seam-loses-estate-scope',
+    why: 'ONE ESTATE\'S DEATH IS NOT EVERY ESTATE\'S DEATH (matrix #30, §12). Dropping the estate '
+      + 'predicate from the reader makes the most recently moved lifecycle answer for every estate '
+      + '— the cross-estate matrix (a dormant grant on active estate A while estate D is verified) '
+      + 'must object.',
+    file: 'db/functions/estate_lifecycle_state.sql',
+    from: "    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),",
+    to: "    (select l.state from public.estate_lifecycle l order by l.updated_at desc limit 1),",
+  },
+  {
+    id: 'p11d-attained-becomes-lifecycle',
+    why: 'ATTAINMENT IS A FACT, THE LIFECYCLE IS A DECISION (matrix #4, §14). A reader that treats '
+      + '"attained level present on an open case" as death_verified releases on the reviewer\'s '
+      + 'data-entry, before any decision ran H2. The stage firewall (attained set, payload frozen) '
+      + 'must object.',
+    file: 'db/functions/estate_lifecycle_state.sql',
+    from: "    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),",
+    to: "    (select case when l.state = 'death_verification_pending'\n                  and exists (select 1 from public.death_verification_cases c\n                               where c.estate_id = p_estate and c.status = 'open'\n                                 and c.attained_level is not null)\n                 then 'death_verified' else l.state end\n       from public.estate_lifecycle l where l.estate_id = p_estate),",
+  },
+  {
+    id: 'p11d-decision-skips-lifecycle-transition',
+    why: 'THE DECISION AND THE LIFECYCLE MOVE ATOMICALLY OR THE BOUNDARY IS FICTION (§14: "case '
+      + 'verified but lifecycle not transitioned"). A decision routine that stamps the case and '
+      + 'forgets the transition leaves the predicate blind to a verification that "happened" — the '
+      + 'activation assertion (delegate payload MUST move at death_verified) is what notices the '
+      + 'seam went dead.',
+    file: 'db/functions/death_verification.sql',
+    from: "  perform public.apply_estate_lifecycle_transition(\n    v_estate,\n    case when p_decision = 'verify' then 'death_verified' else 'active' end,\n    p_case,\n    'case_' || v_target);",
+    to: "  -- transition deferred to a follow-up job\n  perform 1;",
+  },
+  {
+    id: 'p11d-verify-manufactures-grant',
+    why: 'ACTIVATION IS EVALUATIVE, NEVER A WRITE (matrix #15, R3). Verifying a death must not '
+      + 'insert a grant — even for the fiduciary "who will need it". The grants bracket (byte-'
+      + 'identical access_grants across the flow) must object.',
+    file: 'db/functions/death_verification.sql',
+    from: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;",
+    to: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;\n  insert into public.access_grants\n    (estate_id, grantee_user_id, grantee_role, category, visibility_tier, release_condition, status, granted_by_user_id)\n  select v_estate, c.initiated_by, 'beneficiary', 'estate_inventory', 'full_detail', 'immediately', 'active', v_uid\n    from public.death_verification_cases c where c.id = p_case and p_decision = 'verify';",
+  },
+  {
+    id: 'p11d-verify-raises-tier',
+    why: 'A VERIFIED DEATH MUST NOT TOUCH A TIER (matrix #16, R9). Raising existing grants "so the '
+      + 'survivors can see what they need" rewrites owner-authored disclosure at the worst moment. '
+      + 'The grants bracket and the beneficiary equivalence row must object.',
+    file: 'db/functions/death_verification.sql',
+    from: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;",
+    to: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;\n  update public.access_grants set visibility_tier = 'full_detail'\n   where estate_id = v_estate and p_decision = 'verify';",
+  },
+  {
+    id: 'p11d-verify-creates-membership',
+    why: 'DEATH VERIFICATION MANUFACTURES NO RELATIONSHIP (matrix #17, R3). Materializing a '
+      + 'membership for the initiator turns a capacity gate into an identity writer — the '
+      + 'membership bracket must object.',
+    file: 'db/functions/death_verification.sql',
+    from: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;",
+    to: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;\n  insert into public.estate_memberships (estate_id, user_id, role, status)\n  select v_estate, c.initiated_by, 'beneficiary', 'approved'\n    from public.death_verification_cases c where c.id = p_case and p_decision = 'verify';",
+  },
+  {
+    id: 'p11d-verify-creates-designation',
+    why: 'DEATH VERIFICATION CONFERS NO FIDUCIARY POWER EITHER (matrix #18). Stamping the decider '
+      + 'as executor is authority manufacturing itself an author — the designation bracket must '
+      + 'object.',
+    file: 'db/functions/death_verification.sql',
+    from: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;",
+    to: "  update public.death_verification_cases\n     set status = v_target, decided_by = v_uid, decided_at = now(),\n         decision_note = p_note, updated_at = now()\n   where id = p_case;\n  insert into public.estate_designations (estate_id, user_id, designation_type, status)\n  select v_estate, c.initiated_by, 'executor', 'active'\n    from public.death_verification_cases c where c.id = p_case and p_decision = 'verify';",
+  },
+  {
+    id: 'p11d-notification-pin-becomes-death',
+    why: 'EMISSION IS PINNED TO THE BASE LIFECYCLE, AND THE PIN IS LOAD-BEARING (§16, R11). '
+      + 'Repointing the literal at death_verified makes every grant-creation emitter announce '
+      + 'death-conditioned grants as live access — the release announcement 11-F owns, emitted as '
+      + 'a side effect. The notification firewall row must object.',
+    file: 'db/functions/lifecycle_notification_rpcs.sql',
+    from: "     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active');",
+    to: "     and (public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active')\n          or public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'death_verified'));",
+  },
+  {
+    id: 'p11d-notification-copy-death-language',
+    why: 'NOTIFICATION COPY DISCLOSES NO DEATH OR RELEASE FACT (matrix #22, §16). Enriching the '
+      + 'grant-created copy with release language turns a routine heads-up into the announcement '
+      + 'this phase must not make; the exit matrix\'s language scan over emitted rows must object.',
+    file: 'db/functions/lifecycle_notification_rpcs.sql',
+    from: "     'You have access to shared estate information.'),",
+    to: "     'The estate has been released to you.'),",
+  },
+  {
+    id: 'p11d-revoked-death-grant-activates',
+    why: 'REVOCATION SURVIVES DEATH (matrix #27). Softening the status filter lets a revoked '
+      + 'death-conditioned grant come back to life at death_verified — the owner withdrew it while '
+      + 'alive, and the withdrawal is exactly as authoritative as the grant was. The revoked-grant '
+      + 'row of the activation matrix must object.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "     and g.category = 'estate_inventory'\n     and g.status = 'active'",
+    to: "     and g.category = 'estate_inventory'\n     and g.status is not null",
+  },
+  {
+    id: 'p11d-ceiling-clamp-bypassed',
+    why: 'ACTIVATION FEEDS THE CEILING, IT DOES NOT OUTRANK IT (matrix #28). Disabling the '
+      + 'read-time clamp lets an over-ceiling death grant deliver full_detail the moment the '
+      + 'condition is satisfied — the over-ceiling row of the activation matrix must object.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if not public.asset_category_grantable(v_role, 'estate_inventory', v_tier) then\n    return 'hidden';\n  end if;",
+    to: "  if not public.asset_category_grantable(v_role, 'estate_inventory', v_tier) and v_tier <> 'full_detail' then\n    return 'hidden';\n  end if;",
+  },
+  {
+    id: 'p11d-equivalence-instrument-frozen',
+    why: 'AN INSTRUMENT THAT CANNOT SEE CHANGE PROVES NOTHING (matrix #29). Freezing the composed '
+      + 'helper to a constant makes every byte-identity assertion vacuously true — and the suite '
+      + 'must FAIL anyway, because its positive controls demand that authorized changes and the '
+      + '11-D activation itself visibly move the payload. A green run with a frozen instrument '
+      + 'would mean the controls are decorative.',
+    file: 'db/tests/death_verification_authorization.sql',
+    from: "  ) into v;\n  reset role;\n  return v;\nexception when others then",
+    to: "  ) into v;\n  reset role;\n  return '{}'::jsonb;\nexception when others then",
   },
 ]);
 

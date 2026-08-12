@@ -152,16 +152,30 @@ as $function$
   -- is accepted by can_access_document") a structural fact rather than a claim two files apart have
   -- to keep agreeing about by hand.
   --
+  -- ★ PHASE 11-D — THE LIFECYCLE ARGUMENT IS PINNED TO THE BASE STATE, DELIBERATELY. This predicate
+  -- decides whether to SPEAK, and it may speak only about access that holds WITHOUT reference to any
+  -- lifecycle event: a "You have access" emitted because an estate is death_verified IS the release
+  -- announcement Phase 11-F owns the copy for, and 11-D emits no death or release fact (R11, §16).
+  -- Pinning 'active' keeps every emission byte-identical to Phase 10-E — which the source↔deployment
+  -- reconciler requires (this function's full truth table is compared EXACT against production) —
+  -- and keeps the subset property: everything accepted here is still accepted by the read path,
+  -- while the read path may now accept more. The quiet direction costs a heads-up and nothing else.
+  -- This literal is the ONE sanctioned non-seam lifecycle argument in the codebase, pinned by
+  -- `test/deathVerificationFoundation.test.ts`; every disclosure evaluator passes
+  -- `public.estate_lifecycle_state(<estate>)`.
+  --
   -- The STATUS half stays here, because it is not a release-condition question: a revoked grant is
   -- not a dormant condition, it is a grant that no longer exists for this purpose.
   select p_status = 'active'
-     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard');
+     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active');
 $function$;
 
 comment on function public.notification_grant_is_live(text, text, timestamptz) is
-  'True only for a grant that confers access RIGHT NOW, mirroring can_access_document''s release rule. '
-  'Death-conditioned and claim-conditioned grants are dormant here and emit NOTHING. Decides whether to '
-  'SPEAK, never what may be READ — no read path consults it.';
+  'True only for a grant that confers access in the BASE lifecycle, a deliberate subset of '
+  'can_access_document''s rule since 11-D: the lifecycle argument is pinned to active, so a '
+  'death-conditioned grant emits NOTHING even at death_verified — release announcements are 11-F '
+  'copy, not a side effect of grant emission. Claim-conditioned grants stay dormant. Decides whether '
+  'to SPEAK, never what may be READ — no read path consults it.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- Recipient resolution. Server-side, from the authoritative source for each fact.

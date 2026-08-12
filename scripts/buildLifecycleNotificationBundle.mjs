@@ -34,7 +34,14 @@ buildBundle(
       // ★ FIRST (Phase 11-B): `notification_grant_is_live` is `language sql` and delegates to
       // `release_condition_satisfied`, so its CREATE fails outright on a database that lacks the
       // predicate. Carrying the canonical module here keeps this bundle single-paste runnable —
-      // the property its header promises — at the cost of an idempotent re-CREATE.
+      // the property its header promises — at the cost of an idempotent re-CREATE. Since 11-D the
+      // blind 3-argument overload is dropped first (0053): without the drop, a database that ran
+      // the 11-B artifact would keep two authorities, and overload resolution would quietly serve
+      // the lifecycle-blind one to any caller that was not rewired. This bundle needs NO lifecycle
+      // seam: `notification_grant_is_live` pins the base state ('active') by decision — emission
+      // never consults a lifecycle, because a "You have access" born from death_verified is the
+      // release announcement 11-F owns.
+      'db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
       'db/functions/release_conditions.sql',
       // ★ EVERY FUNCTION BEFORE THE MIGRATION, deliberately inverted from the usual migration-first
       // order. 0050 is entirely `revoke execute on function ...` plus one index, and a REVOKE names
@@ -70,6 +77,14 @@ buildBundle(
       ['db/functions/emit_notification.sql', 'create or replace function public.emit_notification'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.notification_event_copy'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.notification_grant_is_live'],
+      // ★ THE 11-D EMISSION PIN: the speech predicate evaluates against the BASE lifecycle, so a
+      // death-conditioned grant emits nothing even at death_verified. A source where this literal
+      // became a seam call would emit the release announcement 11-F owns — refuse to build it.
+      // (Needle stops before the closing `);` so runtime-layer mutations that WRAP the call — the
+      // p11b-document-gate precedent — are still buildable and get killed by the suite instead.)
+      ['db/functions/lifecycle_notification_rpcs.sql', "p_approved_at, 'standard', 'active')"],
+      ['db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
+        'drop function if exists public.release_condition_satisfied(text, timestamptz, text);'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.emit_lifecycle_notification'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.estate_owner_user_id'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.notification_estate_home'],

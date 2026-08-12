@@ -29,13 +29,19 @@ buildBundle(
       // ★ FIRST, AND ADDED THE DAY THE DEPENDENCY WAS CREATED — not discovered missing later.
       //
       // Phase 11-B moved the release rule into `public.release_condition_satisfied`, and four
-      // functions in this bundle now call it (`inventory_disclosure_tier`, the two
-      // `list_estate_assets` sites, `create_asset_grant`'s write gate). A bundle whose header says
-      // "paste this whole file and run it once" but which references a function it does not carry
-      // is the Phase 10-F missing-bracket-functions defect with a new name. `create or replace` is
-      // idempotent, so carrying it here AND in the release-conditions bundle costs nothing and
-      // keeps every artifact self-sufficient.
+      // functions in this bundle call it (`inventory_disclosure_tier`, the two
+      // `list_estate_assets` sites, `create_asset_grant`'s write gate). Phase 11-D widened the
+      // predicate with a lifecycle argument that those consumers resolve through
+      // `estate_lifecycle_state` — `asset_grant_tier` is `language sql`, so its CREATE fails
+      // outright against a database missing the reader or the table it reads. A bundle whose
+      // header says "paste this whole file and run it once" but which references objects it does
+      // not carry is the Phase 10-F missing-bracket-functions defect with a new name. Everything
+      // below is idempotent, so carrying the seam here AND in the release-conditions bundle costs
+      // nothing and keeps every artifact self-sufficient.
+      'db/migrations/0052_20260812_death_verification_foundation.sql',
+      'db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
       'db/functions/release_conditions.sql',
+      'db/functions/estate_lifecycle_state.sql',
       'db/migrations/0048_20260810_estate_assets.sql',
       'db/functions/estate_asset_rpcs.sql',
       // ★ ADDED IN PHASE 10-E, AND THE BUNDLE WAS NOT SELF-SUFFICIENT WITHOUT IT.
@@ -69,6 +75,15 @@ buildBundle(
     ],
     controls: [
       ['db/functions/release_conditions.sql', 'create or replace function public.release_condition_satisfied'],
+      // ★ THE 11-D SEAM IS CARRIED WHOLE: the table (0052), the blind-overload drop (0053), the
+      // reader, and consumers that actually pass the seam. A bundle built from sources where any of
+      // these regressed must refuse to build rather than paste a half-wired evaluator.
+      ['db/migrations/0052_20260812_death_verification_foundation.sql', 'create table if not exists public.estate_lifecycle'],
+      ['db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
+        'drop function if exists public.release_condition_satisfied(text, timestamptz, text);'],
+      ['db/functions/estate_lifecycle_state.sql', 'create or replace function public.estate_lifecycle_state'],
+      ['db/functions/list_estate_assets.sql', "'legacy_immediate_only',\n                                           public.estate_lifecycle_state(p_estate)"],
+      ['db/functions/estate_discovery_rpcs.sql', "public.estate_lifecycle_state(p_estate)"],
       ['db/migrations/0048_20260810_estate_assets.sql', 'create table if not exists public.estate_assets'],
       ['db/migrations/0048_20260810_estate_assets.sql', 'estate_assets_read_owner'],
       ['db/functions/estate_asset_rpcs.sql', 'create or replace function public.create_estate_asset'],

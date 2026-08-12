@@ -65,14 +65,32 @@ declare v_def text; v_ok boolean;
 begin
   raise notice '0 · release-condition instrument self-check';
 
-  if to_regprocedure('public.release_condition_satisfied(text, timestamptz, text)') is null then
-    raise exception 'FAIL: public.release_condition_satisfied does not exist — every withholding '
-      'assertion below would pass by crashing';
+  if to_regprocedure('public.release_condition_satisfied(text, timestamptz, text, text)') is null then
+    raise exception 'FAIL: the 4-argument (lifecycle-aware) public.release_condition_satisfied does '
+      'not exist — every withholding assertion below would pass by crashing';
+  end if;
+  -- ★ EXACTLY ONE AUTHORITY (11-D). If the 3-argument overload survived migration 0053, overload
+  -- resolution would quietly serve the lifecycle-blind rule to any consumer that was not rewired,
+  -- and every assertion below would be about the wrong function.
+  if to_regprocedure('public.release_condition_satisfied(text, timestamptz, text)') is not null then
+    raise exception 'FAIL: the 3-argument (lifecycle-blind) release_condition_satisfied still '
+      'exists — two release authorities coexist and migration 0053 did not land';
   end if;
   if to_regprocedure('public.release_condition_writable(text)') is null then
     raise exception 'FAIL: public.release_condition_writable does not exist';
   end if;
-  raise notice '  ok   the canonical predicate resolved (it is called, not assumed)';
+  -- ★ THE SEAM IS INSTALLED AND INTERNAL. The evaluators below resolve the lifecycle through this
+  -- reader; a missing reader would make every surface probe crash-refuse (vacuous), and a
+  -- client-executable one is a death-status oracle.
+  if to_regprocedure('public.estate_lifecycle_state(uuid)') is null then
+    raise exception 'FAIL: public.estate_lifecycle_state does not exist — every consumer would '
+      'crash-refuse and withholding-by-crash is not withholding';
+  end if;
+  if has_function_privilege('authenticated', 'public.estate_lifecycle_state(uuid)', 'EXECUTE')
+     or has_function_privilege('anon', 'public.estate_lifecycle_state(uuid)', 'EXECUTE') then
+    raise exception 'FAIL: estate_lifecycle_state is client-executable — a death-status oracle';
+  end if;
+  raise notice '  ok   the canonical predicate resolved, blind overload gone, seam installed and internal';
 
   -- (b) The ceiling must be the REAL one, not the preamble's `select false` stand-in.
   if public.asset_category_grantable('beneficiary', 'estate_inventory', 'category_summary') is not true then
@@ -97,16 +115,28 @@ begin
   end if;
   raise notice '  ok   the loaded document gate delegates to the canonical predicate';
 
-  -- And the predicate itself must DISAGREE across inputs, or comparing it to anything is vacuous.
-  select public.release_condition_satisfied('immediately', null, 'standard') into v_ok;
+  -- And the predicate itself must DISAGREE across inputs, or comparing it to anything is vacuous —
+  -- including across the NEW axis: the death condition must disagree across lifecycles, or the
+  -- activation assertions below would be measuring a constant.
+  select public.release_condition_satisfied('immediately', null, 'standard', 'active') into v_ok;
   if v_ok is not true then
     raise exception 'FAIL: the canonical predicate refuses `immediately` — it is stubbed to false';
   end if;
-  select public.release_condition_satisfied('never', null, 'standard') into v_ok;
+  select public.release_condition_satisfied('never', null, 'standard', 'active') into v_ok;
   if v_ok is not false then
     raise exception 'FAIL: the canonical predicate accepts `never` — it is stubbed to true';
   end if;
-  raise notice '  ok   the predicate distinguishes inputs (it is neither stub)';
+  select public.release_condition_satisfied('after_verified_death', null, 'standard', 'death_verified') into v_ok;
+  if v_ok is not true then
+    raise exception 'FAIL: after_verified_death is not satisfied at death_verified under standard — '
+      'the 11-D activation did not land and every activation assertion below is vacuous';
+  end if;
+  select public.release_condition_satisfied('after_verified_death', null, 'standard', 'active') into v_ok;
+  if v_ok is not false then
+    raise exception 'FAIL: after_verified_death is satisfied while the estate is ACTIVE';
+  end if;
+  raise notice '  ok   the predicate distinguishes inputs on every axis (it is no stub, and death '
+    'answers differ by lifecycle)';
 end $$;
 
 -- =================================================================================================
@@ -164,13 +194,19 @@ exception when others then
   return jsonb_build_object('error', SQLERRM);
 end $$;
 
-create or replace function harness_rc.expected(p_cond text, p_approved boolean, p_policy text)
+create or replace function harness_rc.expected(p_cond text, p_approved boolean, p_policy text, p_lifecycle text)
 returns boolean language sql immutable as $$
-  -- The specification, stated once, in one place, as literals.
+  -- The specification, stated once, in one place, as literals. The 11-D rows: an out-of-vocabulary
+  -- or NULL lifecycle refuses EVERYTHING; the death condition is satisfied under `standard` at
+  -- `death_verified` and nowhere else — not pending, not active, not under the legacy policy.
   select case
+    when p_lifecycle is null
+      or p_lifecycle not in ('active','death_verification_pending','death_verified') then false
     when p_policy = 'standard' and p_cond = 'immediately' then true
     when p_policy = 'standard' and p_cond in ('after_owner_approval','after_access_request_approval')
       then p_approved
+    when p_policy = 'standard' and p_cond = 'after_verified_death'
+      then p_lifecycle = 'death_verified'
     when p_policy = 'legacy_immediate_only' and p_cond = 'immediately' then true
     else false
   end;
@@ -179,9 +215,10 @@ $$;
 do $$
 declare
   v_conds text[];
-  v_cond text; v_pol text; v_app boolean;
+  v_lifecycles text[];
+  v_cond text; v_pol text; v_app boolean; v_lc text;
   v_got boolean; v_want boolean;
-  v_n int := 0; v_true int := 0;
+  v_n int := 0; v_true int := 0; v_death_true int := 0;
 begin
   raise notice '1 · the canonical predicate, full truth table';
 
@@ -210,41 +247,79 @@ begin
   raise notice '  ok   % conditions enumerated FROM the deployed CHECK (split present, legacy retained)',
     array_length(v_conds, 1);
 
-  -- ★ AN UNKNOWN CONDITION AND AN UNKNOWN POLICY ARE PUT THROUGH THE SAME MATRIX. The vocabulary is
-  -- closed; the function must be closed the same way.
+  -- ★ THE LIFECYCLE LIST COMES FROM THE 0052 CHECK, the same way and for the same reason. The
+  -- predicate spells the vocabulary inline (a pure function cannot read the catalog); THIS is the
+  -- assertion that stops the two from drifting: a state added to the table without being considered
+  -- by the predicate fails here rather than failing closed silently in production.
+  select array_agg(distinct m[1] order by m[1])
+    into v_lifecycles
+    from pg_constraint con
+    join pg_class rel on rel.oid = con.conrelid
+    join pg_namespace nsp on nsp.oid = rel.relnamespace,
+    lateral regexp_matches(pg_get_constraintdef(con.oid), '''([a-z_]+)''', 'g') m
+   where nsp.nspname = 'public' and rel.relname = 'estate_lifecycle' and con.contype = 'c';
+
+  if v_lifecycles is null or array_length(v_lifecycles, 1) <> 3
+     or not ('active' = any(v_lifecycles))
+     or not ('death_verification_pending' = any(v_lifecycles))
+     or not ('death_verified' = any(v_lifecycles)) then
+    raise exception 'FAIL: the estate_lifecycle CHECK does not hold exactly the three known states '
+      '(got %) — the predicate''s inline lifecycle vocabulary would be measuring a different table',
+      coalesce(v_lifecycles::text, 'NULL');
+  end if;
+  raise notice '  ok   3 lifecycle states enumerated FROM the deployed CHECK (predicate vocabulary anchored)';
+
+  -- ★ UNKNOWN CONDITION, UNKNOWN POLICY AND UNKNOWN LIFECYCLE ARE PUT THROUGH THE SAME MATRIX. The
+  -- vocabularies are closed; the function must be closed the same way, on every axis at once.
   foreach v_cond in array (v_conds || array['aw_probe_condition_that_cannot_exist', null]) loop
     foreach v_pol in array array['standard', 'legacy_immediate_only', 'aw_probe_policy', null] loop
-      foreach v_app in array array[true, false] loop
-        v_got := public.release_condition_satisfied(
-                   v_cond, case when v_app then now() else null end, v_pol);
-        v_want := coalesce(harness_rc.expected(v_cond, v_app, v_pol), false);
-        if v_got is distinct from v_want then
-          raise exception 'FAIL: release_condition_satisfied(%, approved=%, %) = %, expected %',
-            coalesce(v_cond, 'NULL'), v_app, coalesce(v_pol, 'NULL'), v_got, v_want;
-        end if;
-        if v_got then v_true := v_true + 1; end if;
-        v_n := v_n + 1;
+      foreach v_lc in array (v_lifecycles || array['aw_probe_lifecycle_that_cannot_exist', null]) loop
+        foreach v_app in array array[true, false] loop
+          v_got := public.release_condition_satisfied(
+                     v_cond, case when v_app then now() else null end, v_pol, v_lc);
+          v_want := coalesce(harness_rc.expected(v_cond, v_app, v_pol, v_lc), false);
+          if v_got is distinct from v_want then
+            raise exception 'FAIL: release_condition_satisfied(%, approved=%, %, %) = %, expected %',
+              coalesce(v_cond, 'NULL'), v_app, coalesce(v_pol, 'NULL'), coalesce(v_lc, 'NULL'),
+              v_got, v_want;
+          end if;
+          if v_got then v_true := v_true + 1; end if;
+          if v_got and v_cond = 'after_verified_death' then v_death_true := v_death_true + 1; end if;
+          v_n := v_n + 1;
+        end loop;
       end loop;
     end loop;
   end loop;
 
-  -- ★ POSITIVE CONTROL ON THE MATRIX ITSELF. An all-false table would agree with an all-false
-  -- function perfectly and prove nothing at all.
+  -- ★ POSITIVE CONTROLS ON THE MATRIX ITSELF. An all-false table would agree with an all-false
+  -- function perfectly and prove nothing at all — and a table in which the death condition never
+  -- came true would "verify" a predicate the 11-D activation never reached.
   if v_true = 0 then
     raise exception 'FAIL: the truth table is satisfied by NOTHING — the comparison is vacuous';
   end if;
-  raise notice '  ok   % combinations, % satisfied, exact agreement with the written specification', v_n, v_true;
+  -- Exactly (standard, death_verified) × approved ∈ {t,f} = 2 satisfied death rows, no more, no less.
+  if v_death_true <> 2 then
+    raise exception 'FAIL: after_verified_death satisfied % row(s); expected exactly 2 '
+      '(standard × death_verified × both approval states)', v_death_true;
+  end if;
+  raise notice '  ok   % combinations, % satisfied (death: exactly 2), exact agreement with the '
+    'written specification', v_n, v_true;
 end $$;
 
 -- =================================================================================================
--- 2 · DORMANCY, STATED AS THE PROPERTY THAT MATTERS: nothing releases these, ever
+-- 2 · DORMANCY AND THE ONE ACTIVATION — stated as the properties that matter
 -- =================================================================================================
+--
+-- ★ SPLIT IN 11-D. Incapacity, the legacy fused value, identity, claim and never are satisfied by
+-- NOTHING — no policy, no lifecycle, no approval stamp. `after_verified_death` has exactly ONE
+-- satisfying region: the `standard` policy at the authoritative `death_verified` lifecycle. Both
+-- halves are enumerated, because "death activates" proven without "and nothing else does" would be
+-- the partial-wiring failure this suite exists to prevent — and vice versa.
 do $$
-declare v_cond text; v_pol text;
+declare v_cond text; v_pol text; v_lc text; v_death_true int := 0;
 begin
-  raise notice '2 · death / incapacity / identity / claim / never are satisfied by nothing';
+  raise notice '2 · dormancy: incapacity / fused / identity / claim / never are satisfied by nothing';
   foreach v_cond in array array[
-    'after_verified_death',
     'after_verified_incapacity',
     'after_verified_death_or_incapacity',
     'after_identity_verification',
@@ -252,15 +327,41 @@ begin
     'never'
   ] loop
     foreach v_pol in array array['standard', 'legacy_immediate_only'] loop
-      -- Approved or not, timestamped or not: there is no argument that makes these true.
-      if public.release_condition_satisfied(v_cond, now(), v_pol)
-         or public.release_condition_satisfied(v_cond, null, v_pol)
-         or public.release_condition_satisfied(v_cond, '1970-01-01'::timestamptz, v_pol) then
-        raise exception 'FAIL: % is satisfiable under policy %', v_cond, v_pol;
+      foreach v_lc in array array['active', 'death_verification_pending', 'death_verified'] loop
+        -- Approved or not, timestamped or not, at EVERY lifecycle: nothing makes these true.
+        if public.release_condition_satisfied(v_cond, now(), v_pol, v_lc)
+           or public.release_condition_satisfied(v_cond, null, v_pol, v_lc)
+           or public.release_condition_satisfied(v_cond, '1970-01-01'::timestamptz, v_pol, v_lc) then
+          raise exception 'FAIL: % is satisfiable under policy % at lifecycle %', v_cond, v_pol, v_lc;
+        end if;
+      end loop;
+    end loop;
+    raise notice '  ok   % is dormant under both policies, at every lifecycle, approved or not', v_cond;
+  end loop;
+
+  raise notice '2b · after_verified_death: one satisfying region, enumerated exactly';
+  foreach v_pol in array array['standard', 'legacy_immediate_only'] loop
+    foreach v_lc in array array['active', 'death_verification_pending', 'death_verified'] loop
+      if public.release_condition_satisfied('after_verified_death', now(), v_pol, v_lc)
+         is distinct from (v_pol = 'standard' and v_lc = 'death_verified') then
+        raise exception 'FAIL: after_verified_death under (%, %) answered the wrong way', v_pol, v_lc;
+      end if;
+      if public.release_condition_satisfied('after_verified_death', now(), v_pol, v_lc) then
+        v_death_true := v_death_true + 1;
       end if;
     end loop;
-    raise notice '  ok   % is dormant under both policies, approved or not', v_cond;
   end loop;
+  if v_death_true <> 1 then
+    raise exception 'FAIL: after_verified_death satisfied % (policy × lifecycle) cell(s); expected '
+      'exactly 1 — standard × death_verified', v_death_true;
+  end if;
+  -- ★ THE LEGACY CLAMP IS PINNED AT THE CELL THAT MATTERS: death + legacy + death_verified stays
+  -- false. This is R12 as an assertion — harmonizing the policies cannot pass this suite.
+  if public.release_condition_satisfied('after_verified_death', now(), 'legacy_immediate_only', 'death_verified') then
+    raise exception 'FAIL: the legacy policy honours the death condition — the policies were '
+      'silently harmonized (R12)';
+  end if;
+  raise notice '  ok   death satisfies exactly (standard × death_verified); legacy clamp intact (R12)';
 end $$;
 
 -- =================================================================================================
@@ -340,6 +441,11 @@ end $$;
 -- tier that WOULD disclose if the condition were satisfied, on an estate that HAS content, for a
 -- viewer who is otherwise eligible. A grant at `hidden`, or on an empty estate, would be withheld
 -- for reasons that have nothing to do with the release condition and the test could not fail.
+--
+-- ★ ESTATE A'S LIFECYCLE IS `active` (no estate_lifecycle row) THROUGHOUT SECTIONS 4–8, and that is
+-- a load-bearing precondition asserted below: `after_verified_death` appearing in these dormant
+-- loops is the PRE-VERIFICATION firewall — the 11-D activation of that same condition at
+-- `death_verified` is section 9's subject, on a dedicated estate whose lifecycle this file moves.
 create or replace function harness_rc.regrant(p_uid uuid, p_cat text, p_tier text, p_cond text)
 returns void language plpgsql as $$
 declare A uuid := 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
@@ -372,6 +478,12 @@ declare
   v_live_disco jsonb;
 begin
   raise notice '4 · dormant conditions disclose nothing, at every surface';
+
+  -- The precondition that gives every dormancy assertion below its meaning.
+  if public.estate_lifecycle_state(A) <> 'active' then
+    raise exception 'FAIL[precondition]: estate A is not at lifecycle active — the death-condition '
+      'dormancy assertions below would be testing the wrong state';
+  end if;
 
   -- ── POSITIVE CONTROL FIRST. The SAME viewer, SAME category, SAME tier, only the condition
   --    differs. Without this the loop below could be passing because the estate is empty.
@@ -719,6 +831,296 @@ begin
   raise notice '  ok   designation alone, and designation + dormant grant, both yield hidden';
 
   delete from public.access_grants where estate_id = A and grantee_user_id = EXEC_;
+end $$;
+
+-- =================================================================================================
+-- 9 · PHASE 11-D — ACTIVATION: death_verified makes existing death grants live, and NOTHING else
+-- =================================================================================================
+--
+-- ★ A DEDICATED ESTATE, whose lifecycle THIS file moves through the authoritative writer
+-- (`apply_estate_lifecycle_transition`, the closed map, called as the harness owner — the same
+-- routine the admin decision calls; the full real-door flow initiate → evidence → review → attain →
+-- verify → activation is proven end-to-end in `death_verification_authorization.sql`). Estates A/B
+-- keep no lifecycle row, so every earlier section's meaning is untouched.
+--
+-- What this section pins, surface by surface:
+--   · BEFORE death_verified (active AND pending): a death-conditioned grant is byte-equivalent to
+--     no grant — the §13/§14 firewall at the surfaces.
+--   · AT death_verified: the STANDARD-policy surfaces (inventory discovery, documents) disclose
+--     exactly what the existing grant authorizes — same tier, same ceiling, same brackets.
+--   · The LEGACY-policy surfaces (asset rows, net worth) stay dormant — R12, refused as data.
+--   · Incapacity / fused / claim / identity / never stay dormant at death_verified.
+--   · A revoked death grant stays revoked; an over-ceiling death grant stays clamped.
+--   · The activated aggregate is a BRACKET: a single-asset category cannot leak its exact value
+--     through the newly live tier (the 10-B oracle, re-tested after activation).
+--   · Cross-estate: estate D's death_verified activates NOTHING on estate A.
+--   · The notification speech predicate still refuses the death condition (emission stays 10-E).
+create or replace function harness_rc.regrant_on(p_estate uuid, p_uid uuid, p_cat text, p_tier text, p_cond text)
+returns void language plpgsql as $$
+begin
+  delete from public.access_grants
+   where estate_id = p_estate and grantee_user_id = p_uid and category = p_cat;
+  -- Direct insert, like harness_rc.regrant: some conditions this section needs (the legacy fused
+  -- value) are refused by the modern door, and the rows an existing database already contains are
+  -- the rows under test.
+  insert into public.access_grants
+    (estate_id, grantee_user_id, grantee_role, document_id, category, visibility_tier,
+     release_condition, status, granted_by_user_id, approved_at, approved_by_user_id)
+  values
+    (p_estate, p_uid, 'beneficiary', null, p_cat, p_tier, p_cond, 'active',
+     (select owner_id from public.estates where id = p_estate),
+     now(), (select owner_id from public.estates where id = p_estate));
+end $$;
+
+do $$
+declare
+  OWNER_D uuid; BEN2 uuid; STRD uuid;
+  D uuid; DOC_D uuid; ASSET_D uuid;
+  A   uuid := 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  BEN uuid := '44444444-4444-4444-8444-444444444444';
+  v_tier text; v_rows bigint; v_can boolean; v_cond text;
+  v_disco jsonb; v_cat jsonb;
+  d_before jsonb; d_pending jsonb; d_now jsonb; s_before jsonb; s_now jsonb;
+begin
+  raise notice '9 · 11-D activation matrix (dedicated estate, authoritative transitions)';
+
+  -- ── fixture ────────────────────────────────────────────────────────────────────────────────────
+  insert into auth.users default values returning id into OWNER_D;
+  insert into auth.users default values returning id into BEN2;
+  insert into auth.users default values returning id into STRD;
+  insert into public.estates (owner_id, name) values (OWNER_D, 'RC Activation Estate D') returning id into D;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (D, OWNER_D, 'primary_user', 'approved');
+
+  -- ONE inventory asset in ONE category, with a distinctive exact value — the single-asset-oracle
+  -- fixture. Created through the real door, as the owner.
+  perform set_config('request.jwt.claim.sub', OWNER_D::text, true);
+  select public.create_estate_asset(D, 'artwork', 'One painting', null, null, null, null, null, null, 4213700)
+    into ASSET_D;
+  -- Financial rows so the LEGACY surfaces have something they COULD disclose.
+  insert into public.normalized_assets (estate_id, connection_id, institution_name, asset_group, balance_cents, currency)
+  values (D, gen_random_uuid(), 'RC-D Bank', 'cashBank', 7300000, 'USD');
+  -- A document the death grant could open.
+  insert into public.documents (estate_id, title, sensitivity)
+  values (D, 'RC-D fixture document', 'medium') returning id into DOC_D;
+
+  if public.estate_lifecycle_state(D) <> 'active' then
+    raise exception 'FAIL[precondition]: estate D does not start at lifecycle active';
+  end if;
+
+  -- ── POSITIVE CONTROLS: every surface below can disclose on THIS estate for THIS viewer ─────────
+  perform harness_rc.regrant_on(D, BEN2, 'estate_inventory', 'category_summary', 'immediately');
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+  if v_tier is distinct from 'category_summary' then
+    raise exception 'FAIL[control]: an immediately inventory grant on D resolved tier % — the '
+      'activation assertions below could not observe a disclosure', coalesce(v_tier, 'NULL');
+  end if;
+  perform harness_rc.regrant_on(D, BEN2, 'account_balances', 'category_summary', 'immediately');
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  set local role authenticated;
+  select count(*) into v_rows from public.list_estate_assets(D);
+  reset role;
+  if v_rows = 0 then
+    raise exception 'FAIL[control]: an immediately account_balances grant on D disclosed no asset rows';
+  end if;
+  delete from public.access_grants where estate_id = D and grantee_user_id = BEN2 and category = 'account_balances';
+  perform harness_rc.regrant_on(D, BEN2, 'total_asset_value', 'range_only', 'immediately');
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  set local role authenticated;
+  if not exists (select 1 from public.get_estate_net_worth(D) w where w.range_low_cents is not null) then
+    reset role;
+    raise exception 'FAIL[control]: an immediately total_asset_value grant on D disclosed no bracket';
+  end if;
+  reset role;
+  insert into public.access_grants
+    (estate_id, grantee_user_id, grantee_role, document_id, category, visibility_tier,
+     release_condition, status, granted_by_user_id)
+  values (D, BEN2, 'beneficiary', DOC_D, null, 'limited_detail', 'immediately', 'active', OWNER_D);
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  set local role authenticated;
+  select public.can_access_document(DOC_D) into v_can;
+  reset role;
+  if not v_can then
+    raise exception 'FAIL[control]: an immediately document grant on D did not open the document';
+  end if;
+  raise notice '  ok   CONTROLS: inventory, assets, net worth and document all disclose under immediately';
+
+  -- ── the death-conditioned world: same tiers, same viewer, only the condition differs ───────────
+  perform harness_rc.regrant_on(D, BEN2, 'estate_inventory', 'category_summary', 'after_verified_death');
+  perform harness_rc.regrant_on(D, BEN2, 'account_balances', 'category_summary', 'after_verified_death');
+  perform harness_rc.regrant_on(D, BEN2, 'total_asset_value', 'range_only', 'after_verified_death');
+  update public.access_grants
+     set release_condition = 'after_verified_death'
+   where estate_id = D and grantee_user_id = BEN2 and document_id = DOC_D;
+
+  select harness_rc.composed(BEN2, D) into d_before;
+  select harness_rc.composed(STRD, D) into s_before;
+  if position('category_summary' in d_before::text) > 0 then
+    raise exception 'FAIL: a death-conditioned grant discloses at lifecycle active: %', d_before::text;
+  end if;
+
+  -- ── PENDING: initiating a verification process moves nothing (§14 at the surfaces) ─────────────
+  perform public.apply_estate_lifecycle_transition(D, 'death_verification_pending', null, 'rc-harness');
+  select harness_rc.composed(BEN2, D) into d_pending;
+  if d_pending::text is distinct from d_before::text then
+    raise exception 'FAIL: death_verification_PENDING moved the death-conditioned viewer payload — '
+      'a pending process is not a verified death';
+  end if;
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+  if v_tier is distinct from 'hidden' then
+    raise exception 'FAIL: tier % resolved while verification is merely pending', coalesce(v_tier, 'NULL');
+  end if;
+  raise notice '  ok   pending verification discloses nothing (payload byte-identical, tier hidden)';
+
+  -- ── DEATH_VERIFIED: the one transition that may move exactly the authorized surfaces ───────────
+  perform public.apply_estate_lifecycle_transition(D, 'death_verified', null, 'rc-harness');
+
+  -- (a) the standard-policy surfaces activate at the AUTHORED tier…
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+  if v_tier is distinct from 'category_summary' then
+    raise exception 'FAIL: death_verified did not activate the inventory grant (tier %)', coalesce(v_tier, 'NULL');
+  end if;
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  set local role authenticated;
+  select public.get_estate_discovery(D) into v_disco;
+  select public.can_access_document(DOC_D) into v_can;
+  reset role;
+  if coalesce(jsonb_array_length(v_disco -> 'categories'), 0) <> 1 then
+    raise exception 'FAIL: activated discovery shows % categorie(s), expected 1: %',
+      coalesce(jsonb_array_length(v_disco -> 'categories'), 0), v_disco::text;
+  end if;
+  if not v_can then
+    raise exception 'FAIL: death_verified did not open the death-conditioned document grant';
+  end if;
+  raise notice '  ok   ACTIVATION: inventory tier and document gate honour the existing grant at death_verified';
+
+  -- (b) …and the activated aggregate is a BRACKET. One asset in the category: the exact value must
+  -- be underivable from the newly live tier (the 10-B single-asset oracle, post-activation).
+  v_cat := v_disco -> 'categories' -> 0;
+  if (v_cat ->> 'item_count')::int <> 1 then
+    raise exception 'FAIL: single-asset category reports item_count %', v_cat ->> 'item_count';
+  end if;
+  if v_cat -> 'total_cents' is distinct from 'null'::jsonb then
+    raise exception 'FAIL: category_summary published an exact category total after activation: %', v_cat::text;
+  end if;
+  if (v_cat ->> 'range_low_cents')::bigint is distinct from 1000000
+     or (v_cat ->> 'range_high_cents')::bigint is distinct from 5000000 then
+    raise exception 'FAIL: the activated bracket is [% .. %], expected [1000000 .. 5000000]',
+      v_cat ->> 'range_low_cents', v_cat ->> 'range_high_cents';
+  end if;
+  if position('4213700' in v_disco::text) > 0 then
+    raise exception 'FAIL: the exact single-asset value leaked through the activated payload: %', v_disco::text;
+  end if;
+  raise notice '  ok   ORACLE: the newly live tier brackets a single-asset category (no exact value)';
+
+  -- (c) the LEGACY-policy surfaces stay dormant — R12 as behaviour, not just as a truth-table row.
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  set local role authenticated;
+  select count(*) into v_rows from public.list_estate_assets(D);
+  if v_rows <> 0 then
+    reset role;
+    raise exception 'FAIL: death_verified activated % asset row(s) under legacy_immediate_only — '
+      'the policies were harmonized (R12)', v_rows;
+  end if;
+  if exists (select 1 from public.get_estate_net_worth(D) w
+             where w.total_cents is not null or w.range_low_cents is not null) then
+    reset role;
+    raise exception 'FAIL: death_verified disclosed a net-worth figure under legacy_immediate_only (R12)';
+  end if;
+  reset role;
+  raise notice '  ok   R12: asset rows and net worth stay dormant at death_verified (legacy clamp intact)';
+
+  -- (d) the composed view moved ONLY in the discovery projection. Assets, net worth and the raw
+  -- document list are byte-identical to the pre-verification capture. (The harness''s documents_read
+  -- policy is deliberately owner-only — a preamble stand-in, not the production policy — so the
+  -- document surface is proven at its real boundary instead: `can_access_document` directly in (a),
+  -- and discovery''s `document_count`, which routes every row through that same gate, below.)
+  select harness_rc.composed(BEN2, D) into d_now;
+  if (d_now - 'discovery')::text is distinct from (d_before - 'discovery')::text then
+    raise exception 'FAIL: death_verified moved a surface outside the qualifying grants. before=% after=%',
+      (d_before - 'discovery')::text, (d_now - 'discovery')::text;
+  end if;
+  if (d_now -> 'discovery')::text is not distinct from (d_before -> 'discovery')::text then
+    raise exception 'FAIL[control]: the activated discovery projection did not move — the '
+      'equivalence assertion above is vacuous';
+  end if;
+  -- The document grant''s activation is visible through the gate-counted surface.
+  if (v_disco ->> 'document_count')::int is distinct from 1 then
+    raise exception 'FAIL: activated discovery counts % document(s) through the gate, expected 1',
+      coalesce(v_disco ->> 'document_count', 'NULL');
+  end if;
+  raise notice '  ok   EQUIVALENCE: exactly the authorized projection moved (discovery, incl. the '
+    'gate-counted document)';
+
+  -- (e) a viewer with NO grant learns nothing from the death: byte-identical across the transition.
+  select harness_rc.composed(STRD, D) into s_now;
+  if s_now::text is distinct from s_before::text then
+    raise exception 'FAIL: death_verified moved the payload of a viewer holding NO grant';
+  end if;
+  if harness_rc.composed(null, D) -> 'discovery' ? 'categories' then
+    raise exception 'FAIL: an anonymous caller received categories from a death_verified estate';
+  end if;
+  raise notice '  ok   no-grant viewer and anonymous caller both unmoved by death_verified';
+
+  -- (f) every OTHER condition stays dormant at death_verified, at the surface.
+  foreach v_cond in array array[
+    'after_verified_incapacity', 'after_verified_death_or_incapacity',
+    'after_claim_case_approval', 'after_identity_verification', 'never'
+  ] loop
+    perform harness_rc.regrant_on(D, BEN2, 'estate_inventory', 'category_summary', v_cond);
+    perform set_config('request.jwt.claim.sub', BEN2::text, true);
+    select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+    if v_tier is distinct from 'hidden' then
+      raise exception 'FAIL: % resolved tier % on a death_verified estate', v_cond, coalesce(v_tier, 'NULL');
+    end if;
+  end loop;
+  raise notice '  ok   incapacity / fused / claim / identity / never stay dormant at death_verified';
+
+  -- (g) a REVOKED death grant confers nothing at death_verified.
+  perform harness_rc.regrant_on(D, BEN2, 'estate_inventory', 'category_summary', 'after_verified_death');
+  update public.access_grants set status = 'revoked'
+   where estate_id = D and grantee_user_id = BEN2 and category = 'estate_inventory';
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+  if v_tier is distinct from 'hidden' then
+    raise exception 'FAIL: a REVOKED death grant resolved tier % at death_verified', coalesce(v_tier, 'NULL');
+  end if;
+  raise notice '  ok   a revoked death grant stays revoked at death_verified';
+
+  -- (h) an OVER-CEILING death grant is clamped at death_verified — activation feeds the same
+  -- read-time ceiling, it does not bypass it.
+  perform harness_rc.regrant_on(D, BEN2, 'estate_inventory', 'full_detail', 'after_verified_death');
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+  if v_tier is distinct from 'hidden' then
+    raise exception 'FAIL: an over-ceiling (beneficiary full_detail) death grant resolved tier % — '
+      'activation bypassed the ceiling clamp', coalesce(v_tier, 'NULL');
+  end if;
+  raise notice '  ok   the ceiling clamps an over-ceiling death grant even once the condition is satisfied';
+
+  -- (i) the notification speech predicate still refuses the death condition: emission is 10-E.
+  if public.notification_grant_is_live('active', 'after_verified_death', now()) then
+    raise exception 'FAIL: notification_grant_is_live announces a death-conditioned grant — the '
+      'emission pin (base lifecycle) is gone and grant creation would speak a release announcement';
+  end if;
+  raise notice '  ok   emission stays lifecycle-blind: the speech predicate refuses the death condition';
+
+  -- (j) CROSS-ESTATE: D''s death_verified decides NOTHING about estate A.
+  if public.estate_lifecycle_state(A) <> 'active' then
+    raise exception 'FAIL[precondition]: estate A lifecycle moved — cross-estate assertion invalid';
+  end if;
+  perform harness_rc.regrant(BEN, 'estate_inventory', 'category_summary', 'after_verified_death');
+  perform set_config('request.jwt.claim.sub', BEN::text, true);
+  select public.inventory_disclosure_tier(A, BEN) into v_tier;
+  if v_tier is distinct from 'hidden' then
+    raise exception 'FAIL: estate D''s death_verified activated a death grant on estate A (tier %)',
+      coalesce(v_tier, 'NULL');
+  end if;
+  delete from public.access_grants where estate_id = A and grantee_user_id = BEN;
+  raise notice '  ok   cross-estate: a foreign death_verified lifecycle activates nothing here';
 end $$;
 
 do $$

@@ -184,16 +184,46 @@ describe("2 · death- and claim-conditioned grants are dormant at EVERY evaluati
     }
   });
 
-  it.each(["after_verified_death", "after_verified_incapacity"] as const)(
-    "the split condition %s is admitted by NO evaluator either",
-    (condition) => {
-      // The 11-B vocabulary widened; the set of SATISFIABLE conditions did not. The split values
-      // join the dormant list the moment they exist, not in some later phase.
-      for (const { file, code } of evaluators) {
-        expect(admits(scannable(file, code), condition), `${file} appears to admit ${condition}`).toBe(false);
-      }
+  it("after_verified_incapacity is admitted by NO evaluator", () => {
+    // The 11-B vocabulary widened; the incapacity condition remains SATISFIABLE by nothing — no
+    // incapacity workflow exists (R6), so an evaluator admitting it would disclose an estate while
+    // its owner is alive.
+    for (const { file, code } of evaluators) {
+      expect(
+        admits(scannable(file, code), "after_verified_incapacity"),
+        `${file} appears to admit after_verified_incapacity`
+      ).toBe(false);
     }
-  );
+  });
+
+  /**
+   * ★ THIS TRIPWIRE FIRED IN PHASE 11-D, WHICH IS WHAT IT WAS FOR. Until 11-D the split death
+   * condition was admitted by no evaluator; the 11-D change admits it in EXACTLY ONE place — the
+   * canonical predicate — and only conjoined with the authoritative death_verified lifecycle. Both
+   * halves are pinned: the one sanctioned admission must exist in the shape that carries the
+   * conjunction, and every OTHER evaluator must still admit nothing.
+   */
+  it("after_verified_death is admitted ONLY by the canonical predicate, conjoined with death_verified", () => {
+    for (const { file, code } of evaluators) {
+      if (file === "release_conditions.sql") continue;
+      expect(
+        admits(scannable(file, code), "after_verified_death"),
+        `${file} admits after_verified_death locally — release policy leaked out of the canonical module`
+      ).toBe(false);
+    }
+    const canonical = scannable("release_conditions.sql", evaluators.find((e) => e.file === "release_conditions.sql")!.code);
+    expect(admits(canonical, "after_verified_death"), "the canonical predicate no longer admits the death condition — the 11-D activation was reverted silently").toBe(true);
+    // The admission is CONJOINED with the lifecycle fact, in one expression: condition equality
+    // AND the death_verified comparison, with nothing but whitespace/comments-free code between.
+    expect(canonical).toMatch(
+      /p_release_condition\s*=\s*'after_verified_death'\s*\n?\s*and\s+p_lifecycle_state\s*=\s*'death_verified'/
+    );
+    // And the conjunction lives under the STANDARD policy arm, after it and before the legacy arm.
+    const standardArm = canonical.slice(canonical.indexOf("when 'standard' then"), canonical.indexOf("when 'legacy_immediate_only' then"));
+    expect(standardArm).toContain("'after_verified_death'");
+    const legacyArm = canonical.slice(canonical.indexOf("when 'legacy_immediate_only' then"), canonical.indexOf("else false"));
+    expect(legacyArm, "the legacy policy arm names the death condition — the policies were harmonized (R12)").not.toContain("'after_verified_death'");
+  });
 
   it("detection sanity: both the column and the variable spelling are caught", () => {
     expect(admits("and g.release_condition = 'after_verified_death_or_incapacity'", "after_verified_death_or_incapacity")).toBe(true);
