@@ -98,6 +98,9 @@ const BUNDLES = [
   'db/bundles/release_conditions_bundle.sql',
   'db/bundles/estate_inventory_and_discovery_bundle.sql',
   'db/bundles/lifecycle_notifications_bundle.sql',
+  // ★ LAST (Phase 11-C) — the operator order. Applying it here also proves the artifact loads
+  // cleanly onto a database the other three have shaped, which is the paste an operator will do.
+  'db/bundles/death_verification_bundle.sql',
 ];
 
 /**
@@ -105,7 +108,7 @@ const BUNDLES = [
  * reconcile production against a bundle nobody would deploy — comparing the present to a fossil and
  * reporting whatever that happens to say.
  */
-for (const builder of ['scripts/buildReleaseConditionBundle.mjs', 'scripts/buildEstateAssetBundle.mjs', 'scripts/buildLifecycleNotificationBundle.mjs']) {
+for (const builder of ['scripts/buildReleaseConditionBundle.mjs', 'scripts/buildEstateAssetBundle.mjs', 'scripts/buildLifecycleNotificationBundle.mjs', 'scripts/buildDeathVerificationBundle.mjs']) {
   const r = spawnSync('node', [builder], { cwd: ROOT, encoding: 'utf8' });
   if (r.status !== 0) die(2, `CANNOT VERIFY — ${builder} failed:\n${r.stderr || r.stdout}`);
 }
@@ -377,6 +380,44 @@ function classify(diffs) {
     // the other missing means a partial paste: callers would resolve one and raise on the other.
     die(1, `PARTIAL DEPLOYMENT — present: ${live.map((p) => p.n).join(', ') || '(none)'}; `
       + `absent: ${absent.map((p) => p.n).join(', ')}. Re-apply db/bundles/release_conditions_bundle.sql in full.`);
+  }
+}
+
+/* 5 · the death-verification foundation — SOURCE-ONLY UNTIL DEPLOYED (Phase 11-C). */
+{
+  /**
+   * ★ SAME DISCIPLINE AS BLOCK 4: named, never omitted. The 11-C routines are stateful, so they can
+   * never join the reconciliation table — but their DEPLOYMENT STATE is still a fact this script
+   * must own, because the half-deployed state (some functions pasted, some not) is exactly the
+   * failure the bundle exists to prevent. The probes run as `anon`, which holds EXECUTE on none of
+   * them: a deployed function answers with a refusal (auth_required / permission denied), an
+   * undeployed one with PGRST202 — so the probe cannot mutate anything on either answer.
+   */
+  const names = [
+    'initiate_death_verification_case',
+    'admin_decide_death_verification_case',
+    'estate_lifecycle_state',
+  ];
+  const probes = await Promise.all(names.map(async (n) => {
+    const arg = n === 'admin_decide_death_verification_case'
+      ? { p_case: '00000000-0000-4000-8000-000000000000', p_decision: 'reject' }
+      : n === 'initiate_death_verification_case'
+        ? { p_estate: '00000000-0000-4000-8000-000000000000' }
+        : { p_estate: '00000000-0000-4000-8000-000000000000' };
+    const { error } = await deployed.rpc(n, arg);
+    return { n, missing: error?.code === 'PGRST202' };
+  }));
+  const absent = probes.filter((p) => p.missing);
+
+  if (absent.length === names.length) {
+    record('death_verification_authority', 'UNVERIFIABLE',
+      'NOT YET DEPLOYED (source + bundle only) — apply db/bundles/death_verification_bundle.sql LAST', []);
+  } else if (absent.length === 0) {
+    record('death_verification_authority', 'UNVERIFIABLE',
+      'DEPLOYED · stateful — behaviour covered by db/tests/death_verification_authorization.sql', []);
+  } else {
+    die(1, `PARTIAL DEPLOYMENT — absent: ${absent.map((p) => p.n).join(', ')}. `
+      + 'Re-apply db/bundles/death_verification_bundle.sql in full.');
   }
 }
 

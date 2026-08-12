@@ -46,15 +46,31 @@ export const SQL_SUITE_PARTS = Object.freeze([
   'db/bundles/release_conditions_bundle.sql',
   'db/bundles/estate_inventory_and_discovery_bundle.sql',
   'db/bundles/lifecycle_notifications_bundle.sql',
+  // ★ LAST AMONG THE BUNDLES (Phase 11-C) — the operator order. It has no load-time dependency on
+  // the other three (plpgsql throughout, except a `language sql` reader of a table it creates
+  // itself), but it is the newest artifact and applies onto a database the others have shaped.
+  'db/bundles/death_verification_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
+  // ★ ADDED IN PHASE 11-C, SAME POSTURE. The death-verification routines call all three at
+  // execution time; production has carried them since 0014/0015 (admin gate, verified live
+  // 2026-07-15) and 0026/0027 (policy engine, verified live 2026-07-16). None ships in a bundle —
+  // promoting an unreconciled DEFINER body into a paste-ready artifact is the `create_asset_grant`
+  // near-miss — so the suite loads the source files themselves.
+  'db/functions/is_admin.sql',
+  'db/functions/admin_require_gate.sql',
+  'db/functions/required_verification_level.sql',
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
   'db/tests/estate_readiness_authorization.sql',
   'db/tests/professional_workspace_authorization.sql',
   'db/tests/lifecycle_notification_authorization.sql',
   'db/tests/release_condition_authorization.sql',
+  // ★ AFTER every disclosure suite has proved its surface, BEFORE the exit matrix composes them:
+  // the death-verification suite mutates the hidden world (cases, evidence, levels) and asserts
+  // the surfaces the earlier files just proved do not move.
+  'db/tests/death_verification_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.
@@ -66,6 +82,7 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildReleaseConditionBundle.mjs', 'db/bundles/release_conditions_bundle.sql'],
   ['scripts/buildEstateAssetBundle.mjs', 'db/bundles/estate_inventory_and_discovery_bundle.sql'],
   ['scripts/buildLifecycleNotificationBundle.mjs', 'db/bundles/lifecycle_notifications_bundle.sql'],
+  ['scripts/buildDeathVerificationBundle.mjs', 'db/bundles/death_verification_bundle.sql'],
 ]);
 
 /**
