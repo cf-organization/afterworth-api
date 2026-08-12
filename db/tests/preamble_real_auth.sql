@@ -62,7 +62,11 @@ create table if not exists public.estates (
   -- the COLUMN is `name`; a harness that spelled it the wire's way would let a function referencing
   -- the wrong column pass here and fail on the deployed schema, which is the same shape of miss as
   -- a stub that is "a different schema, not a smaller one".
-  name     text not null default 'Fixture Estate'
+  name     text not null default 'Fixture Estate',
+  -- ★ ADDED IN PHASE 11-C. `required_verification_level` reads this; without the column the policy
+  -- engine could not even be loaded — the exact shape of the 11-B `normalized_assets` finding, one
+  -- table over. Nullable free text, like live: NULL is the common, fail-closed-to-maximum case.
+  jurisdiction text
 );
 alter table public.estates enable row level security;
 
@@ -115,10 +119,86 @@ create table if not exists public.taxonomy_version (
 );
 insert into public.taxonomy_version (id) values (1) on conflict (id) do nothing;
 
--- Not the boundary under test: an audit sink that records and returns.
+-- =================================================================================================
+-- PHASE 11-C DEPENDENCIES — audit persistence, the admin gate's table, and the verification-policy
+-- schema. Real shapes, faithful to their migrations, because 11-C ASSERTS on all three.
+-- =================================================================================================
+
+-- ★ `audit_logs`, VERBATIM SHAPE FROM MIGRATION 0011 (+ the 0014 source widening). Until 11-C the
+-- harness stubbed `write_audit` to a no-op because "audit persistence is not what any assertion is
+-- about" — true then, false now: the 11-C suite asserts that every case mutation writes an audit
+-- row with actor and estate attribution, and that a DENIED mutation writes no success row. A no-op
+-- sink cannot answer either question.
+create table if not exists public.audit_logs (
+  id            bigserial primary key,
+  actor_id      uuid references auth.users(id),
+  estate_id     uuid,
+  action        text not null,
+  target_table  text,
+  target_id     uuid,
+  ip            inet,
+  user_agent    text,
+  metadata      jsonb default '{}'::jsonb,
+  created_at    timestamptz default now()
+);
+alter table public.audit_logs add column if not exists source text not null default 'server';
+alter table public.audit_logs drop constraint if exists audit_logs_source_check;
+alter table public.audit_logs add constraint audit_logs_source_check
+  check (source in ('server', 'ios_forward', 'admin'));
+alter table public.audit_logs enable row level security;
+
+-- ★ `admins`, VERBATIM SHAPE FROM MIGRATION 0014 — deny-all RLS, zero policies, zero grants; the
+-- only reader is the DEFINER `is_admin()` (loaded from source by the suite, not copied here).
+create table if not exists public.admins (
+  user_id    uuid primary key references auth.users(id),
+  created_at timestamptz not null default now(),
+  note       text
+);
+alter table public.admins enable row level security;
+
+-- ★ THE VERIFICATION-POLICY SCHEMA, VERBATIM SHAPES FROM MIGRATION 0026. The enum's DECLARATION
+-- ORDER IS ITS RANK (attestation < kyc < enhanced_kyc) — `required_verification_level` leans on
+-- native enum comparison, and 0052 types the case columns to the same enum so a second ladder
+-- cannot exist to drift. The policy table ships EMPTY like live: "unmapped = maximum" is a CODE
+-- invariant in the engine, not a seed row, and the 11-C suite proves the empty table answers
+-- `enhanced_kyc`.
+do $$ begin
+  if not exists (select 1 from pg_type where typname = 'verification_level') then
+    create type public.verification_level as enum ('attestation', 'kyc', 'enhanced_kyc');
+  end if;
+end $$;
+
+create table if not exists public.jurisdiction_policy (
+  jurisdiction        text        not null,
+  floor_level         public.verification_level not null,
+  is_counsel_approved boolean     not null default false,
+  notes               text,
+  updated_by          uuid        references auth.users(id),
+  updated_at          timestamptz not null default now(),
+  created_at          timestamptz not null default now(),
+  constraint jurisdiction_policy_pkey primary key (jurisdiction)
+);
+alter table public.jurisdiction_policy enable row level security;
+
+-- ★ VERBATIM FROM db/functions/write_audit.sql — a REAL audit writer as of 11-C, not a stub. The
+-- verifier's PREAMBLE_DISPOSITION holds this copy to the source file; if the deployed definition
+-- changes, this harness must change in the same commit or it stops testing the thing it names.
 create or replace function public.write_audit(
-  p_action text, p_entity text, p_entity_id uuid, p_estate uuid, p_metadata jsonb
-) returns void language plpgsql as $$ begin return; end $$;
+  p_action text,
+  p_table  text,
+  p_target uuid,
+  p_estate uuid,
+  p_meta   jsonb default '{}'::jsonb
+)
+ returns void
+ language plpgsql
+ security definer
+ set search_path to 'public'
+as $function$
+begin
+  insert into audit_logs(actor_id, estate_id, action, target_table, target_id, metadata)
+  values (auth.uid(), p_estate, p_action, p_table, p_target, p_meta);
+end $function$;
 
 create or replace function public.bump_taxonomy_vocabulary_version()
 returns trigger language plpgsql as $$

@@ -252,9 +252,21 @@ describe("4 · a fiduciary designation confers capacity, never disclosure", () =
       /\bpublic\.is_estate_executor\s*\(/.test(s.code)
   );
 
-  it("is_estate_executor gates only claim submission and the verification preview", () => {
+  it("is_estate_executor gates only claim submission, the verification preview, and case initiation", () => {
+    /**
+     * ★ WIDENED IN PHASE 11-C, DELIBERATELY AND ONCE. `death_verification.sql` joined the list: the
+     * D2 decision routes case initiation, evidence attachment and cancellation through the same
+     * canonical fiduciary predicate that has always gated claim submission. It remains a CAPACITY
+     * gate — the file is separately pinned (deathVerificationFoundation.test.ts) to touch no
+     * disclosure surface, and the disclosure projections below still may not consult it.
+     */
     expect(executorGated.map((e) => e.file).sort()).toEqual(
-      ["preview_required_verification_level.sql", "submit_claim_packet.sql", "submit_claim_with_evidence.sql"].sort()
+      [
+        "death_verification.sql",
+        "preview_required_verification_level.sql",
+        "submit_claim_packet.sql",
+        "submit_claim_with_evidence.sql",
+      ].sort()
     );
   });
 

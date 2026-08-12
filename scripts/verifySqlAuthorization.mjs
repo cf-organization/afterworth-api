@@ -122,9 +122,12 @@ const PREAMBLE_DISPOSITION = new Map([
   // DEFINER/search_path — and genuinely not the boundary under test: no authorization assertion in
   // any suite depends on a vocabulary version number.
   ['bump_taxonomy_vocabulary_version', 'STUB'],
-  // The audit sink records nothing here. The real body writes to an audit table this harness does
-  // not model, and audit persistence is not what any assertion in these suites is about.
-  ['write_audit', 'STUB'],
+  // ★ PROMOTED STUB → VERBATIM IN PHASE 11-C. The stub's rationale — "audit persistence is not
+  // what any assertion in these suites is about" — stopped being true the day the death-verification
+  // suite asserted that every case mutation writes an attributed audit row and that a DENIED
+  // mutation writes no success row. The harness now models `audit_logs` (0011 shape) and carries the
+  // real writer, held to source like every other real boundary.
+  ['write_audit', 'VERBATIM'],
   /**
    * ★ SURFACED IN PHASE 11-B, AND ALL THREE HAD BEEN INVISIBLE FOR THEIR ENTIRE LIVES.
    *
@@ -364,17 +367,23 @@ for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
 // reported "0 assertions" against a suite that had in fact run every one of them.
 const okCount = (combined.match(/NOTICE:\s+ok\s{2,}/g) ?? []).length;
 const MIN_ASSERTIONS = 60;
-for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED', 'ALL READINESS ASSERTIONS PASSED', 'ALL RELEASE-CONDITION ASSERTIONS PASSED', 'ALL PHASE 10-F EXIT MATRIX ASSERTIONS PASSED']) {
+for (const sentinel of [
+  'ALL AUTHORIZATION ASSERTIONS PASSED',
+  'ALL DISCOVERY ASSERTIONS PASSED',
+  'ALL READINESS ASSERTIONS PASSED',
+  // ★ EMITTED SINCE 10-D, CHECKED SINCE 11-C. The workspace suite printed this sentinel and the
+  // runner never looked for it — a suite that aborted after the readiness file would have gone
+  // green. Found while wiring the death-verification sentinel; fixed rather than filed.
+  'ALL PROFESSIONAL WORKSPACE ASSERTIONS PASSED',
+  'ALL RELEASE-CONDITION ASSERTIONS PASSED',
+  'ALL DEATH VERIFICATION ASSERTIONS PASSED',
+  'ALL PHASE 10-F EXIT MATRIX ASSERTIONS PASSED',
+]) {
   if (!combined.includes(sentinel)) {
     cleanup();
     console.error(`✗ the suite did not reach "${sentinel}" — it did not run to completion.`);
     process.exit(1);
   }
-}
-if (false) {
-  cleanup();
-  console.error('✗ the suite did not reach its terminal sentinel — it did not run to completion.');
-  process.exit(1);
 }
 if (okCount < MIN_ASSERTIONS) {
   cleanup();

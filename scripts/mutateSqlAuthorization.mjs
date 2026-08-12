@@ -392,6 +392,202 @@ const MUTATIONS = Object.freeze([
     from: '  if public.is_estate_owner(p_estate) then return \'full_detail\'; end if;',
     to: '  if public.is_estate_owner(p_estate) then return \'full_detail\'; end if;\n  if public.is_estate_executor(p_estate, p_uid) then return \'full_detail\'; end if;',
   },
+  /* ── PHASE 11-C · the death-verification foundation ───────────────────────────────────────────
+   * A case model that records facts about a death must be UNABLE to act on them. Each mutation
+   * below is the edit a well-meaning contributor would actually make — widening a gate, "helpfully"
+   * activating a grant on verification, copying the requirement into the attainment, enriching a
+   * refusal message — and each names the instrument that must object. #16 of the phase matrix
+   * (mobile derives release readiness) is killed on the mobile side by
+   * `features/grants/__tests__/releaseAuthorityAbsence.test.ts`, which carries its own
+   * detection-sanity fixtures; #7 (approved claim satisfies a grant) and #21 (fiduciary role
+   * becomes tier) were killed in 11-B/11-A above and stay in force unchanged.
+   */
+  {
+    id: 'p11c-beneficiary-initiates',
+    why: 'D2: initiation is DESIGNEE-only. Widening the gate to approved members is the most '
+      + 'natural-looking wrong edit — a beneficiary could then open a death case against a living '
+      + 'owner (T1).',
+    file: 'db/functions/death_verification.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+    to: "  if not (public.is_estate_executor(p_estate, v_uid)\n          or exists (select 1 from public.estate_memberships m\n                      where m.estate_id = p_estate and m.user_id = v_uid and m.status = 'approved')) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+  },
+  {
+    id: 'p11c-delegate-initiates',
+    why: 'A professional delegate WITHOUT a designation is a service provider, not a fiduciary (T2). '
+      + 'Admitting the delegate role specifically is the "the professional is handling the estate '
+      + 'anyway" edit.',
+    file: 'db/functions/death_verification.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+    to: "  if not (public.is_estate_executor(p_estate, v_uid)\n          or exists (select 1 from public.estate_memberships m\n                      where m.estate_id = p_estate and m.user_id = v_uid\n                        and m.role = 'professional_delegate' and m.status = 'approved')) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+  },
+  {
+    id: 'p11c-any-authenticated-initiates',
+    why: 'The gate hollowed out: any signed-in account — a foreign owner, a stranger — can open '
+      + 'a death case against any estate (T6). The cross-estate and foreign-owner refusal rows must '
+      + 'object. (The predicate CALL survives the mutation so the bundle control cannot be the '
+      + 'thing that objects — the SUITE must be.)',
+    file: 'db/functions/death_verification.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+    to: "  if not (v_uid is not null or public.is_estate_executor(p_estate, v_uid)) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+  },
+  {
+    id: 'p11c-initiation-activates-death-grants',
+    why: 'CASE CREATION IS NOT DEATH VERIFICATION IS NOT RELEASE. A case that flips dormant death '
+      + 'grants live on filing turns an unverified attestation into disclosure — the composed '
+      + 'equivalence firewall must see the delegate payload move.',
+    file: 'db/functions/death_verification.sql',
+    from: '  returning id into v_case;',
+    to: "  returning id into v_case;\n  update public.access_grants set release_condition = 'immediately'\n   where estate_id = p_estate and release_condition = 'after_verified_death';",
+  },
+  {
+    id: 'p11c-evidence-activates-death-grants',
+    why: 'FILE UPLOAD IS NOT DOCUMENT VERIFICATION (§13). Receiving a PDF must strengthen nothing; '
+      + 'an attach routine that touches grants is releasing on unreviewed bytes (T4).',
+    file: 'db/functions/death_verification.sql',
+    from: '  returning id into v_evidence;',
+    to: "  returning id into v_evidence;\n  update public.access_grants set release_condition = 'immediately'\n   where estate_id = v_estate and release_condition = 'after_verified_death';",
+  },
+  {
+    id: 'p11c-attained-activates-death-grants',
+    why: 'ATTAINMENT IS A FACT, RELEASE IS A DECISION NOBODY CAN TAKE YET (D3/T16). The attained '
+      + 'level reaching any value must move no grant.',
+    file: 'db/functions/death_verification.sql',
+    from: '     set attained_level = p_level, updated_at = now()\n   where id = p_case;',
+    to: "     set attained_level = p_level, updated_at = now()\n   where id = p_case;\n  update public.access_grants set release_condition = 'immediately'\n   where estate_id = v_estate and release_condition = 'after_verified_death';",
+  },
+  {
+    id: 'p11c-verified-releases-instructions',
+    target: 'npx',
+    why: 'DEATH VERIFIED IS NOT ESTATE RELEASED (D5/T16). Unsealing encrypted_instructions on the '
+      + 'verify decision is the premature-release edit in its most literal form; the firewall pin '
+      + '"no function sets encrypted_instructions.released" must object.',
+    file: 'db/functions/death_verification.sql',
+    from: '         decision_note = p_note, updated_at = now()\n   where id = p_case;',
+    to: "         decision_note = p_note, updated_at = now()\n   where id = p_case;\n  update public.encrypted_instructions set released = true where estate_id = v_estate;",
+  },
+  {
+    id: 'p11c-required-copied-into-attained',
+    why: 'REQUIRED IS WHAT POLICY DEMANDS; ATTAINED IS WHAT ACTUALLY HAPPENED (§10/11). Seeding the '
+      + 'attained level from the requirement makes every case verifiable at birth — the suite pins '
+      + 'the NULL baseline.',
+    file: 'db/functions/death_verification.sql',
+    from: "    (estate_id, event_type, status, initiated_by, initiator_designation_id, initiator_capacity,\n     jurisdiction_context, required_level_at_initiation)\n  values\n    (p_estate, 'death', 'open', v_uid, v_designation, v_capacity, v_juris, v_required)",
+    to: "    (estate_id, event_type, status, initiated_by, initiator_designation_id, initiator_capacity,\n     jurisdiction_context, required_level_at_initiation, attained_level)\n  values\n    (p_estate, 'death', 'open', v_uid, v_designation, v_capacity, v_juris, v_required, v_required)",
+  },
+  {
+    id: 'p11c-unknown-jurisdiction-lowers',
+    why: 'UNKNOWN JURISDICTION FAILS CLOSED TO THE MAXIMUM (T13). Flipping the code default to the '
+      + 'minimum silently makes every unmapped country the easiest place to verify a death.',
+    file: 'db/functions/required_verification_level.sql',
+    from: "    v_floor := 'enhanced_kyc';",
+    to: "    v_floor := 'attestation';",
+  },
+  {
+    id: 'p11c-attained-vocabulary-widens-to-text',
+    why: 'THE ENUM IS THE VOCABULARY GUARD (T14). A text parameter reopens the door to levels the '
+      + 'policy engine has never heard of; the suite resolves the enum signature before asserting '
+      + 'anything.',
+    file: 'db/functions/death_verification.sql',
+    from: '  p_level public.verification_level,',
+    to: '  p_level text,',
+  },
+  {
+    id: 'p11c-refusal-leaks-evidence-count',
+    why: 'REFUSAL SHAPE IS AN ORACLE IF IT VARIES (T9/§20). An error message enriched with an '
+      + 'evidence count tells an unauthorized caller that a case exists and is progressing; the '
+      + 'suite demands the EXACT sentinel bytes.',
+    file: 'db/functions/death_verification.sql',
+    from: "  if v_estate is null or not public.is_estate_executor(v_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+    to: "  if v_estate is null or not public.is_estate_executor(v_estate, v_uid) then\n    raise exception 'not_authorized (evidence on file: %)',\n      (select count(*) from public.death_verification_evidence e where e.case_id = p_case)\n      using errcode = '42501';\n  end if;",
+  },
+  {
+    id: 'p11c-nonexistent-estate-distinguishable',
+    why: 'A DISTINCT not-found REFUSAL CONFIRMS ESTATE EXISTENCE (T9). The byte-identical matrix '
+      + 'includes a nonexistent estate precisely so this pre-check cannot arrive.',
+    file: 'db/functions/death_verification.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+    to: "  if not exists (select 1 from public.estates e where e.id = p_estate) then\n    raise exception 'estate_not_found' using errcode = 'P0002';\n  end if;\n  if not public.is_estate_executor(p_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+  },
+  {
+    id: 'p11c-refusal-leaks-claimant',
+    why: 'CLAIMANT IDENTITY IS PROTECTED FROM UNAUTHORIZED VIEWERS (T10). A refusal naming the '
+      + 'initiator hands an attacker the fiduciary to target.',
+    file: 'db/functions/death_verification.sql',
+    from: "  if v_estate is null\n     or v_initiated_by <> v_uid\n     or not public.is_estate_executor(v_estate, v_uid) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;",
+    to: "  if v_estate is null\n     or v_initiated_by <> v_uid\n     or not public.is_estate_executor(v_estate, v_uid) then\n    raise exception 'not_authorized (case initiated by %)', v_initiated_by using errcode = '42501';\n  end if;",
+  },
+  {
+    id: 'p11c-claim-status-becomes-lifecycle',
+    target: 'npx',
+    why: 'THE LIFECYCLE IS AUTHORITATIVE; THE CLAIM PROJECTION IS A LABEL (D7). Falling back to '
+      + 'estate_release_state re-couples the new record to claim_packets.status — the carrier the '
+      + 'phase exists to retire. The seam pin (one caller, ever) must object.',
+    file: 'db/functions/death_verification.sql',
+    from: "  select coalesce(\n    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),\n    'active');",
+    to: "  select coalesce(\n    (select l.state from public.estate_lifecycle l where l.estate_id = p_estate),\n    public.estate_release_state(p_estate));",
+  },
+  {
+    id: 'p11c-audit-loses-estate-attribution',
+    why: 'AN AUDIT ROW WITHOUT ESTATE CONTEXT CANNOT BE RECONSTRUCTED (§21). The trail assertions '
+      + 'require actor AND estate on every case event.',
+    file: 'db/functions/death_verification.sql',
+    from: "  perform public.write_audit(\n    'death_case.initiated', 'death_verification_cases', v_case, p_estate,",
+    to: "  perform public.write_audit(\n    'death_case.initiated', 'death_verification_cases', v_case, null,",
+  },
+  {
+    id: 'p11c-local-policy-in-decision',
+    why: 'A LOCAL REQUIREMENT CONSTANT BESIDE THE CENTRAL ENGINE IS THE 11-B DEFECT REBORN (§18 of '
+      + 'the matrix). It is even "safe" today — the constant matches the common answer — which is '
+      + 'exactly why only the live-derivation test (tighten, refuse; restore, pass) can kill it.',
+    file: 'db/functions/death_verification.sql',
+    from: '    v_required := public.required_verification_level(v_estate);',
+    to: "    v_required := 'enhanced_kyc';",
+  },
+  {
+    id: 'p11c-death-incapacity-refused',
+    why: 'DEATH AND INCAPACITY ARE DISTINCT EVENTS (D9). Re-fusing them for new rows resurrects the '
+      + 'vocabulary 11-B split; the closed-set catalog assertion must count exactly one legal value.',
+    file: 'db/migrations/0052_20260812_death_verification_foundation.sql',
+    from: "    check (event_type in ('death')),",
+    to: "    check (event_type in ('death', 'death_or_incapacity')),",
+  },
+  {
+    id: 'p11c-notification-composes-evidence',
+    why: 'NO EMITTER-COMPOSED PROSE, NO EVIDENCE DETAILS IN COPY (§22, Phase 10-E rule). Any '
+      + 'notification born from the case flow — let alone one naming a document — must trip the '
+      + 'zero-notification firewall.',
+    file: 'db/functions/death_verification.sql',
+    from: '  returning id into v_evidence;',
+    to: "  returning id into v_evidence;\n  insert into public.notifications (user_id, estate_id, kind, title)\n  values (v_uid, v_estate, 'death_evidence', 'Evidence ' || p_document || ' received for review');",
+  },
+  {
+    id: 'p11c-case-creates-grant',
+    why: 'A CASE IS A RECORD, NEVER AN ACCESS INSTRUMENT (§7). Initiation manufacturing a grant — '
+      + 'even to the fiduciary "who will need it" — is disclosure authority leaking out of the '
+      + "owner's hands; the whole-flow grants bracket must object.",
+    file: 'db/functions/death_verification.sql',
+    from: '  returning id into v_case;',
+    to: "  returning id into v_case;\n  insert into public.access_grants\n    (estate_id, grantee_user_id, grantee_role, category, visibility_tier, release_condition, status, granted_by_user_id)\n  values (p_estate, v_uid, 'beneficiary', 'estate_inventory', 'full_detail', 'immediately', 'active', v_uid);",
+  },
+  {
+    id: 'p11c-case-raises-tier',
+    why: 'A CASE MUST NOT TOUCH A VISIBILITY TIER (§7, matrix #23). Raising existing grants "in '
+      + "preparation\" moves the beneficiary's live payload — the composed firewall must see it.",
+    file: 'db/functions/death_verification.sql',
+    from: '     set attained_level = p_level, updated_at = now()\n   where id = p_case;',
+    to: "     set attained_level = p_level, updated_at = now()\n   where id = p_case;\n  update public.access_grants set visibility_tier = 'full_detail' where estate_id = v_estate;",
+  },
+  {
+    id: 'p11c-released-becomes-reachable',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    why: 'RELEASED IS NOT A STATE THIS PHASE CAN STORE, LET ALONE REACH (§6, matrix #24). Widening '
+      + 'the transition map is the first half of that accident; the closed-map pin must object '
+      + 'before the CHECK ever gets its say.',
+    file: 'db/functions/death_verification.sql',
+    from: "    or (v_from = 'death_verification_pending' and p_to = 'death_verified')",
+    to: "    or (v_from = 'death_verification_pending' and p_to = 'death_verified')\n    or (v_from = 'death_verified' and p_to = 'released')",
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
