@@ -124,9 +124,33 @@ create table if not exists public.estate_memberships (
   estate_id uuid not null references public.estates(id) on delete cascade,
   user_id   uuid not null references auth.users(id),
   role      text not null,
-  status    text not null default 'approved'
+  status    text not null default 'approved',
+  -- ★ PHASE 10-F — THE REAL SCHEMA HAS THIS, AND ITS ABSENCE HERE LET A TEST PROVE SOMETHING FALSE.
+  --
+  -- `db/tables/estate_memberships.sql` carries a RECON CORRECTION recorded when the table was
+  -- captured from live: it HAS `unique (estate_id, user_id)`, and a user holds AT MOST ONE
+  -- membership per estate. Several comments elsewhere in the codebase still repeat the older,
+  -- contradicted belief that a user may hold multiple rows.
+  --
+  -- Without the constraint, this harness accepted a second membership row for one (estate, user) —
+  -- and the Phase 10-D suite used exactly that to construct "an owner who ALSO holds an approved
+  -- professional_delegate row", calling it "a reachable data state". It is not reachable: the
+  -- database forbids it. The assertion was real, the refusal was real, and the STATE was fictional.
+  --
+  -- `provision_from_invitation` proves the constraint exists in production independently of the
+  -- captured file: it uses `on conflict (estate_id, user_id)`, which Postgres rejects at runtime
+  -- unless a matching unique constraint is present — and invitations are accepted in production.
+  constraint estate_members_estate_id_user_id_key unique (estate_id, user_id),
+  source_invitation_id uuid,
+  approved_at          timestamptz,
+  created_at           timestamptz not null default now()
 );
 alter table public.estate_memberships enable row level security;
+
+-- ★ AND THE PARTIAL UNIQUE THAT MAKES "ONE OWNER PER ESTATE" A SCHEMA FACT rather than a convention.
+create unique index if not exists estate_memberships_one_primary_user_per_estate
+  on public.estate_memberships (estate_id)
+  where role = 'primary_user' and status = 'approved';
 
 create table if not exists public.access_grants (
   id                  uuid primary key default gen_random_uuid(),
@@ -165,8 +189,16 @@ create table if not exists public.estate_designations (
   estate_id        uuid not null references public.estates(id) on delete cascade,
   user_id          uuid not null references auth.users(id),
   designation_type text not null check (designation_type in ('executor','trustee')),
-  status           text not null default 'active' check (status in ('active','revoked'))
+  status           text not null default 'active' check (status in ('active','revoked')),
+  -- ★ 10-F: the columns and index `provision_from_invitation` writes through. Its
+  -- `on conflict (estate_id, user_id, designation_type) where status = 'active'` needs a MATCHING
+  -- partial unique index or Postgres refuses the statement outright.
+  source_invitation_id uuid,
+  granted_by           uuid
 );
+create unique index if not exists estate_designations_one_active
+  on public.estate_designations (estate_id, user_id, designation_type)
+  where status = 'active';
 alter table public.estate_designations enable row level security;
 
 create or replace function public.is_estate_executor(p_estate uuid, p_user uuid)
@@ -299,12 +331,34 @@ create table if not exists public.profiles (
 );
 alter table public.profiles enable row level security;
 
+-- ★ PHASE 10-F — `beneficiaries` exists so `accept_invitation` can be exercised for real.
+--
+-- 10-E closed `decline_invitation` and left `accept_invitation` uncovered, recording the reason as
+-- "it delegates to provision_from_invitation, which reconciles memberships and stamps designations;
+-- modelling that faithfully is a larger harness than this phase should invent."
+--
+-- 10-F traced it instead of inheriting the estimate. `provision_from_invitation` touches exactly
+-- four tables — `invitations`, `estate_memberships`, `estate_designations` and this one — and the
+-- first three were already modelled. The gap was ONE table. The earlier estimate was honest and
+-- wrong, which is a good reason to re-derive a deferral rather than carry it forward.
+create table if not exists public.beneficiaries (
+  id        uuid primary key default gen_random_uuid(),
+  estate_id uuid not null references public.estates(id) on delete cascade,
+  user_id   uuid,
+  email     text,
+  phone     text
+);
+alter table public.beneficiaries enable row level security;
+
 create table if not exists public.invitations (
   id            uuid primary key default gen_random_uuid(),
   estate_id     uuid not null references public.estates(id) on delete cascade,
   invitee_email text,
   invitee_phone text,
   proposed_role text not null default 'beneficiary',
+  -- `provision_from_invitation` stamps an executor/trustee designation when `kind` names one.
+  kind          text,
+  invited_by    uuid,
   status        text not null default 'pending'
                   check (status in ('pending','matched','accepted','declined','revoked')),
   accepted_by   uuid,
@@ -441,23 +495,17 @@ begin
           and g.approved_at is not null);
 end;
 $$;
-create or replace function public.asset_bracket_low(p bigint) returns bigint language sql immutable as $$
-  select case
-    when p < 1000000    then 0             when p < 5000000    then 1000000
-    when p < 10000000   then 5000000       when p < 25000000   then 10000000
-    when p < 50000000   then 25000000      when p < 100000000  then 50000000
-    when p < 500000000  then 100000000     when p < 1000000000 then 500000000
-    else 1000000000 end;
-$$;
-
-create or replace function public.asset_bracket_high(p bigint) returns bigint language sql immutable as $$
-  select case
-    when p < 1000000    then 1000000       when p < 5000000    then 5000000
-    when p < 10000000   then 10000000      when p < 25000000   then 25000000
-    when p < 50000000   then 50000000      when p < 100000000  then 100000000
-    when p < 500000000  then 500000000     when p < 1000000000 then 1000000000
-    else null end;   -- top bracket ($10M+): open-ended
-$$;
+-- ★ THE BRACKET FUNCTIONS ARE NO LONGER COPIED HERE (10-F).
+--
+-- They used to be defined in this file AND inside `db/functions/list_estate_assets.sql`, and nothing
+-- compared the two: the drift guard resolved a function to `db/functions/<name>.sql`, and these live
+-- in a file named after something else. They are the ANTI-ORACLE mechanism — what stops a category
+-- aggregate from republishing an exact value — so a silent divergence there would have meant the
+-- suite proving its brackets were wide while production's were not.
+--
+-- `list_estate_assets.sql` is now part of the estate bundle, so the real definitions arrive with
+-- everything else and this copy is redundant. The guard also searches by CONTENT now, so a future
+-- copy would be caught rather than exempted.
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 -- ★ THE HAND-COPIED `create_asset_grant` AND THE `emit_notification` STUB BOTH LIVED HERE. BOTH ARE

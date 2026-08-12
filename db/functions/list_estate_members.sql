@@ -30,7 +30,10 @@
 -- NON-OWNER + APPROVED + DISTINCT: filtered to status='approved' AND
 -- not is_ownership_role(role) — the same canonical "eligible non-owner member" predicate
 -- create_access_request gates on. The ownership exclusion stays IN the WHERE (not a post
--- filter): estate_memberships has NO (estate,user) uniqueness, so a user may hold multiple
+-- filter): ★ CORRECTED 10-F — this line used to assert that estate_memberships has NO (estate,user)
+-- uniqueness. It HAS it (`estate_members_estate_id_user_id_key`); see the recon correction in
+-- db/tables/estate_memberships.sql. Filtering role in the WHERE rather than post-LIMIT is still the
+-- right shape, but the reason is clarity, not multiplicity. A user may hold at most one
 -- approved rows; SELECT DISTINCT collapses duplicate (user_id, role) pairs so a member with
 -- two beneficiary rows appears once, while a genuine dual-role member (beneficiary AND
 -- professional_delegate) correctly appears as two distinct pickable entries (the role drives

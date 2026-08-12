@@ -102,11 +102,22 @@ begin
   -- attributing the refusal to the wrong mechanism, which is the same shape as an
   -- `@ts-expect-error` that fires on a missing field rather than the excess one it names.
   --
-  -- `estate_memberships` carries NO (estate, user) uniqueness — `list_estate_members` documents that
-  -- a user may legitimately hold several rows — so an owner who ALSO holds an approved
-  -- professional-delegate row is a reachable data state, and it is the ONLY state in which the
-  -- ownership check is load-bearing. Constructed here, and torn down immediately, so the branch is
-  -- covered by something other than its own comment.
+  -- ★ CORRECTED IN PHASE 10-F. This comment used to say `estate_memberships` carries NO
+  -- (estate, user) uniqueness, citing `list_estate_members`. That is CONTRADICTED BY LIVE:
+  -- `db/tables/estate_memberships.sql` records a recon correction — the table HAS
+  -- `unique (estate_id, user_id)`, so a user holds AT MOST ONE membership per estate. The harness
+  -- omitted that constraint, which is what let this fixture exist at all.
+  --
+  -- The constraint is now in the preamble and this assertion STILL PASSES, which is the interesting
+  -- part: the owner holds no other membership row on this estate, so the delegate row inserted below
+  -- is their FIRST — the role filter therefore ADMITS them, and `is_estate_owner` is genuinely what
+  -- refuses. The branch is covered by something other than its own comment.
+  --
+  -- What changed is the honesty of the claim: this is a DEFENCE-IN-DEPTH state, not a routine one.
+  -- Reaching it in production would require an owner with a delegate membership and no primary_user
+  -- row, which `ensure_primary_user_membership` and the on-conflict in `provision_from_invitation`
+  -- between them make very hard. Defence in depth is worth testing; calling it "reachable" was not
+  -- accurate, and the difference matters to whoever reads this next.
   insert into public.estate_memberships (estate_id, user_id, role, status)
   values (A, OWNER, 'professional_delegate', 'approved');
   begin
