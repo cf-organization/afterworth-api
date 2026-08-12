@@ -104,12 +104,12 @@ end $$;
 
 do $exit$
 declare
-  OWNER_X uuid; BENE uuid; DELE uuid; STRANGER uuid; OWNER_Y uuid; REVOKED uuid;
+  OWNER_X uuid; BENE uuid; DELE uuid; STRANGER uuid; OWNER_Y uuid; REVOKED uuid; MEMBER_NG uuid;
   X uuid; Y uuid;
   before_json jsonb; after_json jsonb; ctl_json jsonb;
   v jsonb; v2 jsonb; n int; cause text;
   refusal_bytes text; first_bytes text;
-  lo bigint; hi bigint; exact_v bigint;
+  lo bigint; hi bigint; exact_v bigint; v_req uuid;
 begin
   raise notice ' ';
   raise notice '══ PHASE 10-F · exit matrix — composed disclosure ══';
@@ -121,6 +121,9 @@ begin
   insert into auth.users default values returning id into DELE;
   insert into auth.users default values returning id into STRANGER;
   insert into auth.users default values returning id into REVOKED;
+  -- A member with NO grant: the only viewer who reaches the `hidden` tier BRANCH of discovery, as
+  -- opposed to the outright refusal a non-member gets. Section 7b needs that branch specifically.
+  insert into auth.users default values returning id into MEMBER_NG;
 
   insert into public.estates (owner_id, name) values (OWNER_X, 'Exit Estate X') returning id into X;
   insert into public.estates (owner_id, name) values (OWNER_Y, 'Exit Estate Y') returning id into Y;
@@ -130,6 +133,7 @@ begin
     (X, BENE,    'beneficiary', 'approved'),
     (X, DELE,    'professional_delegate', 'approved'),
     (X, REVOKED, 'professional_delegate', 'revoked'),
+    (X, MEMBER_NG, 'beneficiary', 'approved'),
     (Y, OWNER_Y, 'primary_user', 'approved');
 
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -457,6 +461,89 @@ begin
   raise notice '  ok   only the grantee is told; asset creation notifies nobody';
 
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  raise notice ' 7b · ★ NO READINESS VOCABULARY REACHES A NON-OWNER PAYLOAD, AT ANY TIER';
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ A SHAPE ASSERTION, BECAUSE A DIFFERENCE TEST CANNOT SEE THIS ONE. Adding a `finding_count` to
+  -- the discovery payload is invisible to every equivalence check in this file: the number does not
+  -- move when ASSETS change, so before and after stay identical and the leak sails through. A
+  -- mutation proved exactly that. The only thing that catches it is refusing the KEY outright —
+  -- the same reasoning as the score-like sweep the readiness suite already runs.
+  for cause, v in
+    select c.name, harness_exit.composed(c.uid, X)
+    from (values ('beneficiary', BENE), ('delegate', DELE), ('stranger', STRANGER),
+                 ('member-no-grant (hidden tier)', MEMBER_NG)) as c(name, uid)
+  loop
+    if exists (
+      select 1 from jsonb_each(v->'discovery') kv
+       where kv.key ~* '(finding|readiness|score|percent|grade|complete|weight|points)'
+    ) then
+      raise exception 'FAIL: the % discovery payload carries a readiness-shaped key: %',
+        cause, (v->'discovery')::text;
+    end if;
+  end loop;
+  -- ★ POSITIVE CONTROL: the sweep must be looking at a non-empty object, or it inspects nothing.
+  if (select count(*) from jsonb_each(harness_exit.composed(BENE, X)->'discovery')) = 0 then
+    raise exception 'FAIL(control): the beneficiary discovery payload has no keys at all — the key '
+      'sweep above ran against an empty object';
+  end if;
+  -- ★ AND THE `hidden` TIER BRANCH WAS ACTUALLY REACHED. That branch builds its own object, so a
+  -- sweep that only ever saw granted viewers would miss a key added there — which is exactly how a
+  -- mutation adding `finding_count` to it survived the first version of this check.
+  if (harness_exit.discovery(MEMBER_NG, X)->>'inventory_tier') is distinct from 'hidden' then
+    raise exception 'FAIL(control): the no-grant member is at tier %, not hidden — the hidden branch '
+      'was never swept', harness_exit.discovery(MEMBER_NG, X)->>'inventory_tier';
+  end if;
+  raise notice '  ok   no finding/readiness/score key in any non-owner discovery payload';
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  raise notice ' 7c · ★ A LATER DENIAL DOES NOT REVOKE AN EARLIER GRANT';
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ THE PHASE 10-E FIXTURE INVARIANT, ASSERTED IN SQL FOR THE FIRST TIME. Until now it was proved
+  -- only by the mobile seed script against the deployed database — a real proof, but one that runs
+  -- outside CI and only when someone seeds fixtures. A mutation adding a revoke to
+  -- `deny_access_request` survived the entire suite, which is how the gap surfaced.
+  --
+  -- The shape matters: the delegate holds a LIVE grant, then makes a SEPARATE request which is
+  -- denied. The grant must be untouched, because the owner never withdrew it.
+  perform harness_exit.grant(X, OWNER_X, DELE, 'professional_delegate', 'category_summary');
+  before_json := harness_exit.discovery(DELE, X);
+  if (before_json->'categories') is null or jsonb_array_length(before_json->'categories') = 0 then
+    raise exception 'FAIL(precondition): the delegate holds no visible inventory, so "the grant '
+      'survived" would be indistinguishable from "there was never a grant"';
+  end if;
+
+  perform set_config('request.jwt.claim.sub', DELE::text, true);
+  set local role authenticated;
+  -- `create_access_request` returns `setof public.access_requests`, a NAMED composite — attaching a
+  -- column definition list to it is an error, not a refinement. The row is read back below instead.
+  perform public.create_access_request(X, 'estate_documents', null);
+  reset role;
+  -- ★ THE ID IS READ AS THE SUITE OWNER, NOT UNDER `authenticated`. `access_requests` grants that
+  -- role no direct SELECT — reads go through the RPCs — so resolving the id inside the role block
+  -- fails on permissions rather than on anything this section is testing.
+  select r.id into v_req from public.access_requests r
+   where r.estate_id = X and r.requester_user_id = DELE
+   order by r.created_at desc limit 1;
+
+  perform set_config('request.jwt.claim.sub', OWNER_X::text, true);
+  set local role authenticated;
+  perform public.deny_access_request(v_req);
+  reset role;
+
+  after_json := harness_exit.discovery(DELE, X);
+  if before_json::text is distinct from after_json::text then
+    raise exception 'FAIL: denying a LATER request changed the delegate inventory view — an earlier '
+      'grant was revoked as a side effect.%  before=%  after=%', chr(10), before_json::text, after_json::text;
+  end if;
+  if not exists (select 1 from public.access_grants g
+                  where g.estate_id = X and g.grantee_user_id = DELE and g.status = 'active') then
+    raise exception 'FAIL: the delegate active grant is gone after an unrelated denial';
+  end if;
+  raise notice '  ok   a denied request leaves an earlier live grant exactly as it was';
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
   raise notice ' 8 · revoked membership loses everything, and loses it uniformly';
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
   if harness_exit.composed(REVOKED, X)::text is distinct from harness_exit.composed(STRANGER, X)::text then
@@ -479,7 +566,7 @@ begin
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
   raise notice '10 · fixture integrity';
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
-  delete from public.notifications where user_id in (OWNER_X, OWNER_Y, BENE, DELE, STRANGER, REVOKED);
+  delete from public.notifications where user_id in (OWNER_X, OWNER_Y, BENE, DELE, STRANGER, REVOKED, MEMBER_NG);
   delete from public.claim_packets where estate_id in (X, Y);
   delete from public.access_grants where estate_id in (X, Y);
   delete from public.estate_assets where estate_id in (X, Y);

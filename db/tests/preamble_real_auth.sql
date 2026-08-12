@@ -495,23 +495,17 @@ begin
           and g.approved_at is not null);
 end;
 $$;
-create or replace function public.asset_bracket_low(p bigint) returns bigint language sql immutable as $$
-  select case
-    when p < 1000000    then 0             when p < 5000000    then 1000000
-    when p < 10000000   then 5000000       when p < 25000000   then 10000000
-    when p < 50000000   then 25000000      when p < 100000000  then 50000000
-    when p < 500000000  then 100000000     when p < 1000000000 then 500000000
-    else 1000000000 end;
-$$;
-
-create or replace function public.asset_bracket_high(p bigint) returns bigint language sql immutable as $$
-  select case
-    when p < 1000000    then 1000000       when p < 5000000    then 5000000
-    when p < 10000000   then 10000000      when p < 25000000   then 25000000
-    when p < 50000000   then 50000000      when p < 100000000  then 100000000
-    when p < 500000000  then 500000000     when p < 1000000000 then 1000000000
-    else null end;   -- top bracket ($10M+): open-ended
-$$;
+-- ★ THE BRACKET FUNCTIONS ARE NO LONGER COPIED HERE (10-F).
+--
+-- They used to be defined in this file AND inside `db/functions/list_estate_assets.sql`, and nothing
+-- compared the two: the drift guard resolved a function to `db/functions/<name>.sql`, and these live
+-- in a file named after something else. They are the ANTI-ORACLE mechanism — what stops a category
+-- aggregate from republishing an exact value — so a silent divergence there would have meant the
+-- suite proving its brackets were wide while production's were not.
+--
+-- `list_estate_assets.sql` is now part of the estate bundle, so the real definitions arrive with
+-- everything else and this copy is redundant. The guard also searches by CONTENT now, so a future
+-- copy would be caught rather than exempted.
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 -- ★ THE HAND-COPIED `create_asset_grant` AND THE `emit_notification` STUB BOTH LIVED HERE. BOTH ARE

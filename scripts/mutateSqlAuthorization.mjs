@@ -161,6 +161,70 @@ const MUTATIONS = Object.freeze([
     from: '  select owner_id from public.estates where id = p_estate_id;',
     to: '  select owner_id from public.estates order by id limit 1;',
   },
+
+  /* ── PHASE 10-F · the composed system ─────────────────────────────────────────────────────────
+   * These aim at the exit matrix rather than at any single feature. Each is an edit that leaves
+   * every FEATURE suite green — which is precisely why the composed suite had to exist.
+   */
+  {
+    id: 'aggregate-leaks-exact-value',
+    why: 'THE DEFECT 10-A ACTUALLY SHIPPED. Collapsing the bracket so low = high republishes the '
+      + 'exact category total under a different field name. Every field is still correctly nulled; '
+      + 'the value is disclosed anyway.',
+    file: 'db/functions/list_estate_assets.sql',
+    from: '    when p < 1000000    then 1000000       when p < 5000000    then 5000000',
+    to: '    when p < 1000000    then p              when p < 5000000    then p',
+  },
+  {
+    id: 'withheld-count-revealed',
+    why: 'At range_only a viewer receives category NAMES and nothing quantitative. Publishing '
+      + 'item_count at that tier hands them the inventory shape they were rationed out of.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "             'item_count',   case when v_tier = 'range_only' then null else count(*) end,",
+    to: "             'item_count',   count(*),",
+  },
+  {
+    id: 'archived-assets-rejoin-aggregates',
+    why: 'An archived asset is withdrawn material. Dropping the archived filter puts it back into '
+      + 'every count and bracket, so deleting something becomes observable to anyone with a tier.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: '       and a.archived_at is null\n     group by a.category',
+    to: '       and (a.archived_at is null or true)\n     group by a.category',
+  },
+  {
+    id: 'refusal-shape-differs-by-cause',
+    why: 'A refusal that names its cause is an oracle: "not a member" versus "no such estate" '
+      + 'confirms the estate exists. The composed matrix compares four causes byte for byte.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if not v_is_owner and not v_member and v_tier = 'hidden' then\n    return jsonb_build_object('authorized', false);",
+    to: "  if not v_is_owner and not v_member and v_tier = 'hidden' then\n    return jsonb_build_object('authorized', false, 'reason', case when v_member then 'no_grant' else 'not_a_member' end);",
+  },
+  {
+    id: 'denial-revokes-prior-grant',
+    why: 'THE FIXTURE INVARIANT PHASE 10-E LEFT BEHIND. Denying a LATER access request must not '
+      + 'touch an EARLIER grant. Revoking here would silently strip access the owner never withdrew.',
+    file: 'db/functions/deny_access_request.sql',
+    from: "  update public.access_requests\n     set status = 'denied',",
+    to: "  update public.access_grants set status = 'revoked' where estate_id = v_estate and grantee_user_id = v_requester;\n  update public.access_requests\n     set status = 'denied',",
+  },
+  {
+    id: 'readiness-leaks-into-discovery',
+    why: 'Readiness is an owner-only judgement. Surfacing its finding count in the discovery '
+      + 'payload would tell every tiered viewer how incomplete the estate is.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "      'release_state', public.estate_release_state(p_estate),\n      'document_count', v_docs",
+    to: "      'release_state', public.estate_release_state(p_estate),\n      'finding_count', (select count(*) from public.documents d2 where d2.estate_id = p_estate),\n      'document_count', v_docs",
+  },
+  {
+    id: 'drift-reconciler-goes-blind',
+    target: 'scripts/verifySourceDeploymentDrift.mjs',
+    why: 'THE RECONCILER MUST DETECT DEPLOYMENT-AHEAD-OF-SOURCE. Narrowing the source ceiling so it '
+      + 'refuses a category production still grants is exactly the create_asset_grant near-miss, and '
+      + 'the reconciler exists to make that loud instead of silent.',
+    file: 'db/migrations/0049_20260811_estate_discovery.sql',
+    from: "    when p_category in ('account_balances', 'total_asset_value', 'estate_inventory') then",
+    to: "    when p_category in ('account_balances', 'total_asset_value') then",
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
@@ -297,7 +361,16 @@ for (const m of selected) {
       throw new Error('bundle-clean');
     }
 
-    const run = spawnSync('node', ['scripts/verifySqlAuthorization.mjs'], { cwd: wt, encoding: 'utf8' });
+    /**
+     * ★ EACH MUTATION NAMES THE INSTRUMENT THAT MUST CATCH IT.
+     *
+     * Defaulting everything to the SQL suite would quietly report NOT_DETECTED for a mutation the
+     * suite was never meant to see — and the reader would blame the tests rather than notice the
+     * mutation was aimed at a different instrument. `target` makes the pairing explicit, so a
+     * failure means "this instrument missed the thing it exists to catch".
+     */
+    const verifier = m.target ?? 'scripts/verifySqlAuthorization.mjs';
+    const run = spawnSync('node', [verifier], { cwd: wt, encoding: 'utf8' });
     const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
     if (run.status === 2) {
       detail = 'the suite could not verify (exit 2) — that is a harness failure, never a detection';

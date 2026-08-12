@@ -39,6 +39,19 @@ buildBundle(
       //
       // It must precede 0049, which patches it.
       'db/functions/create_asset_grant.sql',
+      // ★ ADDED IN 10-F — THE BRACKETS SHIPPED IN NO BUNDLE AT ALL.
+      //
+      // `asset_bracket_low` / `asset_bracket_high` are the anti-oracle mechanism: they are what stop
+      // a category aggregate from republishing an exact value. `estate_discovery_rpcs.sql` calls
+      // them, and neither bundle carried them — production has them from an older migration, and the
+      // SQL harness has its own copy, so nothing noticed. A fresh database built from these bundles
+      // would have created `get_estate_discovery` referencing functions that do not exist.
+      //
+      // Found by a mutation aimed at collapsing the bracket, which reported HARNESS_FAILURE — "the
+      // mutation is in no rebuilt bundle" — rather than a verdict. The harness refusing to vote is
+      // what surfaced it; a mutation runner that had silently defaulted to NOT_DETECTED would have
+      // sent someone looking for a missing assertion instead.
+      'db/functions/list_estate_assets.sql',
       'db/migrations/0049_20260811_estate_discovery.sql',
       'db/functions/estate_discovery_rpcs.sql',
       'db/functions/estate_readiness_rpcs.sql',
@@ -63,6 +76,8 @@ buildBundle(
        * operator can paste a bundle that quietly narrows a live authorization vocabulary.
        */
       ['db/functions/create_asset_grant.sql', "'linked_account_details', 'estate_inventory'"],
+      ['db/functions/list_estate_assets.sql', 'create or replace function public.asset_bracket_low'],
+      ['db/functions/list_estate_assets.sql', 'create or replace function public.asset_bracket_high'],
       ['db/functions/estate_discovery_rpcs.sql', 'create or replace function public.get_estate_discovery'],
       ['db/functions/estate_discovery_rpcs.sql', 'create or replace function public.inventory_disclosure_tier'],
       ['db/functions/estate_readiness_rpcs.sql', 'create or replace function public.get_estate_readiness'],
