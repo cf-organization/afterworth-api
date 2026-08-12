@@ -20,7 +20,7 @@
  * NEVER point --database-url at production. The suite creates roles, tables and users.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -118,10 +118,40 @@ const PREAMBLE_DISPOSITION = new Map([
   ['is_ownership_role', 'VERBATIM'],
   ['is_estate_member', 'VERBATIM'],
   ['is_estate_executor', 'VERBATIM'],
+  // ★ ADDED IN 10-F, AND THEY HAD BEEN INVISIBLE. These are the ANTI-ORACLE mechanism: the brackets
+  // that stop a category aggregate from publishing an exact value. The preamble carried its own copy
+  // and nothing compared it to source, because the lookup below used to be `db/functions/<name>.sql`
+  // and their real definition lives INSIDE `db/functions/list_estate_assets.sql`. A guard that finds
+  // a function by guessing its filename cannot see a function defined in a file named after
+  // something else — which is most of them.
+  ['asset_bracket_low', 'VERBATIM'],
+  ['asset_bracket_high', 'VERBATIM'],
+  // ★ ALSO SURFACED BY THE CONTENT SEARCH IN 10-F: a taxonomy version counter defined inside
+  // `get_document_taxonomy.sql`. Genuinely a stub — the harness version omits `updated_at` and the
+  // DEFINER/search_path — and genuinely not the boundary under test: no authorization assertion in
+  // any suite depends on a vocabulary version number.
+  ['bump_taxonomy_vocabulary_version', 'STUB'],
   // The audit sink records nothing here. The real body writes to an audit table this harness does
   // not model, and audit persistence is not what any assertion in these suites is about.
   ['write_audit', 'STUB'],
 ]);
+
+/**
+ * ★ WHERE A FUNCTION IS REALLY DEFINED — searched by CONTENT across every source file.
+ *
+ * The first version of this guard resolved `public.foo` to `db/functions/foo.sql` and skipped the
+ * check when that path did not exist. That silently exempted every function defined inside a file
+ * named after a different one, and `asset_bracket_low` / `asset_bracket_high` — the brackets the
+ * whole aggregate-disclosure defence rests on — sat in that blind spot with a shadow copy in the
+ * harness the entire time. They happened to agree; nothing would have said so if they had not.
+ */
+const SOURCE_FILES = readdirSync(join(ROOT, 'db/functions'))
+  .filter((f) => f.endsWith('.sql'))
+  .map((f) => ({ path: `db/functions/${f}`, text: readFileSync(join(ROOT, 'db/functions', f), 'utf8') }));
+function findSource(name) {
+  const re = new RegExp(`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\s*\\(`, 'i');
+  return SOURCE_FILES.find((f) => re.test(f.text)) ?? null;
+}
 
 const bodyOf = (sql, name) =>
   (sql.match(new RegExp(`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\b[\\s\\S]*?\\$[a-z_]*\\$;`, 'i')) ?? [''])[0]
@@ -134,19 +164,19 @@ const declared = [...new Set(
 )];
 const problems = [];
 for (const name of declared) {
-  const sourcePath = join(ROOT, `db/functions/${name}.sql`);
-  if (!existsSync(sourcePath)) continue; // no production counterpart — a pure harness fixture
+  const source = findSource(name);
+  if (!source) continue; // genuinely no production counterpart — a pure harness fixture
   const disposition = PREAMBLE_DISPOSITION.get(name);
   if (!disposition) {
-    problems.push(`public.${name} — redefined here with no declared disposition (db/functions/${name}.sql exists)`);
+    problems.push(`public.${name} — redefined here with no declared disposition (defined in ${source.path})`);
     continue;
   }
   const mine = bodyOf(preamble, name);
-  const theirs = bodyOf(readFileSync(sourcePath, 'utf8'), name);
+  const theirs = bodyOf(source.text, name);
   if (!mine || !theirs) {
     problems.push(`public.${name} — could not extract one of the two bodies to compare`);
   } else if (disposition === 'VERBATIM' && mine !== theirs) {
-    problems.push(`public.${name} — declared VERBATIM but has DRIFTED from db/functions/${name}.sql`);
+    problems.push(`public.${name} — declared VERBATIM but has DRIFTED from ${source.path}`);
   } else if (disposition === 'STUB' && mine === theirs) {
     problems.push(`public.${name} — declared STUB but is now identical to source; load it from a bundle instead`);
   }

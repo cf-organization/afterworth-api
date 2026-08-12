@@ -517,6 +517,72 @@ begin
   delete from public.notifications where user_id = OWNER_A;
 
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  raise notice ' 9c · invitation ACCEPTED — the owner, once, through the real provisioning path';
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ THE GAP 10-E LEFT OPEN, CLOSED BY TRACING IT RATHER THAN RE-ESTIMATING IT. 10-E deferred this
+  -- because `accept_invitation` delegates to `provision_from_invitation`, which "reconciles
+  -- memberships and stamps designations". True — but that function touches exactly four tables, and
+  -- three were already modelled. The missing piece was `public.beneficiaries`.
+  --
+  -- This runs the REAL provisioning path: a membership is created, the beneficiary row is linked, and
+  -- only then is the owner told. Nothing is faked; if provisioning breaks, this fails.
+  delete from public.notifications where user_id = OWNER_A;
+  insert into public.profiles (id, email) values (STRANGER, 'fixture-acceptor@example.invalid')
+    on conflict (id) do update set email = excluded.email;
+  insert into public.invitations (estate_id, invitee_email, proposed_role, status)
+  values (A, 'fixture-acceptor@example.invalid', 'beneficiary', 'pending')
+  returning id into v_req;
+
+  perform set_config('request.jwt.claim.sub', STRANGER::text, true);
+  set local role authenticated;
+  perform public.accept_invitation(v_req);
+  reset role;
+
+  -- ★ PROVISIONING ACTUALLY HAPPENED. Without this the notification assertions below would pass on a
+  -- path that emitted correctly and provisioned nothing.
+  if not exists (select 1 from public.estate_memberships m
+                  where m.estate_id = A and m.user_id = STRANGER and m.status = 'approved') then
+    raise exception 'FAIL: accept_invitation emitted without creating the membership';
+  end if;
+
+  select count(*) into n from public.notifications where user_id = OWNER_A and kind = 'invitationUpdate';
+  if n <> 1 then
+    raise exception 'FAIL: the owner received % accept notifications, expected 1', n;
+  end if;
+  select count(*) into n from public.notifications where user_id = STRANGER and kind = 'invitationUpdate';
+  if n <> 0 then
+    raise exception 'FAIL: the ACCEPTOR was notified of their own action (% rows)', n;
+  end if;
+
+  select title, body into v_title, v_body
+    from public.notifications where user_id = OWNER_A and kind = 'invitationUpdate';
+  if (v_title || ' ' || v_body) ilike '%fixture-acceptor%' or (v_title || ' ' || v_body) like '%@%' then
+    raise exception 'FAIL: the accept notification named the invitee: %', v_body;
+  end if;
+  if (v_title || ' ' || v_body) ~* '(beneficiary|delegate|executor|trustee)' then
+    raise exception 'FAIL: the accept notification named a role: %', v_body;
+  end if;
+  raise notice '  ok   only the owner is told; no invitee, no role; membership really was created';
+
+  -- ★ THE IDEMPOTENT RE-ACCEPT SELF-HEALS AND MUST NOT RE-ANNOUNCE. This is the branch that returns
+  -- early, and an emitter above it would tell the owner again on every retry.
+  perform set_config('request.jwt.claim.sub', STRANGER::text, true);
+  set local role authenticated;
+  perform public.accept_invitation(v_req);
+  reset role;
+  select count(*) into n from public.notifications where user_id = OWNER_A;
+  if n <> 1 then
+    raise exception 'FAIL: re-accepting emitted again (% rows) — the emitter sits above the '
+      'idempotency guard', n;
+  end if;
+  raise notice '  ok   re-accepting emits nothing a second time';
+
+  delete from public.estate_memberships where estate_id = A and user_id = STRANGER;
+  delete from public.invitations where estate_id = A;
+  delete from public.notifications where user_id = OWNER_A;
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
   raise notice '10 · cross-estate isolation and RLS';
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
   --

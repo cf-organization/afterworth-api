@@ -50,6 +50,7 @@ buildBundle(
       'db/functions/create_document_grant.sql',
       'db/functions/approve_document_grant.sql',
       'db/functions/revoke_document_grant.sql',
+      'db/functions/provision_from_invitation.sql',
       'db/functions/accept_invitation.sql',
       'db/functions/decline_invitation.sql',
     ],
@@ -74,6 +75,7 @@ buildBundle(
       ['db/functions/create_document_grant.sql', "'access_grant.created'"],
       ['db/functions/approve_document_grant.sql', "'access_grant.created'"],
       ['db/functions/revoke_document_grant.sql', "'access_grant.revoked'"],
+      ['db/functions/provision_from_invitation.sql', 'create or replace function public.provision_from_invitation'],
       ['db/functions/accept_invitation.sql', "'invitation.accepted'"],
       ['db/functions/decline_invitation.sql', "'invitation.declined'"],
       // ★ THE DEATH/CLAIM FIREWALL IS PRESENT AT BOTH GRANT-CREATION SITES.
