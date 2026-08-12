@@ -225,6 +225,39 @@ const MUTATIONS = Object.freeze([
     from: "    when p_category in ('account_balances', 'total_asset_value', 'estate_inventory') then",
     to: "    when p_category in ('account_balances', 'total_asset_value') then",
   },
+
+  /* ── PHASE 11-A · firewall tripwires ──────────────────────────────────────────────────────────
+   * These do not test the product. They test whether `test/phase11Firewall.test.ts` would NOTICE
+   * the three ways Phase 11 could cross the boundary by accident. A tripwire nobody has tripped is
+   * indistinguishable from a wire that is not connected.
+   */
+  {
+    id: 'p11-release-seam-consulted',
+    target: 'npx',
+    why: 'The release seam is REPORTED, never CONSULTED. Wiring estate_release_state into a '
+      + 'disclosure decision is the single most likely way Phase 11 crosses the boundary early.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if v_tier = 'hidden' then",
+    to: "  if public.estate_release_state(p_estate) = 'released' then v_tier := 'full_detail'; end if;\n  if v_tier = 'hidden' then",
+  },
+  {
+    id: 'p11-death-condition-admitted',
+    target: 'npx',
+    why: 'Death-conditioned grants are dormant at every evaluation site. Admitting one at a single '
+      + 'site is exactly the partial wiring the duplicated rule invites.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if not (v_cond = 'immediately'",
+    to: "  if not (v_cond = 'after_verified_death_or_incapacity' or v_cond = 'immediately'",
+  },
+  {
+    id: 'p11-executor-gains-disclosure',
+    target: 'npx',
+    why: 'A fiduciary designation confers capacity, never disclosure. Granting a tier to an executor '
+      + 'is the most natural-sounding Phase 11 mistake there is.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: '  if public.is_estate_owner(p_estate) then return \'full_detail\'; end if;',
+    to: '  if public.is_estate_owner(p_estate) then return \'full_detail\'; end if;\n  if public.is_estate_executor(p_estate, p_uid) then return \'full_detail\'; end if;',
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
@@ -370,7 +403,9 @@ for (const m of selected) {
      * failure means "this instrument missed the thing it exists to catch".
      */
     const verifier = m.target ?? 'scripts/verifySqlAuthorization.mjs';
-    const run = spawnSync('node', [verifier], { cwd: wt, encoding: 'utf8' });
+    const run = verifier === 'npx'
+      ? spawnSync('npx', ['vitest', 'run', 'test/phase11Firewall.test.ts'], { cwd: wt, encoding: 'utf8' })
+      : spawnSync('node', [verifier], { cwd: wt, encoding: 'utf8' });
     const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
     if (run.status === 2) {
       detail = 'the suite could not verify (exit 2) — that is a harness failure, never a detection';
