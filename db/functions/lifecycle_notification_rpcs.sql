@@ -146,12 +146,16 @@ create or replace function public.notification_grant_is_live(
  immutable
  set search_path to 'public'
 as $function$
+  -- ★ PHASE 11-B — the release rule is no longer written here. This was one of seven copies of it;
+  -- it is now one call to the canonical authority, under the SAME `'standard'` policy
+  -- `can_access_document` uses. That is what makes the paragraph above ("every state accepted here
+  -- is accepted by can_access_document") a structural fact rather than a claim two files apart have
+  -- to keep agreeing about by hand.
+  --
+  -- The STATUS half stays here, because it is not a release-condition question: a revoked grant is
+  -- not a dormant condition, it is a grant that no longer exists for this purpose.
   select p_status = 'active'
-     and (
-       p_release_condition = 'immediately'
-       or (p_release_condition in ('after_owner_approval', 'after_access_request_approval')
-           and p_approved_at is not null)
-     );
+     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard');
 $function$;
 
 comment on function public.notification_grant_is_live(text, text, timestamptz) is

@@ -370,8 +370,9 @@ begin
 
   -- ★ A DEATH-CONDITIONED GRANT DISCLOSES NOTHING TODAY. Phase 11 activates this condition; until
   -- then the workspace must not be the surface that quietly honours it.
+  -- Phase 11-B: the SPLIT condition (the fused value is no longer writable through the RPC).
   perform harness.grant_inventory(PRO, 'professional_delegate', 'full_detail',
-                                  'after_verified_death_or_incapacity');
+                                  'after_verified_death');
   w := harness.workspace(PRO, A);
   if w ? 'inventory' then
     raise exception 'FAIL: a death-conditioned grant disclosed inventory through the workspace: %',

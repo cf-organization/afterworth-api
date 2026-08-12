@@ -252,10 +252,16 @@ begin
   end if;
   raise notice '  ok   anonymous gets authorized:false — not an error that would confirm existence';
 
-  -- ★ A DEATH-CONDITIONED GRANT DISCLOSES NOTHING TODAY. `after_verified_death_or_incapacity` is
-  -- default-deny until Phase 11 activates it; a grant carrying it must not leak in the meantime.
+  -- ★ A DEATH-CONDITIONED GRANT DISCLOSES NOTHING TODAY. Default-deny until Phase 11 activates it;
+  -- a grant carrying it must not leak in the meantime.
+  --
+  -- Phase 11-B: now written with the SPLIT condition, because that is what an owner can actually
+  -- store from this point on — `create_asset_grant` refuses the deprecated fused value. The legacy
+  -- fused row (which existing databases still hold, and which no migration rewrites) is proved
+  -- dormant on every surface by `db/tests/release_condition_authorization.sql`, which builds it by
+  -- direct insert precisely because the real door now refuses to.
   perform harness.grant_inventory('44444444-4444-4444-8444-444444444444', 'beneficiary',
-                                  'category_summary', 'after_verified_death_or_incapacity');
+                                  'category_summary', 'after_verified_death');
   d := harness.discovery('44444444-4444-4444-8444-444444444444', A);
   if (d->>'inventory_tier') <> 'hidden' then
     raise exception 'FAIL: a death-conditioned grant disclosed at tier %', d->>'inventory_tier';

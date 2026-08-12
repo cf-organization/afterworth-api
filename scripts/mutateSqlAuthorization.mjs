@@ -30,6 +30,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SQL_BUNDLES, SQL_DIRECT_PARTS } from './lib/sqlSuiteParts.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERDICT = Object.freeze({
@@ -119,10 +120,12 @@ const MUTATIONS = Object.freeze([
   {
     id: 'death-firewall-disabled',
     why: 'A death-conditioned grant must stay dormant and silent. Accepting every release condition '
-      + 'turns grant creation into the release announcement Phase 11 has not built.',
+      + 'turns grant creation into the release announcement Phase 11 has not built. Re-anchored in '
+      + '11-B: the inline rule became a delegation, so the modern form of this edit is widening the '
+      + 'delegation — "active is enough" — rather than widening a literal list.',
     file: 'db/functions/lifecycle_notification_rpcs.sql',
-    from: "  select p_status = 'active'\n     and (\n       p_release_condition = 'immediately'",
-    to: "  select p_status = 'active'\n     and (\n       p_release_condition is not null",
+    from: "  select p_status = 'active'\n     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard');",
+    to: "  select p_status = 'active'\n     and (p_release_condition is not null\n          or public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard'));",
   },
   {
     id: 'revoke-link-restored',
@@ -244,10 +247,141 @@ const MUTATIONS = Object.freeze([
     id: 'p11-death-condition-admitted',
     target: 'npx',
     why: 'Death-conditioned grants are dormant at every evaluation site. Admitting one at a single '
-      + 'site is exactly the partial wiring the duplicated rule invites.',
+      + 'site is exactly the partial wiring the duplicated rule invites. Re-anchored in 11-B: the '
+      + 'site no longer spells the rule out, so the mutation is now the local RE-INTRODUCTION of a '
+      + 'release comparison beside the canonical call — which is the same accident, and the form it '
+      + 'will actually take now that a predicate exists to bypass.',
     file: 'db/functions/estate_discovery_rpcs.sql',
-    from: "  if not (v_cond = 'immediately'",
-    to: "  if not (v_cond = 'after_verified_death_or_incapacity' or v_cond = 'immediately'",
+    from: "  if not public.release_condition_satisfied(v_cond, v_approved, 'standard') then",
+    to: "  if not (v_cond = 'after_verified_death_or_incapacity'\n          or public.release_condition_satisfied(v_cond, v_approved, 'standard')) then",
+  },
+
+  /* ── PHASE 11-B · the canonical release-condition engine ──────────────────────────────────────
+   * Centralization is only worth anything if the centre is guarded. Each mutation below is an edit
+   * to the ONE file that now decides release, or an edit that routes around it — and each names the
+   * instrument that must object. Together they answer the question the phase turns on: if somebody
+   * activated a death condition in this codebase, would anything notice?
+   */
+  {
+    id: 'p11b-death-satisfied-standard',
+    why: 'THE PHASE 11 FAILURE, COMMITTED AT THE CENTRE. Admitting after_verified_death in the '
+      + 'canonical predicate activates every death-conditioned grant on every surface at once — '
+      + 'documents, inventory, notifications — from a one-line edit that looks like progress.',
+    file: 'db/functions/release_conditions.sql',
+    from: "      when 'standard' then\n        p_release_condition = 'immediately'",
+    to: "      when 'standard' then\n        p_release_condition in ('immediately', 'after_verified_death')",
+  },
+  {
+    id: 'p11b-incapacity-satisfied',
+    why: 'Incapacity is NOT death, and its workflow does not exist. A split that made the new '
+      + 'incapacity condition live would disclose an estate while its owner is alive — the worst '
+      + 'available outcome, reached by the edit that looks most like completing the split.',
+    file: 'db/functions/release_conditions.sql',
+    from: "      when 'legacy_immediate_only' then\n        p_release_condition = 'immediately'",
+    to: "      when 'legacy_immediate_only' then\n        p_release_condition in ('immediately', 'after_verified_incapacity')",
+  },
+  {
+    id: 'p11b-unknown-condition-fails-open',
+    why: 'THE THREE-VALUED TRAP. `null = immediately` is NULL, not false, and a gate returning '
+      + 'NULL is not refused by `if not (…)` — that branch simply does not execute. Flipping the '
+      + 'coalesce default is the whole difference between fail-closed and fail-silent, and it is '
+      + 'invisible in every test that only passes known values.',
+    file: 'db/functions/release_conditions.sql',
+    from: '    end,\n    false);',
+    to: '    end,\n    true);',
+  },
+  {
+    id: 'p11b-unknown-policy-fails-open',
+    why: 'A consumer that names a policy this module has never heard of must be REFUSED, not given '
+      + 'the wider rule. `else true` is how a typo in one call site silently becomes the most '
+      + 'permissive answer available.',
+    file: 'db/functions/release_conditions.sql',
+    from: '      -- Unknown policy -> refused. No `else true`, ever.\n      else false',
+    to: '      -- Unknown policy -> refused. No `else true`, ever.\n      else true',
+  },
+  {
+    id: 'p11b-consumer-skips-the-predicate',
+    why: 'CENTRALIZATION IS ONLY REAL IF EVERY CONSUMER STILL CALLS IN. Dropping the predicate from '
+      + 'the net-worth grant lookup makes a `never` grant — and a death-conditioned one — disclose '
+      + 'the estate total. The edit reads as removing a redundant filter.',
+    file: 'db/functions/get_estate_net_worth.sql',
+    from: "    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')\n  limit 1;",
+    to: '  limit 1;',
+  },
+  {
+    id: 'p11b-document-gate-skips-the-predicate',
+    why: 'The document gate is the only thing between a non-owner and a document row. Making the '
+      + 'predicate advisory — "or true" — is the shape of "the release condition is redundant '
+      + 'here" and releases every dormant grant. Written to PRESERVE the call so the bundle\'s '
+      + 'delegation control still passes: this mutation tests the RUNTIME layer, and a form the '
+      + 'bundler refuses to build would prove the bundler instead (it has its own control).',
+    file: 'db/functions/can_access_document.sql',
+    from: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard');",
+    to: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard') or true;",
+    /**
+     * ★ THE SAME EDIT LANDS IN THE PREAMBLE'S VERBATIM COPY, and this is what `also` exists for.
+     *
+     * `can_access_document` is byte-compared between `db/functions/` and the harness preamble
+     * (PREAMBLE_DISPOSITION: VERBATIM). Mutating only the source file makes the verifier exit 2 —
+     * "declared VERBATIM but has DRIFTED" — before any assertion runs. That refusal is correct
+     * behaviour for real drift, but here it means the anti-drift layer testifies INSTEAD of the
+     * authorization suite, and nothing ever proves the runtime layer would catch the weakened gate.
+     * Moving both copies together is what a contributor editing the gate would produce after the
+     * drift guard sent them to "fix" the preamble, so it is also the more realistic mutation.
+     */
+    also: [{
+      file: 'db/tests/preamble_real_auth.sql',
+      from: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard');",
+      to: "  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard') or true;",
+    }],
+  },
+  {
+    id: 'p11b-claim-approval-satisfies-a-condition',
+    why: 'CLAIM APPROVAL IS NOT DEATH VERIFICATION AND NEITHER IS RELEASE. Admitting '
+      + 'after_claim_case_approval once approved_at is set connects the claim workflow to disclosure '
+      + 'directly — the exact wire Phase 11-A pinned as absent, drawn through the new centre.',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition in ('after_owner_approval', 'after_access_request_approval')\n            and p_approved_at is not null)",
+    to: "        or (p_release_condition in ('after_owner_approval', 'after_access_request_approval', 'after_claim_case_approval')\n            and p_approved_at is not null)",
+  },
+  {
+    id: 'p11b-legacy-fused-becomes-writable',
+    why: 'THE SPLIT UNDONE BY ADDING A LINE. Restoring the fused value to the write gate lets new '
+      + 'rows keep carrying an ambiguity the product has deprecated, and looks like fixing an '
+      + 'omission. The split is only real while new data cannot express it.',
+    file: 'db/functions/release_conditions.sql',
+    from: "    'after_claim_case_approval'\n    -- 'after_verified_death_or_incapacity' is DELIBERATELY ABSENT",
+    to: "    'after_claim_case_approval',\n    'after_verified_death_or_incapacity'\n    -- 'after_verified_death_or_incapacity' is DELIBERATELY ABSENT",
+  },
+  {
+    id: 'p11b-legacy-rows-orphaned',
+    why: 'THE OTHER DIRECTION, AND THE ONE THAT LOOKS LIKE TIDYING. Dropping the deprecated value '
+      + 'from the CHECK makes every stored fused grant unreadable and unupdatable — a migration '
+      + 'that "completes the split" by invalidating the rows it was written to protect.',
+    file: 'db/migrations/0051_20260812_release_condition_engine.sql',
+    from: "      'after_verified_death_or_incapacity',\n      'after_claim_case_approval'",
+    to: "      'after_claim_case_approval'",
+  },
+  {
+    id: 'p11b-cross-estate-grant-satisfies',
+    why: 'A grant belongs to ONE estate. Dropping the estate predicate from the inventory tier '
+      + 'lookup lets a grant on estate B decide a viewer tier on estate A — cross-estate isolation '
+      + 'failing through a lookup rather than through an authorization check.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: '   where g.estate_id = p_estate\n     and g.grantee_user_id = p_uid',
+    to: '   where g.estate_id is not null\n     and g.grantee_user_id = p_uid',
+  },
+  {
+    id: 'p11b-local-policy-reintroduced-in-neighbour',
+    target: 'npx',
+    spec: 'test/releaseConditionCentralization.test.ts',
+    why: 'THE REGRESSION THIS PHASE EXISTS TO MAKE IMPOSSIBLE. A contributor adds one more local '
+      + 'release comparison — here in the professional workspace, which today delegates entirely — '
+      + 'and the codebase quietly has two authorities again. It changes no behaviour, so no '
+      + 'behavioural test can see it; only the centralization audit can.',
+    file: 'db/functions/professional_workspace_rpcs.sql',
+    from: '     and public.can_access_document(d.id);',
+    to: "     and public.can_access_document(d.id)\n     and exists (select 1 from public.access_grants g2 where g2.estate_id = p_estate\n                   and g2.release_condition = 'immediately');",
   },
   {
     id: 'p11-executor-gains-disclosure',
@@ -329,23 +463,33 @@ for (const m of selected) {
     git(['worktree', 'add', '--detach', wt, 'HEAD']);
     seed(wt);
 
-    const target = join(wt, m.file);
-    const original = readFileSync(target, 'utf8');
-    const occurrences = original.split(m.from).length - 1;
-    if (occurrences !== 1) {
-      detail = `the mutation anchor occurs ${occurrences} time(s), expected exactly 1 — the harness `
-        + 'would have mutated nothing (or the wrong site), and the suite would then pass for a '
-        + 'reason that has nothing to do with authorization.';
-      throw new Error('anchor');
-    }
-    const mutated = original.replace(m.from, m.to);
+    /**
+     * ★ A MUTATION MAY NAME COMPANION EDITS (`also`) that must land in the same worktree — the case
+     * that forced this is a body held VERBATIM in two places, where mutating one copy makes the
+     * anti-drift guard exit 2 and testify in place of the suite under test. Every edit, primary and
+     * companion, gets the same anchor discipline: exactly one occurrence, proven applied.
+     */
+    const edits = [{ file: m.file, from: m.from, to: m.to }, ...(m.also ?? [])];
+    for (const e of edits) {
+      const target = join(wt, e.file);
+      const original = readFileSync(target, 'utf8');
+      const occurrences = original.split(e.from).length - 1;
+      if (occurrences !== 1) {
+        detail = `the mutation anchor in ${e.file} occurs ${occurrences} time(s), expected exactly 1 — `
+          + 'the harness would have mutated nothing (or the wrong site), and the suite would then '
+          + 'pass for a reason that has nothing to do with authorization.';
+        throw new Error('anchor');
+      }
+      const mutated = original.replace(e.from, e.to);
 
-    // ★ PROVE THE EDIT LANDED. This is the check whose absence makes a mutation suite a no-op.
-    if (mutated === original || !mutated.includes(m.to)) {
-      detail = 'the replacement did not change the file';
-      throw new Error('noop');
+      // ★ PROVE THE EDIT LANDED. This is the check whose absence makes a mutation suite a no-op.
+      if (mutated === original || !mutated.includes(e.to)) {
+        detail = `the replacement did not change ${e.file}`;
+        throw new Error('noop');
+      }
+      writeFileSync(target, mutated, 'utf8');
     }
-    writeFileSync(target, mutated, 'utf8');
+    const target = join(wt, m.file);
     /**
      * ★ RE-READ FROM DISK AND CONFIRM THE MUTATION IS THERE — but only that.
      *
@@ -375,12 +519,8 @@ for (const m of selected) {
      * A build failure is also a harness failure rather than a detection: a mutation that breaks a
      * positive control in the bundler has proved nothing about the authorization suite.
      */
-    const BUNDLES = [
-      ['scripts/buildEstateAssetBundle.mjs', 'db/bundles/estate_inventory_and_discovery_bundle.sql'],
-      ['scripts/buildLifecycleNotificationBundle.mjs', 'db/bundles/lifecycle_notifications_bundle.sql'],
-    ];
     let landed = false;
-    for (const [builder, artifact] of BUNDLES) {
+    for (const [builder, artifact] of SQL_BUNDLES) {
       const build = spawnSync('node', [builder], { cwd: wt, encoding: 'utf8' });
       if (build.status !== 0) {
         detail = `${builder} failed inside the worktree: ${(build.stderr || build.stdout || '').slice(0, 300)}`;
@@ -388,9 +528,29 @@ for (const m of selected) {
       }
       if (readFileSync(join(wt, artifact), 'utf8').includes(m.to)) landed = true;
     }
+    /**
+     * ★ A BUNDLE IS NOT THE ONLY ROUTE INTO THE TEST DATABASE (Phase 11-B).
+     *
+     * The suite also loads some parts directly — the preamble, the test files, and two production
+     * function sources that ship in no deploy bundle. Checking bundles ALONE was correct while
+     * bundles were the only route, and became wrong the moment one was not: a mutation to
+     * `get_estate_net_worth.sql` reaches the database perfectly well and would have been reported
+     * `HARNESS_FAILURE — the mutation is in no rebuilt bundle`, which is a true sentence about the
+     * bundles and a false one about the run.
+     *
+     * The question the check exists to answer is "does the mutated text reach the database the suite
+     * runs against", so it is now asked about every route, and the parts list is single-sourced with
+     * the verifier so the two cannot disagree.
+     */
     if (!landed) {
-      detail = 'the mutation is in no rebuilt bundle — the suite would load clean SQL and pass for a '
-        + 'reason that has nothing to do with the tests';
+      landed = SQL_DIRECT_PARTS.some(
+        (p) => p === m.file && readFileSync(join(wt, p), 'utf8').includes(m.to)
+      );
+    }
+    if (!landed) {
+      detail = 'the mutation reaches the database by no route — it is in no rebuilt bundle and in no '
+        + 'directly-loaded suite part, so the suite would load clean SQL and pass for a reason that '
+        + 'has nothing to do with the tests';
       throw new Error('bundle-clean');
     }
 
@@ -403,8 +563,16 @@ for (const m of selected) {
      * failure means "this instrument missed the thing it exists to catch".
      */
     const verifier = m.target ?? 'scripts/verifySqlAuthorization.mjs';
+    /**
+     * ★ `spec` NAMES THE FILE, AND DEFAULTS TO THE FIREWALL RATHER THAN TO "ALL TESTS".
+     *
+     * Running the whole vitest suite would make every source-audit mutation look DETECTED as soon as
+     * ANY unrelated test broke, which is the pairing this block exists to keep honest: a mutation
+     * must be caught by the instrument written for it, not by collateral damage somewhere else.
+     */
+    const spec = m.spec ?? 'test/phase11Firewall.test.ts';
     const run = verifier === 'npx'
-      ? spawnSync('npx', ['vitest', 'run', 'test/phase11Firewall.test.ts'], { cwd: wt, encoding: 'utf8' })
+      ? spawnSync('npx', ['vitest', 'run', spec], { cwd: wt, encoding: 'utf8' })
       : spawnSync('node', [verifier], { cwd: wt, encoding: 'utf8' });
     const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
     if (run.status === 2) {

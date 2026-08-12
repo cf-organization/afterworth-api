@@ -92,6 +92,15 @@ begin
     raise exception 'document not found in this estate';  -- P0001 -> 400
   end if;
 
+  -- ★ WRITE-TIME RELEASE VOCABULARY (Phase 11-B). The deprecated fused
+  --   `after_verified_death_or_incapacity` stays legal in the table CHECK so stored rows remain
+  --   readable and unreinterpreted; this gate is what stops a NEW row from carrying the ambiguity.
+  --   `after_verified_death` and `after_verified_incapacity` are now expressible and satisfied by
+  --   nothing — a widening of what an owner may SAY, never of what a grantee may SEE.
+  if not public.release_condition_writable(p_release_condition) then
+    raise exception 'unsupported release condition: %', p_release_condition;  -- P0001 -> 400
+  end if;
+
   -- Insert. The ceiling trigger + table CHECKs + unique indexes fire here regardless of
   -- the DEFINER context. Catch the one-active-grant unique violation and surface a
   -- readable error instead of a raw constraint failure (Q4: fail, never silent upsert).

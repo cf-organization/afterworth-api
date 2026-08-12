@@ -88,9 +88,12 @@ grant  execute on function public.estate_release_state(uuid) to authenticated;
 -- before a ceiling tightening is clamped HERE, so tightening the policy takes effect immediately
 -- rather than only for grants issued afterwards.
 --
--- ★ SIGNAL-BASED RELEASE CONDITIONS STAY DORMANT-DENY. Only `immediately` and the two
--- approval-based conditions (once approved) are active — the identical predicate the document and
--- net-worth paths already use. A death-conditioned grant therefore discloses nothing today.
+-- ★ SIGNAL-BASED RELEASE CONDITIONS STAY DORMANT-DENY, and since Phase 11-B that is decided by the
+-- CANONICAL predicate rather than by a local copy of it. `public.release_condition_satisfied` under
+-- the `'standard'` policy accepts `immediately` plus the two approval-based conditions once
+-- approved — the identical rule this function used to spell out inline, and the identical rule the
+-- document path uses, because it is now literally the same function. A death- or
+-- incapacity-conditioned grant therefore discloses nothing today, at every site at once.
 create or replace function public.inventory_disclosure_tier(p_estate uuid, p_uid uuid)
  returns text
  language plpgsql
@@ -114,9 +117,8 @@ begin
 
   if v_tier is null then return 'hidden'; end if;
 
-  -- Release gate — identical to can_access_document's.
-  if not (v_cond = 'immediately'
-          or (v_cond in ('after_owner_approval','after_access_request_approval') and v_approved is not null)) then
+  -- Release gate — the canonical predicate, which is what can_access_document calls too.
+  if not public.release_condition_satisfied(v_cond, v_approved, 'standard') then
     return 'hidden';
   end if;
 

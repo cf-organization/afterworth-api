@@ -93,6 +93,9 @@ const deployed = createClient(URL_, KEY, { auth: { persistSession: false } });
 
 /* ── the source side: an ephemeral Postgres with the real bundles applied ──────────────────────── */
 const BUNDLES = [
+  // ★ FIRST (Phase 11-B). `notification_grant_is_live` is `language sql`, so the lifecycle bundle
+  // will not even LOAD against a database that lacks `release_condition_satisfied`.
+  'db/bundles/release_conditions_bundle.sql',
   'db/bundles/estate_inventory_and_discovery_bundle.sql',
   'db/bundles/lifecycle_notifications_bundle.sql',
 ];
@@ -102,7 +105,7 @@ const BUNDLES = [
  * reconcile production against a bundle nobody would deploy — comparing the present to a fossil and
  * reporting whatever that happens to say.
  */
-for (const builder of ['scripts/buildEstateAssetBundle.mjs', 'scripts/buildLifecycleNotificationBundle.mjs']) {
+for (const builder of ['scripts/buildReleaseConditionBundle.mjs', 'scripts/buildEstateAssetBundle.mjs', 'scripts/buildLifecycleNotificationBundle.mjs']) {
   const r = spawnSync('node', [builder], { cwd: ROOT, encoding: 'utf8' });
   if (r.status !== 0) die(2, `CANNOT VERIFY — ${builder} failed:\n${r.stderr || r.stdout}`);
 }
@@ -180,6 +183,11 @@ function sourceJson(sql) {
 const RELEASE_CONDITIONS = [
   'never', 'immediately', 'after_owner_approval', 'after_identity_verification',
   'after_access_request_approval', 'after_verified_death_or_incapacity', 'after_claim_case_approval',
+  // ★ PHASE 11-B — the split, plus a value that cannot exist. Both sides must refuse all three:
+  // DEPLOYED because it has never heard of them, SOURCE because they are dormant by design. That
+  // agreement is the point rather than a coincidence — it is what proves the split widened the
+  // storable vocabulary WITHOUT widening the satisfiable one.
+  'after_verified_death', 'after_verified_incapacity', 'aw_probe_condition_that_cannot_exist',
 ];
 const ROLES = ['beneficiary', 'professional_delegate', 'primary_user', 'aw_probe_unknown_role'];
 const CATEGORIES = [
@@ -274,14 +282,26 @@ function classify(diffs) {
   if (trues === 0) die(2, 'CANNOT VERIFY — the source release predicate was false for every input.');
   // ★ AND THE FIREWALL IS SPOT-CHECKED ON THE DEPLOYED SIDE DIRECTLY, so this row cannot report
   // "exact agreement" about two functions that both wrongly release a death-conditioned grant.
-  for (const cond of ['after_verified_death_or_incapacity', 'after_claim_case_approval', 'never']) {
+  for (const cond of ['after_verified_death_or_incapacity', 'after_claim_case_approval', 'never',
+                      'after_verified_death', 'after_verified_incapacity']) {
     const { data } = await deployed.rpc('notification_grant_is_live', {
       p_status: 'active', p_release_condition: cond, p_approved_at: new Date(0).toISOString(),
     });
     if (data !== false) die(1, `DEPLOYED FIREWALL BREACH — notification_grant_is_live('active','${cond}', <approved>) returned ${data}`);
   }
+  /**
+   * ★ THIS ROW IS THE PROOF THAT PHASE 11-B PRESERVED BEHAVIOUR.
+   *
+   * The SOURCE side of this comparison no longer contains the release rule at all — it delegates to
+   * `public.release_condition_satisfied`. The DEPLOYED side still spells the rule out inline. An
+   * EXACT verdict here therefore is not a formality: it is the refactor being checked against the
+   * bytes it replaced, across the whole input space, by executing both rather than by reading them.
+   *
+   * A `DIVERGENT` or `SOURCE_NEWER` verdict on this row means the centralization changed an answer,
+   * which is the one thing this phase was not allowed to do.
+   */
   record('notification_grant_is_live', diffs.length ? classify(diffs) : 'EXACT',
-    `${cases.length} cases, ${trues} live in source · death/claim/never confirmed dormant on DEPLOYED`, diffs);
+    `${cases.length} cases, ${trues} live in source · 5 dormant conditions confirmed on DEPLOYED`, diffs);
 }
 
 /* 3 · notification_event_copy — the lifecycle catalog, compared字 for字. */
@@ -309,6 +329,55 @@ function classify(diffs) {
   }
   record('notification_event_copy', diffs.length ? classify(diffs) : 'EXACT',
     `${known} catalog entries compared verbatim · unknown event refused on both sides`, diffs);
+}
+
+/* 4 · release_condition_satisfied / release_condition_writable — SOURCE-ONLY UNTIL DEPLOYED. */
+{
+  /**
+   * ★ REPORTED BY NAME RATHER THAN OMITTED, because an absent row in a reconciliation table reads
+   * as "fine". These two functions do not exist in production yet: Phase 11-B is a source-and-bundle
+   * change, and the release-conditions bundle has not been pasted. Probing them would return
+   * PGRST202 (function not found), which is the CORRECT answer for an undeployed function and must
+   * not be dressed up as either drift or agreement.
+   *
+   * What IS reconciled is their observable effect: `notification_grant_is_live` above delegates to
+   * them in source and inlines the same rule in deployment, and that row compares EXACT across the
+   * full input space. So the new authority is proven equivalent to what production runs, through the
+   * contract production actually exposes — which is the strongest statement available before deploy.
+   *
+   * After the bundle is applied, `deployment_state` flips to DEPLOYED and this becomes a real
+   * reconciliation row rather than a declaration. The probe below is what decides that, so the label
+   * can never be stale.
+   */
+  const names = ['release_condition_satisfied', 'release_condition_writable'];
+  const probes = await Promise.all(names.map(async (n) => {
+    const args = n === 'release_condition_satisfied'
+      ? { p_release_condition: 'immediately', p_approved_at: null, p_policy: 'standard' }
+      : { p_release_condition: 'immediately' };
+    const { data, error } = await deployed.rpc(n, args);
+    return { n, data, error };
+  }));
+  const live = probes.filter((p) => !p.error);
+  const absent = probes.filter((p) => p.error);
+
+  if (live.length === names.length) {
+    // Deployed. Both must answer `true` for `immediately` — the one input whose answer is not in
+    // dispute — or the deployed body is not the one this repository describes.
+    const wrong = live.filter((p) => p.data !== true);
+    if (wrong.length) {
+      die(1, `DEPLOYED release-condition authority disagrees: ${wrong.map((w) => `${w.n}=${JSON.stringify(w.data)}`).join(', ')}`);
+    }
+    record('release_condition_satisfied', 'EXACT',
+      'DEPLOYED · immediately satisfied under standard; full truth table in the SQL suite', []);
+  } else if (absent.length === names.length) {
+    record('release_condition_authority', 'UNVERIFIABLE',
+      'NOT YET DEPLOYED (source + bundle only) — equivalence proven via notification_grant_is_live above', []);
+  } else {
+    // ★ HALF-DEPLOYED IS THE DANGEROUS STATE AND IT GETS ITS OWN VERDICT. One function present and
+    // the other missing means a partial paste: callers would resolve one and raise on the other.
+    die(1, `PARTIAL DEPLOYMENT — present: ${live.map((p) => p.n).join(', ') || '(none)'}; `
+      + `absent: ${absent.map((p) => p.n).join(', ')}. Re-apply db/bundles/release_conditions_bundle.sql in full.`);
+  }
 }
 
 /* ── what this instrument deliberately does not reconcile ──────────────────────────────────────── */

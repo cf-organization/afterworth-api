@@ -102,6 +102,15 @@ begin
     raise exception 'invalid asset category: %', p_category;  -- P0001 -> 400
   end if;
 
+  -- ★ WRITE-TIME RELEASE VOCABULARY (Phase 11-B). The table CHECK still accepts the deprecated
+  --   `after_verified_death_or_incapacity` so stored rows stay readable and unreinterpreted; this
+  --   gate is what stops a NEW row from carrying the fused ambiguity. Death and incapacity are now
+  --   expressible separately — and neither is satisfied by anything, so this widens what an owner
+  --   may EXPRESS, never what a grantee may SEE.
+  if not public.release_condition_writable(p_release_condition) then
+    raise exception 'unsupported release condition: %', p_release_condition;  -- P0001 -> 400
+  end if;
+
   -- ★ WRITE-TIME CEILING — reject an over-ceiling grant before storing it (the trigger skips category
   --   grants). Mirrors the read-time clamp in list_estate_assets: e.g. beneficiary + account_balances
   --   + full_detail -> asset_category_grantable = false -> rejected here.
