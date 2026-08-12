@@ -30,10 +30,12 @@ const ROOT = resolve(HERE, '..');
 const PARTS = [
   'db/tests/preamble_real_auth.sql',
   'db/bundles/estate_inventory_and_discovery_bundle.sql',
+  'db/bundles/lifecycle_notifications_bundle.sql',
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
   'db/tests/estate_readiness_authorization.sql',
   'db/tests/professional_workspace_authorization.sql',
+  'db/tests/lifecycle_notification_authorization.sql',
 ];
 
 // ★ CAPTURE, NOT ASSERT. Run with --capture to emit one REAL payload per viewer class into a JSON
@@ -66,6 +68,94 @@ if (!normalise(canonical) || normalise(canonical) !== normalise(preamble)) {
   console.error('  or stubbed gate would make every refusal assertion vacuous.');
   process.exit(2);
 }
+/**
+ * ★ THE PREAMBLE MAY NOT DEFINE A FUNCTION THAT ALSO EXISTS UNDER `db/functions/`.
+ *
+ * This is the general form of the `is_estate_owner` check above, and it exists because the specific
+ * form was not enough. The harness also carried a hand-copied `create_asset_grant` — introduced as
+ * "extracted verbatim", to prove `estate_inventory` was grantable through the REAL door — and a
+ * stubbed `emit_notification`. Nothing compared either against source, so:
+ *
+ *   · the grant copy drifted the moment Phase 10-E changed the real body, and the suite would have
+ *     gone on exercising the old one, green;
+ *   · the notification stub took six parameters while its only caller passed seven, so no overload
+ *     matched, the call raised, and the caller's `exception when others then null` swallowed it. The
+ *     notification path had been dead for its entire life while appearing exercised.
+ *
+ * A suite that tests a copy is not testing the deployed thing, and the failure is invisible from the
+ * outside — which is the definition of a vacuous audit. The rule is therefore structural: if a body
+ * belongs to the product, it arrives from a bundle. If it is genuinely not the boundary under test
+ * (the audit sink, the taxonomy counter), it has no file under `db/functions/` and is unaffected.
+ *
+ * The one sanctioned exception is `is_estate_owner`, which must be installed BEFORE the bundles load
+ * because tables and policies below reference it — and which is byte-compared against source above,
+ * so it is held to a stricter standard than this rule imposes rather than a weaker one.
+ */
+/**
+ * Every function the preamble defines that ALSO has a real source file must be declared here, and
+ * declaring it is not a waiver — each disposition is checked.
+ *
+ *   VERBATIM      the preamble claims to carry the production body. Byte-compared (whitespace
+ *                 normalized) against `db/functions/<name>.sql`; a mismatch is drift and aborts.
+ *                 These must be in the preamble rather than a bundle because tables, policies and
+ *                 other bodies below them reference them at CREATE time.
+ *
+ *   STUB          deliberately NOT the production body, because it is not the boundary under test.
+ *                 Checked to be genuinely different — a "stub" that has quietly become a copy is
+ *                 the same drift risk wearing the opposite label, and a copy sitting under a
+ *                 comment saying "not the boundary under test" is worse than either.
+ *
+ * Anything else aborts. That is the durable half of the Phase 10-E finding: the specific
+ * `is_estate_owner` comparison could not see a hand-copied `create_asset_grant` or a rotted
+ * `emit_notification` stub, and both were live for as long as they existed.
+ */
+const PREAMBLE_DISPOSITION = new Map([
+  ['is_estate_owner', 'VERBATIM'],
+  ['is_ownership_role', 'VERBATIM'],
+  ['is_estate_member', 'VERBATIM'],
+  ['is_estate_executor', 'VERBATIM'],
+  // The audit sink records nothing here. The real body writes to an audit table this harness does
+  // not model, and audit persistence is not what any assertion in these suites is about.
+  ['write_audit', 'STUB'],
+]);
+
+const bodyOf = (sql, name) =>
+  (sql.match(new RegExp(`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\b[\\s\\S]*?\\$[a-z_]*\\$;`, 'i')) ?? [''])[0]
+    .replace(/--[^\n]*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const declared = [...new Set(
+  [...preamble.matchAll(/create\s+or\s+replace\s+function\s+public\.(\w+)\s*\(/gi)].map((m) => m[1])
+)];
+const problems = [];
+for (const name of declared) {
+  const sourcePath = join(ROOT, `db/functions/${name}.sql`);
+  if (!existsSync(sourcePath)) continue; // no production counterpart — a pure harness fixture
+  const disposition = PREAMBLE_DISPOSITION.get(name);
+  if (!disposition) {
+    problems.push(`public.${name} — redefined here with no declared disposition (db/functions/${name}.sql exists)`);
+    continue;
+  }
+  const mine = bodyOf(preamble, name);
+  const theirs = bodyOf(readFileSync(sourcePath, 'utf8'), name);
+  if (!mine || !theirs) {
+    problems.push(`public.${name} — could not extract one of the two bodies to compare`);
+  } else if (disposition === 'VERBATIM' && mine !== theirs) {
+    problems.push(`public.${name} — declared VERBATIM but has DRIFTED from db/functions/${name}.sql`);
+  } else if (disposition === 'STUB' && mine === theirs) {
+    problems.push(`public.${name} — declared STUB but is now identical to source; load it from a bundle instead`);
+  }
+}
+if (problems.length > 0) {
+  console.error('✗ CANNOT VERIFY — the preamble and db/functions/ disagree:');
+  for (const p of problems) console.error(`    ${p}`);
+  console.error('\n  A harness copy of a production body is a copy that drifts, and a suite exercising');
+  console.error('  the copy proves nothing about what is deployed. Either load the real body from a');
+  console.error('  bundle, or declare its disposition in PREAMBLE_DISPOSITION and keep it honest.');
+  process.exit(2);
+}
+
 if (/is_estate_owner[\s\S]{0,400}?select\s+true/i.test(preamble)) {
   console.error('✗ CANNOT VERIFY — the preamble appears to stub is_estate_owner to true.');
   process.exit(2);
@@ -142,7 +232,22 @@ for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
   if (r.status !== 0) {
     cleanup();
     console.error(`✗ FAILED while applying ${part}\n`);
-    console.error(((r.stderr ?? '') + (r.stdout ?? '')).split('\n').slice(-40).join('\n'));
+    /**
+     * ★ STDERR IN FULL AND FIRST. This previously printed the last 40 lines of
+     * `stderr + stdout` — which, because psql writes a long stream of `CREATE FUNCTION` /
+     * `GRANT` acknowledgements to STDOUT and the single `ERROR:` line to STDERR, reliably showed
+     * forty lines of "everything is fine" and truncated the only line that said what broke.
+     *
+     * A failure report that omits the failure is worse than no report: it looks like diagnosis.
+     */
+    const err = (r.stderr ?? '').trim();
+    if (err) {
+      console.error('── psql stderr ──────────────────────────────────────────────────────────────');
+      console.error(err);
+    } else {
+      console.error('(psql wrote nothing to stderr; the tail of stdout follows)');
+      console.error((r.stdout ?? '').split('\n').slice(-25).join('\n'));
+    }
     process.exit(1);
   }
 }

@@ -126,6 +126,28 @@ begin
     )
   );
 
+  -- ★ PHASE 10-E — the GRANTEE learns they have access, but ONLY if they actually do, right now.
+  --
+  -- A document grant created with `after_owner_approval` confers nothing until it is approved, so
+  -- this emits SILENCE for it; `approve_document_grant` is where that person is told. A
+  -- death-conditioned or claim-conditioned grant emits silence permanently — nothing here may
+  -- announce a release Phase 11 has not built.
+  --
+  -- The gate reads the STORED row rather than the parameters, because `status` and `approved_at` are
+  -- column defaults that this insert never names.
+  if exists (
+    select 1 from public.access_grants g
+    where g.id = v_id
+      and public.notification_grant_is_live(g.status, g.release_condition, g.approved_at)
+  ) then
+    perform public.emit_lifecycle_notification(
+      p_grantee_user_id,
+      p_estate_id,
+      'access_grant.created',
+      public.notification_estate_home(p_estate_id, p_grantee_user_id)
+    );
+  end if;
+
   return query select g.* from public.access_grants g where g.id = v_id;
 end;
 $function$;

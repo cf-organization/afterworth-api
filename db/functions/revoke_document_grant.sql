@@ -75,6 +75,23 @@ begin
     jsonb_build_object('revoked_by_user_id', v_user)
   );
 
+  -- ★ PHASE 10-E — the GRANTEE learns their access changed, and learns NOTHING ELSE.
+  --
+  -- The copy is "Your access to shared estate information has changed." It does not name the
+  -- document, the category, the tier, or who revoked it. That is the point: whatever was authorized
+  -- a moment ago is not authorized now, and a notification row OUTLIVES the grant it describes — so
+  -- "Your access to 2026 UBS Account Statement was revoked" would re-disclose that title forever, in
+  -- the one place the person can still read it after losing the right to.
+  --
+  -- Emitted after the UPDATE and after the idempotent early-return above, so a second revoke of an
+  -- already-revoked grant says nothing a second time.
+  perform public.emit_lifecycle_notification(
+    (select g.grantee_user_id from public.access_grants g where g.id = p_grant_id),
+    v_estate,
+    'access_grant.revoked',
+    null   -- nothing to open; a link here would lead to a refusal
+  );
+
   return query select g.* from public.access_grants g where g.id = p_grant_id;
 end;
 $function$;

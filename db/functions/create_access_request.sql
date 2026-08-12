@@ -97,6 +97,17 @@ begin
     jsonb_build_object('category', p_category, 'requester_role', v_requester_role)
   );
 
+  -- ★ PHASE 10-E — the OWNER learns a request is waiting. Emitted AFTER the insert succeeded, in the
+  -- SAME transaction: if the insert had raised (the one-pending unique violation above), control
+  -- never reaches here, and if anything later rolls the transaction back the notification goes with
+  -- it. The recipient comes from `estates.owner_id`, never from a capability combination.
+  perform public.emit_lifecycle_notification(
+    public.estate_owner_user_id(p_estate_id),
+    p_estate_id,
+    'access_request.created',
+    'afterworth://owner-review'
+  );
+
   return query select r.* from public.access_requests r where r.id = v_id;
 end;
 $function$;

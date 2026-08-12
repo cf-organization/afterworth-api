@@ -79,6 +79,29 @@ begin
     jsonb_build_object('approved_by_user_id', v_user)
   );
 
+  -- ★ PHASE 10-E — approval is the moment an approval-conditioned grant becomes real, so this is
+  -- where its grantee is told. Emitted after the UPDATE and after the idempotent early-return, so
+  -- re-approving an already-approved grant says nothing a second time.
+  --
+  -- Still gated: the ceiling trigger re-fires on the UPDATE above and can leave the grant
+  -- unusable, and a death- or claim-conditioned grant is not made live merely by being approved.
+  -- The gate asks the row what it now IS rather than assuming approval means released.
+  if exists (
+    select 1 from public.access_grants g
+    where g.id = p_grant_id
+      and public.notification_grant_is_live(g.status, g.release_condition, g.approved_at)
+  ) then
+    perform public.emit_lifecycle_notification(
+      (select g.grantee_user_id from public.access_grants g where g.id = p_grant_id),
+      v_estate,
+      'access_grant.created',
+      public.notification_estate_home(
+        v_estate,
+        (select g.grantee_user_id from public.access_grants g where g.id = p_grant_id)
+      )
+    );
+  end if;
+
   return query select g.* from public.access_grants g where g.id = p_grant_id;
 end;
 $function$;
