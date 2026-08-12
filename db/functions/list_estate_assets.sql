@@ -41,9 +41,12 @@ as $$
     -- ★ PHASE 11-B — the canonical predicate. `legacy_immediate_only` is this surface's answer
     -- carried forward verbatim: the asset-value paths have never honoured an approval-conditioned
     -- grant, and 11-B centralizes the AUTHORITY without spending a product decision on the POLICY.
-    -- Signal-based conditions (identity, death, incapacity, claim) and 'never' stay dormant-deny
-    -- (A.4) under both policies; an unknown condition refuses.
-    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
+    -- 11-D wires the authoritative lifecycle through as an argument like every consumer — and under
+    -- THIS policy it changes nothing: death-conditioned grants stay dormant on the asset surfaces
+    -- even at death_verified (R12 keeps the policies distinct). Signal-based conditions and 'never'
+    -- stay dormant-deny (A.4); an unknown condition or lifecycle refuses.
+    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
+                                           public.estate_lifecycle_state(p_estate))
   limit 1;
 $$;
 
@@ -119,7 +122,9 @@ begin
     and g.category = 'account_balances'
     and g.status = 'active'
     -- ★ PHASE 11-B — canonical predicate, `legacy_immediate_only` (see asset_grant_tier above).
-    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
+    -- 11-D: lifecycle wired through; inert under this policy, by decision (R12).
+    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
+                                           public.estate_lifecycle_state(p_estate_id))
   limit 1;
 
   -- No account_balances grant -> the non-owner sees NO asset rows (default-deny, safe).

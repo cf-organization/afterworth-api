@@ -633,9 +633,13 @@ begin
   end if;
 
   -- ★ THE CANONICAL RELEASE PREDICATE (Phase 11-B) — was seven scattered copies, now one call.
-  -- 'never' and every signal-based condition (identity, death, incapacity, claim) stay
-  -- dormant-deny (A.4), and an unknown condition refuses.
-  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard');
+  -- Since 11-D it consumes the AUTHORITATIVE lifecycle for THIS document's estate, resolved through
+  -- the one sanctioned reader: `after_verified_death` opens exactly while the estate is
+  -- death_verified. 'never', incapacity, the legacy fused value, identity and claim conditions stay
+  -- dormant-deny (A.4), and an unknown condition or lifecycle refuses. No comparison happens here —
+  -- the lifecycle is an ARGUMENT, and the policy stays in the predicate.
+  return public.release_condition_satisfied(
+    g.release_condition, g.approved_at, 'standard', public.estate_lifecycle_state(v_estate));
 end;
 $$;
 -- ★ THE TWO BODIES ABOVE ARE HELD VERBATIM AGAINST `db/functions/` (Phase 11-B), and until this

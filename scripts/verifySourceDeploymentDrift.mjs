@@ -334,56 +334,105 @@ function classify(diffs) {
     `${known} catalog entries compared verbatim · unknown event refused on both sides`, diffs);
 }
 
-/* 4 · release_condition_satisfied / release_condition_writable — SOURCE-ONLY UNTIL DEPLOYED. */
+/* 4 · the release authority (predicate + writable gate + lifecycle seam) — SOURCE-ONLY UNTIL DEPLOYED. */
 {
   /**
    * ★ REPORTED BY NAME RATHER THAN OMITTED, because an absent row in a reconciliation table reads
-   * as "fine". These two functions do not exist in production yet: Phase 11-B is a source-and-bundle
-   * change, and the release-conditions bundle has not been pasted. Probing them would return
-   * PGRST202 (function not found), which is the CORRECT answer for an undeployed function and must
-   * not be dressed up as either drift or agreement.
+   * as "fine". None of this exists in production yet: 11-B/11-C/11-D are source-and-bundle changes,
+   * and the release-conditions bundle has not been pasted. Probing returns PGRST202 (function not
+   * found), which is the CORRECT answer for an undeployed function and must not be dressed up as
+   * either drift or agreement.
    *
-   * What IS reconciled is their observable effect: `notification_grant_is_live` above delegates to
-   * them in source and inlines the same rule in deployment, and that row compares EXACT across the
-   * full input space. So the new authority is proven equivalent to what production runs, through the
-   * contract production actually exposes — which is the strongest statement available before deploy.
+   * What IS reconciled is the observable effect: `notification_grant_is_live` above delegates to
+   * the predicate in source (pinned to the base lifecycle since 11-D) and inlines the same rule in
+   * deployment, and that row compares EXACT across the full input space. So the authority is proven
+   * equivalent to what production runs, through the contract production actually exposes — the
+   * strongest statement available before deploy.
    *
-   * After the bundle is applied, `deployment_state` flips to DEPLOYED and this becomes a real
-   * reconciliation row rather than a declaration. The probe below is what decides that, so the label
-   * can never be stale.
+   * ★ THE SEAM BELONGS TO THIS GROUP SINCE 11-D: `estate_lifecycle_state` ships in the
+   * release-conditions bundle (the first paste), not the death bundle — the disclosure evaluators
+   * resolve it at read time, so its absence after this bundle is a HALF-DEPLOY of this artifact.
+   * Its probe distinguishes deployed (permission denied — EXECUTE is revoked from anon, so the
+   * refusal itself is the evidence) from absent (PGRST202); it can mutate nothing either way.
+   *
+   * ★ AND THE BLIND OVERLOAD MUST BE GONE. A deployed 3-argument predicate beside the 4-argument
+   * one means migration 0053 did not run: overload resolution would quietly serve the
+   * lifecycle-blind rule to any caller that was not rewired. Present-and-alone is a verdict-1
+   * failure, not a note.
    */
-  const names = ['release_condition_satisfied', 'release_condition_writable'];
-  const probes = await Promise.all(names.map(async (n) => {
-    const args = n === 'release_condition_satisfied'
-      ? { p_release_condition: 'immediately', p_approved_at: null, p_policy: 'standard' }
-      : { p_release_condition: 'immediately' };
-    const { data, error } = await deployed.rpc(n, args);
-    return { n, data, error };
-  }));
-  const live = probes.filter((p) => !p.error);
-  const absent = probes.filter((p) => p.error);
+  const probes = {
+    satisfied4: await deployed.rpc('release_condition_satisfied', {
+      p_release_condition: 'immediately', p_approved_at: null, p_policy: 'standard', p_lifecycle_state: 'active',
+    }),
+    satisfied3: await deployed.rpc('release_condition_satisfied', {
+      p_release_condition: 'immediately', p_approved_at: null, p_policy: 'standard',
+    }),
+    writable: await deployed.rpc('release_condition_writable', { p_release_condition: 'immediately' }),
+    seam: await deployed.rpc('estate_lifecycle_state', { p_estate: '00000000-0000-4000-8000-000000000000' }),
+  };
+  const missing = (r) => r.error?.code === 'PGRST202';
+  const has4 = !missing(probes.satisfied4);
+  const has3 = !missing(probes.satisfied3);
+  const hasWritable = !missing(probes.writable);
+  const hasSeam = !missing(probes.seam);
 
-  if (live.length === names.length) {
-    // Deployed. Both must answer `true` for `immediately` — the one input whose answer is not in
-    // dispute — or the deployed body is not the one this repository describes.
-    const wrong = live.filter((p) => p.data !== true);
+  if (has3) {
+    // The blind overload is reachable. Whether or not the 4-argument shape is also present, this
+    // deployment predates (or half-applied) 0053 and re-pasting the release bundle is mandatory.
+    die(1, 'DEPLOYED release authority is LIFECYCLE-BLIND — the 3-argument '
+      + 'release_condition_satisfied is reachable (migration 0053 has not run'
+      + `${has4 ? ' although the 4-argument shape exists beside it — TWO AUTHORITIES' : ''}). `
+      + 'Re-apply db/bundles/release_conditions_bundle.sql in full.');
+  }
+  if (has4 && hasWritable && hasSeam) {
+    // Deployed at the 11-D shape. Spot-check the three answers that define the phase — all pure.
+    const spot = [
+      ['immediately/active', probes.satisfied4.data, true],
+      [
+        'death/death_verified (standard)',
+        (await deployed.rpc('release_condition_satisfied', {
+          p_release_condition: 'after_verified_death', p_approved_at: null,
+          p_policy: 'standard', p_lifecycle_state: 'death_verified',
+        })).data,
+        true,
+      ],
+      [
+        'death/active (standard)',
+        (await deployed.rpc('release_condition_satisfied', {
+          p_release_condition: 'after_verified_death', p_approved_at: null,
+          p_policy: 'standard', p_lifecycle_state: 'active',
+        })).data,
+        false,
+      ],
+      [
+        'death/death_verified (LEGACY — R12 clamp)',
+        (await deployed.rpc('release_condition_satisfied', {
+          p_release_condition: 'after_verified_death', p_approved_at: null,
+          p_policy: 'legacy_immediate_only', p_lifecycle_state: 'death_verified',
+        })).data,
+        false,
+      ],
+    ];
+    const wrong = spot.filter(([, got, want]) => got !== want);
     if (wrong.length) {
-      die(1, `DEPLOYED release-condition authority disagrees: ${wrong.map((w) => `${w.n}=${JSON.stringify(w.data)}`).join(', ')}`);
+      die(1, `DEPLOYED release authority disagrees on: ${wrong.map(([k, got, want]) => `${k} = ${JSON.stringify(got)} (expected ${want})`).join('; ')}`);
     }
-    record('release_condition_satisfied', 'EXACT',
-      'DEPLOYED · immediately satisfied under standard; full truth table in the SQL suite', []);
-  } else if (absent.length === names.length) {
+    record('release_condition_authority', 'EXACT',
+      'DEPLOYED at the 11-D shape · 4 defining answers spot-checked; full truth table in the SQL suite', []);
+  } else if (!has4 && !hasWritable && !hasSeam) {
     record('release_condition_authority', 'UNVERIFIABLE',
       'NOT YET DEPLOYED (source + bundle only) — equivalence proven via notification_grant_is_live above', []);
   } else {
-    // ★ HALF-DEPLOYED IS THE DANGEROUS STATE AND IT GETS ITS OWN VERDICT. One function present and
-    // the other missing means a partial paste: callers would resolve one and raise on the other.
-    die(1, `PARTIAL DEPLOYMENT — present: ${live.map((p) => p.n).join(', ') || '(none)'}; `
-      + `absent: ${absent.map((p) => p.n).join(', ')}. Re-apply db/bundles/release_conditions_bundle.sql in full.`);
+    // ★ HALF-DEPLOYED IS THE DANGEROUS STATE AND IT GETS ITS OWN VERDICT. Some objects present and
+    // some missing means a partial paste: callers would resolve one and raise on the other.
+    const present = [has4 && 'release_condition_satisfied(4)', hasWritable && 'release_condition_writable', hasSeam && 'estate_lifecycle_state'].filter(Boolean);
+    const absent = [!has4 && 'release_condition_satisfied(4)', !hasWritable && 'release_condition_writable', !hasSeam && 'estate_lifecycle_state'].filter(Boolean);
+    die(1, `PARTIAL DEPLOYMENT — present: ${present.join(', ') || '(none)'}; `
+      + `absent: ${absent.join(', ')}. Re-apply db/bundles/release_conditions_bundle.sql in full.`);
   }
 }
 
-/* 5 · the death-verification foundation — SOURCE-ONLY UNTIL DEPLOYED (Phase 11-C). */
+/* 5 · the death-verification workflow — SOURCE-ONLY UNTIL DEPLOYED (Phase 11-C). */
 {
   /**
    * ★ SAME DISCIPLINE AS BLOCK 4: named, never omitted. The 11-C routines are stateful, so they can
@@ -392,18 +441,17 @@ function classify(diffs) {
    * failure the bundle exists to prevent. The probes run as `anon`, which holds EXECUTE on none of
    * them: a deployed function answers with a refusal (auth_required / permission denied), an
    * undeployed one with PGRST202 — so the probe cannot mutate anything on either answer.
+   * (`estate_lifecycle_state` moved to block 4 in 11-D: it ships with the FIRST bundle now, so its
+   * absence is that artifact's half-deploy, not this one's.)
    */
   const names = [
     'initiate_death_verification_case',
     'admin_decide_death_verification_case',
-    'estate_lifecycle_state',
   ];
   const probes = await Promise.all(names.map(async (n) => {
     const arg = n === 'admin_decide_death_verification_case'
       ? { p_case: '00000000-0000-4000-8000-000000000000', p_decision: 'reject' }
-      : n === 'initiate_death_verification_case'
-        ? { p_estate: '00000000-0000-4000-8000-000000000000' }
-        : { p_estate: '00000000-0000-4000-8000-000000000000' };
+      : { p_estate: '00000000-0000-4000-8000-000000000000' };
     const { error } = await deployed.rpc(n, arg);
     return { n, missing: error?.code === 'PGRST202' };
   }));

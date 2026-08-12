@@ -88,12 +88,13 @@ grant  execute on function public.estate_release_state(uuid) to authenticated;
 -- before a ceiling tightening is clamped HERE, so tightening the policy takes effect immediately
 -- rather than only for grants issued afterwards.
 --
--- ★ SIGNAL-BASED RELEASE CONDITIONS STAY DORMANT-DENY, and since Phase 11-B that is decided by the
--- CANONICAL predicate rather than by a local copy of it. `public.release_condition_satisfied` under
--- the `'standard'` policy accepts `immediately` plus the two approval-based conditions once
--- approved — the identical rule this function used to spell out inline, and the identical rule the
--- document path uses, because it is now literally the same function. A death- or
--- incapacity-conditioned grant therefore discloses nothing today, at every site at once.
+-- ★ RELEASE POLICY IS DECIDED BY THE CANONICAL PREDICATE, never by a local copy of it.
+-- `public.release_condition_satisfied` under the `'standard'` policy accepts `immediately`, the two
+-- approval-based conditions once approved, and — since Phase 11-D — `after_verified_death` exactly
+-- while this estate's AUTHORITATIVE lifecycle is `death_verified` (resolved through
+-- `estate_lifecycle_state`, the reader over the record whose only writer is the audited transition
+-- routine). It is the identical rule the document path uses, because it is literally the same
+-- function. Incapacity-conditioned and legacy fused grants disclose nothing under any lifecycle.
 create or replace function public.inventory_disclosure_tier(p_estate uuid, p_uid uuid)
  returns text
  language plpgsql
@@ -117,8 +118,13 @@ begin
 
   if v_tier is null then return 'hidden'; end if;
 
-  -- Release gate — the canonical predicate, which is what can_access_document calls too.
-  if not public.release_condition_satisfied(v_cond, v_approved, 'standard') then
+  -- Release gate — the canonical predicate, which is what can_access_document calls too. Since
+  -- 11-D it consumes THIS estate's authoritative lifecycle, resolved through the one sanctioned
+  -- reader and passed as an ARGUMENT — never compared here: a death-conditioned inventory grant
+  -- resolves its tier exactly while the estate is death_verified, and the ceiling clamp below
+  -- still has the last word.
+  if not public.release_condition_satisfied(v_cond, v_approved, 'standard',
+                                            public.estate_lifecycle_state(p_estate)) then
     return 'hidden';
   end if;
 

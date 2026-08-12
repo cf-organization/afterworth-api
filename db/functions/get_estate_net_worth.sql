@@ -83,8 +83,10 @@ begin
     -- ★ PHASE 11-B — the canonical predicate replaces a local copy of the release rule.
     -- `legacy_immediate_only` is this surface's existing answer, named rather than re-typed:
     -- signal-based conditions (identity, death, incapacity, claim) and 'never' stay dormant-deny
-    -- (A.4), and an unknown condition refuses.
-    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
+    -- (A.4), and an unknown condition or lifecycle refuses. 11-D wires the authoritative lifecycle
+    -- through as an argument; inert under this policy, by decision (R12).
+    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
+                                           public.estate_lifecycle_state(p_estate_id))
   limit 1;
 
   -- No total_asset_value grant -> nothing disclosed.
@@ -114,8 +116,9 @@ begin
       and g.status = 'active'
       -- ★ THE EXCLUSION MUST ASK THE SAME QUESTION `list_estate_assets` ASKS, or the suppression
       -- fires on a different set of grants than the disclosure it exists to suppress. Same
-      -- canonical predicate, same policy, one function.
-      and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
+      -- canonical predicate, same policy, same lifecycle seam, one function.
+      and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
+                                             public.estate_lifecycle_state(p_estate_id))
   ) then
     return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, true;  -- suppressed
     return;

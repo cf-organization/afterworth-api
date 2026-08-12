@@ -25,6 +25,12 @@
  * only the table 0052 creates above it), so it applies LAST, after the existing three, on a
  * database that already carries migrations 0019/0026/0027.
  *
+ * ★ SINCE PHASE 11-D `estate_lifecycle_state` LIVES IN ITS OWN SOURCE FILE and ships FIRST with the
+ * release-conditions bundle (the disclosure evaluators resolve it at read time, so the first pasted
+ * artifact must carry the seam). It is carried here TOO — same file, idempotent — because the
+ * routines below call it at execution time and this artifact's header promises single-paste
+ * runnability.
+ *
  * Usage:  node scripts/buildDeathVerificationBundle.mjs [--out <path>]
  *         node scripts/buildDeathVerificationBundle.mjs --check     (verify inputs, emit nothing)
  */
@@ -39,13 +45,18 @@ buildBundle(
     root: ROOT,
     script: 'buildDeathVerificationBundle.mjs',
     // ★ ORDER IS LOAD-BEARING: 0052 creates the tables; `estate_lifecycle_state` is `language sql`
-    // and resolves its body at CREATE time, so the table must already exist when the routines load.
+    // and resolves its body at CREATE time, so the table must already exist when the reader loads,
+    // and the reader must exist before anything calls the routines that consult it.
     parts: [
       'db/migrations/0052_20260812_death_verification_foundation.sql',
+      'db/functions/estate_lifecycle_state.sql',
       'db/functions/death_verification.sql',
     ],
     controls: [
       ['db/migrations/0052_20260812_death_verification_foundation.sql', 'create table if not exists public.estate_lifecycle'],
+      ['db/functions/estate_lifecycle_state.sql', 'create or replace function public.estate_lifecycle_state'],
+      ['db/functions/estate_lifecycle_state.sql',
+        'revoke execute on function public.estate_lifecycle_state(uuid) from public, anon, authenticated'],
       ['db/migrations/0052_20260812_death_verification_foundation.sql', 'create table if not exists public.death_verification_cases'],
       ['db/migrations/0052_20260812_death_verification_foundation.sql', 'create table if not exists public.death_verification_evidence'],
       // The migration's own self-check must ship with it — the guard that a CHECK which silently
