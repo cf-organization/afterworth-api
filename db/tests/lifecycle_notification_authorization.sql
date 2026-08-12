@@ -446,6 +446,77 @@ begin
   raise notice '  ok   re-revoking emits nothing a second time';
 
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  raise notice ' 9b · invitation declined — the OWNER, once, and only once';
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ THE ONE INVITATION EMITTER THE HARNESS CAN REACH, AND IT CARRIES THE IDEMPOTENCY QUESTION.
+  -- `decline_invitation` treats an already-declined invitation as a successful no-op, so an emitter
+  -- placed ABOVE that guard would notify the owner on every repeat call rather than once per event.
+  -- Nothing else in the system would notice.
+  -- ★ SCOPED TO THE OWNER'S ROWS, NOT A BLANKET DELETE — and the first draft got this wrong in a
+  -- way worth keeping. `delete from public.notifications` here removed section 9's revoke row, and
+  -- section 10's POSITIVE CONTROL ("the rightful recipient DOES read their own rows") then failed,
+  -- correctly, because there was nothing left to read. The control did its job: without it, section
+  -- 10's three zero-row assertions would have passed against an empty table and proved nothing about
+  -- RLS at all. Clearing only what this section counts keeps both sections honest.
+  delete from public.notifications where user_id = OWNER_A;
+  insert into public.profiles (id, email) values (BENEFICIARY, 'fixture-invitee@example.invalid')
+    on conflict (id) do update set email = excluded.email;
+  insert into public.invitations (estate_id, invitee_email, proposed_role, status)
+  values (A, 'fixture-invitee@example.invalid', 'beneficiary', 'pending')
+  returning id into v_req;
+
+  perform set_config('request.jwt.claim.sub', BENEFICIARY::text, true);
+  set local role authenticated;
+  perform public.decline_invitation(v_req);
+  reset role;
+
+  select count(*) into n from public.notifications where user_id = OWNER_A and kind = 'invitationUpdate';
+  if n <> 1 then
+    raise exception 'FAIL: the estate owner received % decline notifications, expected 1', n;
+  end if;
+  -- The invitee is NOT told: they know what they just did. BENEFICIARY still holds exactly the one
+  -- revoke row section 9 left, so this asserts a DELTA of zero rather than an absolute zero.
+  select count(*) into n from public.notifications where kind = 'invitationUpdate' and user_id <> OWNER_A;
+  if n <> 0 then
+    raise exception 'FAIL: a decline was announced to % non-owner(s) — including the invitee, who '
+      'does not need telling what they just did', n;
+  end if;
+
+  select title, body, action_deep_link into v_title, v_body, v_link
+    from public.notifications where user_id = OWNER_A and kind = 'invitationUpdate';
+  -- ★ THE INVITEE IS NOT NAMED. The owner issued the invitation and already knows who it was for,
+  -- so this says strictly LESS than they know — the correct direction to err. An email address in
+  -- notification copy would be a viewer-scoped identity decision taken at a call site.
+  if (v_title || ' ' || v_body) ilike '%fixture-invitee%' or (v_title || ' ' || v_body) like '%@%' then
+    raise exception 'FAIL: the decline notification named the invitee: %', v_body;
+  end if;
+  -- And it does not name the proposed ROLE: a membership role is a relationship, stated by the
+  -- surfaces that gate it, never by a heads-up.
+  if (v_title || ' ' || v_body) ~* '(beneficiary|delegate|executor|trustee)' then
+    raise exception 'FAIL: the decline notification named a role: %', v_body;
+  end if;
+  if v_link is not null then
+    raise exception 'FAIL: the decline carried a deep link (%) — the invitation is finished', v_link;
+  end if;
+  raise notice '  ok   only the owner is told; no invitee, no role, no link';
+
+  -- ★ THE IDEMPOTENT REPEAT. This is the assertion that fails if the emitter moves above the guard.
+  perform set_config('request.jwt.claim.sub', BENEFICIARY::text, true);
+  set local role authenticated;
+  perform public.decline_invitation(v_req);
+  reset role;
+  select count(*) into n from public.notifications where user_id = OWNER_A;
+  if n <> 1 then
+    raise exception 'FAIL: re-declining emitted again (% rows) — the emitter sits above the '
+      'already-declined guard, so it notifies per CALL rather than per EVENT', n;
+  end if;
+  raise notice '  ok   re-declining emits nothing a second time';
+
+  delete from public.invitations where estate_id = A;
+  delete from public.notifications where user_id = OWNER_A;
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
   raise notice '10 · cross-estate isolation and RLS';
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
   --

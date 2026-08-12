@@ -274,6 +274,46 @@ create policy notifications_update_self on public.notifications
 revoke insert, delete on public.notifications from authenticated;
 grant select, update on public.notifications to authenticated;
 
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- ★ INVITATIONS — modelled so the invitation NOTIFICATION EMITTER can be exercised for real.
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- Nine functions emit lifecycle notifications; without these two tables, two of them
+-- (`accept_invitation`, `decline_invitation`) had no runtime assertion at all — their coverage was
+-- the bundle's positive control that the event NAME appears in the source, which proves a string is
+-- typed and nothing about who receives what.
+--
+-- `decline_invitation` is now genuinely exercised: it needs only these columns, and it is the one
+-- that carries the idempotency question (already-declined is a successful no-op, so an emitter
+-- placed above that guard would notify the owner on every repeat call).
+--
+-- `accept_invitation` remains uncovered here and is recorded as such rather than papered over: it
+-- delegates to `provision_from_invitation`, which reconciles memberships and stamps
+-- executor/trustee designations. Modelling that faithfully is a larger piece of harness than this
+-- phase should invent, and a SHALLOW fake of it would be worse than the gap — it would report
+-- coverage of a path that does not resemble production.
+create table if not exists public.profiles (
+  id    uuid primary key references auth.users(id),
+  email text,
+  phone text
+);
+alter table public.profiles enable row level security;
+
+create table if not exists public.invitations (
+  id            uuid primary key default gen_random_uuid(),
+  estate_id     uuid not null references public.estates(id) on delete cascade,
+  invitee_email text,
+  invitee_phone text,
+  proposed_role text not null default 'beneficiary',
+  status        text not null default 'pending'
+                  check (status in ('pending','matched','accepted','declined','revoked')),
+  accepted_by   uuid,
+  accepted_at   timestamptz,
+  expires_at    timestamptz not null default now() + interval '30 days',
+  updated_at    timestamptz not null default now()
+);
+alter table public.invitations enable row level security;
+
 create table if not exists public.claim_packets (
   id           uuid primary key default gen_random_uuid(),
   estate_id    uuid not null references public.estates(id) on delete cascade,
