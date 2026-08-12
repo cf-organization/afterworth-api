@@ -55,6 +55,22 @@ begin
   v_membership_id := public.provision_from_invitation(v_inv.id, v_user);
   perform public.write_audit('invitation.accepted', 'estate_memberships', v_membership_id, v_inv.estate_id,
     jsonb_build_object('invitation_id', v_inv.id, 'via', 'accept_by_id'));
+
+  -- ★ PHASE 10-E — the OWNER learns their invitation was accepted. Deliberately BELOW the idempotent
+  -- re-accept branch above, which returns early: a self-heal re-accept must not tell the owner a
+  -- second time that someone joined.
+  --
+  -- The copy says "someone you invited", never who. The owner issued the invitation and already
+  -- knows the invitee, so this says strictly LESS than they know — which is the correct direction
+  -- for a surface whose whole job is to avoid becoming a disclosure channel. It also never names the
+  -- accepted ROLE: a membership role is a relationship, and relationships are stated by the
+  -- authoritative surfaces that already gate them, not by a heads-up.
+  perform public.emit_lifecycle_notification(
+    public.estate_owner_user_id(v_inv.estate_id),
+    v_inv.estate_id,
+    'invitation.accepted',
+    'afterworth://owner-invitations'
+  );
   return query select v_membership_id, v_inv.estate_id,
     (select e.name from public.estates e where e.id = v_inv.estate_id), v_inv.proposed_role::text, 'approved'::text;
 end;

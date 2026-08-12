@@ -19,16 +19,20 @@ create or replace function public.deny_access_request(p_request_id uuid)
  set search_path to 'public', 'extensions'
 as $function$
 declare
-  v_user   uuid := auth.uid();
-  v_estate uuid;
-  v_status text;
+  v_user      uuid := auth.uid();
+  v_estate    uuid;
+  v_status    text;
+  -- ★ PHASE 10-E — read alongside the estate, from the request row itself. The recipient of a
+  -- decision notification is the person who made the request; it is never derived from who happens
+  -- to hold a capability on this estate.
+  v_requester uuid;
 begin
   if v_user is null then
     raise exception 'unauthenticated' using errcode = '42501';
   end if;
 
   -- Lock the request row for the txn.
-  select estate_id, status into v_estate, v_status
+  select estate_id, status, requester_user_id into v_estate, v_status, v_requester
   from public.access_requests
   where id = p_request_id
   for update;
@@ -58,6 +62,18 @@ begin
     p_request_id,
     v_estate,
     jsonb_build_object('outcome', 'denied')
+  );
+
+  -- ★ PHASE 10-E — the REQUESTER learns the outcome of THEIR OWN request. Only they receive it: a
+  -- denial is not estate news, and no other member is told that someone asked and was refused.
+  --
+  -- NO DEEP LINK. There is nothing newly available to open, and sending a refused requester to an
+  -- estate surface would be an invitation to a screen that says no.
+  perform public.emit_lifecycle_notification(
+    v_requester,
+    v_estate,
+    'access_request.denied',
+    null
   );
 
   return query select r.* from public.access_requests r where r.id = p_request_id;

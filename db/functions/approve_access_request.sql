@@ -151,6 +151,18 @@ begin
     )
   );
 
+  -- ★ PHASE 10-E — the REQUESTER learns the outcome of THEIR OWN request, and nothing else. The copy
+  -- says the request was approved; it does not say what became visible, which tier was chosen, or
+  -- what the estate contains. One notification, not two: the grant created above deliberately does
+  -- NOT also emit `access_grant.created`, because a person who asked one question should get one
+  -- answer.
+  perform public.emit_lifecycle_notification(
+    v_requester,
+    v_estate,
+    'access_request.approved',
+    public.notification_estate_home(v_estate, v_requester)
+  );
+
   return query select r.* from public.access_requests r where r.id = p_request_id;
 end;
 $function$;

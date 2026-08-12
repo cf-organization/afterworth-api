@@ -86,5 +86,18 @@ begin
     v_inv.estate_id,
     jsonb_build_object('invitation_id', v_inv.id)
   );
+
+  -- ★ PHASE 10-E — the OWNER learns an invitation was declined. Below the idempotent
+  -- already-declined early-return, so a repeat decline emits nothing the second time. That
+  -- placement is load-bearing and is asserted: an emitter moved above the idempotency guard would
+  -- produce one notification per call rather than one per event, and nothing else would notice.
+  --
+  -- No deep link on this one — the invitation is finished, and there is no state to go and look at.
+  perform public.emit_lifecycle_notification(
+    public.estate_owner_user_id(v_inv.estate_id),
+    v_inv.estate_id,
+    'invitation.declined',
+    null
+  );
 end;
 $function$;

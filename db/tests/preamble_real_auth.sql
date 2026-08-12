@@ -170,14 +170,20 @@ create table if not exists public.estate_designations (
 alter table public.estate_designations enable row level security;
 
 create or replace function public.is_estate_executor(p_estate uuid, p_user uuid)
- returns boolean language sql security definer stable set search_path to 'public'
-as $$
+ returns boolean
+ language sql
+ security definer
+ stable
+ set search_path to 'public'
+as $function$
   select exists (
     select 1 from public.estate_designations d
-    where d.estate_id = p_estate and d.user_id = p_user
-      and d.designation_type in ('executor','trustee') and d.status = 'active'
+    where d.estate_id = p_estate
+      and d.user_id    = p_user
+      and d.designation_type in ('executor','trustee')
+      and d.status = 'active'
   );
-$$;
+$function$;
 
 -- ★ THE DELEGATE'S ONE REAL MUTATION LEAVES A ROW HERE, and the workspace reports its state back to
 -- the caller who created it. Only the columns the projection reads are modelled.
@@ -190,6 +196,83 @@ create table if not exists public.access_requests (
   created_at        timestamptz not null default now()
 );
 alter table public.access_requests enable row level security;
+
+-- ★ PHASE 10-E — the columns the REAL request RPCs write. The workspace projection reads only
+-- status and created_at, so the table above modelled only those; `create_access_request`,
+-- `approve_access_request` and `deny_access_request` are now loaded from source and write the rest.
+-- Added as separate ALTERs so the table definition above stays the shape the 10-D suite documents.
+alter table public.access_requests add column if not exists requester_role     text;
+alter table public.access_requests add column if not exists reason             text;
+alter table public.access_requests add column if not exists resolved_at        timestamptz;
+alter table public.access_requests add column if not exists resolved_by_user_id uuid;
+alter table public.access_requests add column if not exists resulting_grant_id  uuid;
+
+-- ★ THE ONE-PENDING INDEX IS LOAD-BEARING FOR A 10-E ASSERTION, not decoration. "A second request
+-- emits nothing" is only a real test if the second request actually fails the way production does.
+-- Without this index the duplicate would succeed and the assertion would pass by proving nothing.
+create unique index if not exists access_requests_one_pending
+  on public.access_requests (estate_id, requester_user_id, category)
+  where status = 'pending';
+
+-- `approve_access_request` stamps the approver. The 10-D suite never called that RPC, so the column
+-- was never needed; 10-E does call it, for real, because "the requester and only the requester is
+-- notified" is not a claim a hand-inserted grant row can support.
+alter table public.access_grants add column if not exists approved_by_user_id uuid;
+
+-- Same reasoning for grants: `create_asset_grant`'s 409 path, and therefore "a rejected grant emits
+-- no notification", depend on these existing.
+create unique index if not exists access_grants_one_active_category
+  on public.access_grants (estate_id, grantee_user_id, category)
+  where status = 'active' and category is not null;
+create unique index if not exists access_grants_one_active_document
+  on public.access_grants (estate_id, grantee_user_id, document_id)
+  where status = 'active' and document_id is not null;
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- ★ THE REAL NOTIFICATIONS TABLE — because a stub here would make every 10-E assertion vacuous.
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- This harness previously defined `emit_notification` as `begin return; end` — a no-op — on the
+-- reasoning that "notification delivery is not the boundary under test". That was true until Phase
+-- 10-E, at which point emission BECAME the boundary under test, and a suite asserting "the owner
+-- receives exactly one notification" against a function that writes nothing would have passed with
+-- every recipient check deleted.
+--
+-- The stub had also silently rotted: it took six parameters (`…, p_metadata jsonb`) while the real
+-- function takes seven (`…, p_deep_link text, p_payload jsonb`) and the harness copy of
+-- `create_asset_grant` called it with seven. No overload matched, the call raised, and the call
+-- site's `exception when others then null` swallowed it. The notification path in this harness had
+-- therefore been dead for as long as it existed, while looking exercised.
+--
+-- Shape and access model are migration 0009's, including the anti-forge posture: RLS self-scoped,
+-- and NO insert grant to `authenticated` — so the suite can prove the DEFINER function is the only
+-- writer rather than assuming it.
+create table if not exists public.notifications (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid not null,
+  estate_id           uuid,
+  kind                text not null,
+  title               text not null,
+  body                text,
+  channel             text not null default 'inApp',
+  action_deep_link    text,
+  related_document_id uuid,
+  payload             jsonb not null default '{}'::jsonb,
+  read                boolean not null default false,
+  created_at          timestamptz not null default now()
+);
+alter table public.notifications enable row level security;
+
+drop policy if exists notifications_select_self on public.notifications;
+create policy notifications_select_self on public.notifications
+  for select to authenticated using (user_id = auth.uid());
+
+drop policy if exists notifications_update_self on public.notifications;
+create policy notifications_update_self on public.notifications
+  for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+revoke insert, delete on public.notifications from authenticated;
+grant select, update on public.notifications to authenticated;
 
 create table if not exists public.claim_packets (
   id           uuid primary key default gen_random_uuid(),
@@ -336,130 +419,38 @@ create or replace function public.asset_bracket_high(p bigint) returns bigint la
     else null end;   -- top bracket ($10M+): open-ended
 $$;
 
--- ★ THE REAL GRANT DOOR. The discovery suite asserts that `estate_inventory` can actually be granted
--- THROUGH THIS FUNCTION, not merely stored — a table CHECK widened without the door widened would be
--- a category that storage accepts and the only writer refuses. Extracted verbatim.
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- ★ THE HAND-COPIED `create_asset_grant` AND THE `emit_notification` STUB BOTH LIVED HERE. BOTH ARE
+--   GONE, AND THE REASON IS THE SAME ONE.
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
 --
--- `asset_category_grantable` is referenced at runtime and is supplied by the bundle (0008/0049), so
--- the order below is fine; `emit_notification` is stubbed because notification delivery is not the
--- boundary under test.
-create or replace function public.emit_notification(
-  p_user uuid, p_estate uuid, p_kind text, p_title text, p_body text, p_metadata jsonb default '{}'::jsonb
-) returns void language plpgsql as $emit$ begin return; end $emit$;
-
--- asset_category_grantable is created by the bundle; a placeholder is defined first so this function
--- body can be created before it. The bundle then REPLACES it with the real ceiling.
+-- The removed copy was introduced as "extracted verbatim" so the discovery suite could assert that
+-- `estate_inventory` is grantable THROUGH THE REAL DOOR rather than merely storable. The intent was
+-- right; the mechanism was a second copy of a SECURITY DEFINER body, and a second copy of an
+-- authorization gate is a thing that drifts. It did: Phase 10-E changed the real function's emission
+-- and the harness would have gone on exercising the old one, green, forever.
+--
+-- `emit_notification` was stubbed to `begin return; end` because "notification delivery is not the
+-- boundary under test". In Phase 10-E it IS the boundary, and a no-op writer would let "the owner
+-- receives exactly one notification" pass with every recipient check deleted. Worse, the stub had
+-- already rotted out of signature agreement with its only caller and had been raising-and-being-
+-- swallowed for its whole life — exercised in appearance only.
+--
+-- Both now load from `db/functions/` through `db/bundles/lifecycle_notifications_bundle.sql`, and
+-- `scripts/verifySqlAuthorization.mjs` REFUSES TO RUN if this preamble ever again defines a function
+-- that also exists under `db/functions/`. That guard is the durable fix — this comment is only the
+-- explanation.
+--
+-- `asset_category_grantable` keeps its placeholder below: it must exist before bodies that reference
+-- it are created, and the estate bundle then REPLACES it with the real ceiling.
 create or replace function public.asset_category_grantable(p_role text, p_category text, p_tier text)
 returns boolean language sql immutable as $acg$ select false $acg$;
 
-create or replace function public.create_asset_grant(
-  p_estate_id uuid,
-  p_grantee_user_id uuid,
-  p_grantee_role text,
-  p_category text,
-  p_visibility_tier text,
-  p_release_condition text,
-  p_professional_type text default null,
-  p_requires_step_up boolean default false
-)
- returns setof public.access_grants
- language plpgsql
- security definer
- set search_path to 'public', 'extensions'
-as $function$
-declare
-  v_user uuid := auth.uid();
-  v_id uuid;
-begin
-  -- Auth null-guard.
-  if v_user is null then
-    raise exception 'unauthenticated' using errcode = '42501';
-  end if;
+-- ★ REMOVE ANY LEGACY SIX-ARG STUB before the real seven-arg function is loaded. Postgres would keep
+-- both as overloads, and a stub that still matched some call shape would silently win.
+drop function if exists public.emit_notification(uuid, uuid, text, text, text, jsonb);
 
-  -- SECURITY SPINE (privilege-escalation gate). DEFINER bypasses RLS, so this explicit owner-check
-  -- IS the access boundary and MUST precede any insert.
-  if not public.is_estate_owner(p_estate_id) then
-    raise exception 'not estate owner' using errcode = '42501';
-  end if;
 
-  -- No grants to owners (self, or any ownership-role member) — inherent access.
-  if p_grantee_user_id = v_user
-     or exists (
-       select 1 from public.estate_memberships m
-       where m.estate_id = p_estate_id
-         and m.user_id = p_grantee_user_id
-         and public.is_ownership_role(m.role)
-     ) then
-    raise exception 'cannot grant access to an owner; owners have inherent access';  -- P0001 -> 400
-  end if;
-
-  -- Category must be a real ASSET category (defense-in-depth beyond the access_grants.category CHECK;
-  -- the RPC is the security boundary and may be called directly).
-  if p_category not in
-     ('account_balances', 'institution_names', 'total_asset_value', 'linked_account_details') then
-    raise exception 'invalid asset category: %', p_category;  -- P0001 -> 400
-  end if;
-
-  -- ★ WRITE-TIME CEILING — reject an over-ceiling grant before storing it (the trigger skips category
-  --   grants). Mirrors the read-time clamp in list_estate_assets: e.g. beneficiary + account_balances
-  --   + full_detail -> asset_category_grantable = false -> rejected here.
-  if not public.asset_category_grantable(p_grantee_role, p_category, p_visibility_tier) then
-    raise exception 'asset grant ceiling: role % cannot be granted tier % for category %',
-      p_grantee_role, p_visibility_tier, p_category
-      using errcode = '42501';   -- ceiling violation -> 403 (mirrors document_grantable)
-  end if;
-
-  -- Insert (category-scoped: document_id NULL). Table CHECKs + the one-active-grant-per-(estate,
-  -- grantee,category) unique index fire regardless of the DEFINER context. Catch the unique
-  -- violation and surface a readable 409 (fail, never silent upsert — a silent tier change on a
-  -- disclosure grant is dangerous; a tier change is revoke + re-create).
-  begin
-    insert into public.access_grants
-      (estate_id, grantee_user_id, grantee_role, professional_type,
-       document_id, category, visibility_tier, release_condition,
-       requires_step_up, granted_by_user_id)
-    values
-      (p_estate_id, p_grantee_user_id, p_grantee_role, p_professional_type,
-       null, p_category, p_visibility_tier, p_release_condition,
-       p_requires_step_up, v_user)
-    returning id into v_id;
-  exception
-    when unique_violation then
-      raise exception
-        'an active grant already exists for this category and grantee; revoke it first'
-        using errcode = '23505';   -- unique_violation -> 409 Conflict
-  end;
-
-  perform public.write_audit(
-    'access_grant.created',
-    'access_grants',
-    v_id,
-    p_estate_id,
-    jsonb_build_object(
-      'grantee_user_id', p_grantee_user_id,
-      'grantee_role', p_grantee_role,
-      'category', p_category,
-      'visibility_tier', p_visibility_tier,
-      'release_condition', p_release_condition
-    )
-  );
-
-  -- BEST-EFFORT emit: notify the grantee they were granted access. Wrapped so a notification failure
-  -- NEVER fails the grant — the grant is load-bearing; the notification is a heads-up. The grantee is
-  -- PARTY to this grant (they're the recipient), so there is no cross-user leak.
-  begin
-    perform public.emit_notification(
-      p_grantee_user_id, p_estate_id, 'accessGranted',
-      'Access granted',
-      'You''ve been granted access to estate assets (' || p_category || ').',
-      'afterworth://accounts',
-      jsonb_build_object('kind', 'grant_created', 'grant_id', v_id, 'category', p_category)
-    );
-  exception when others then
-    null;  -- swallow: a notification error must not roll back the grant
-  end;
-
-  return query select g.* from public.access_grants g where g.id = v_id;
-end;
-$function$;
+-- (The hand-copied `create_asset_grant` that stood here is deleted — see the note above. The real
+--  body now arrives from db/functions/create_asset_grant.sql via the lifecycle bundle.)
 

@@ -78,8 +78,27 @@ begin
 
   -- Category must be a real ASSET category (defense-in-depth beyond the access_grants.category CHECK;
   -- the RPC is the security boundary and may be called directly).
+  --
+  -- ★ `estate_inventory` IS IN THIS LIST IN VERSION CONTROL — AND UNTIL PHASE 10-E IT WAS NOT.
+  --
+  -- Migration 0049 adds it to the DEPLOYED body by string surgery: it reads `pg_get_functiondef`,
+  -- replaces this exact literal, and re-executes. So production has had the widened list for weeks
+  -- while this file — the supposed source of truth — still refused the category.
+  --
+  -- That is the live-only-object trap this repository has been bitten by repeatedly (handle_new_user,
+  -- is_estate_owner, the whole 0009 notifications table), except inverted and more dangerous: the
+  -- object WAS in version control, and the version-controlled copy was WRONG. Re-applying this file
+  -- would have silently reverted Phase 9/10-A grantability, and nothing would have caught it — the
+  -- deployed-contract verifier checks `asset_category_grantable`, which is a DIFFERENT function and
+  -- would have stayed green.
+  --
+  -- It became reachable in Phase 10-E because this file now ships in a bundle. Fixed at the source
+  -- rather than by ordering the bundles carefully, because an ordering rule is a thing to remember
+  -- and a correct source file is not. 0049's patch is guarded by `if position('estate_inventory' in
+  -- v_src) = 0`, so it now finds the category already present and does nothing — still correct for a
+  -- database that predates this fix, a no-op for one that does not.
   if p_category not in
-     ('account_balances', 'institution_names', 'total_asset_value', 'linked_account_details') then
+     ('account_balances', 'institution_names', 'total_asset_value', 'linked_account_details', 'estate_inventory') then
     raise exception 'invalid asset category: %', p_category;  -- P0001 -> 400
   end if;
 
@@ -127,20 +146,43 @@ begin
     )
   );
 
-  -- BEST-EFFORT emit: notify the grantee they were granted access. Wrapped so a notification failure
-  -- NEVER fails the grant — the grant is load-bearing; the notification is a heads-up. The grantee is
-  -- PARTY to this grant (they're the recipient), so there is no cross-user leak.
-  begin
-    perform public.emit_notification(
-      p_grantee_user_id, p_estate_id, 'accessGranted',
-      'Access granted',
-      'You''ve been granted access to estate assets (' || p_category || ').',
-      'afterworth://accounts',
-      jsonb_build_object('kind', 'grant_created', 'grant_id', v_id, 'category', p_category)
+  -- ★ PHASE 10-E — REWRITTEN, AND THE PREVIOUS VERSION WAS A LIVE DEFECT ON TWO COUNTS.
+  --
+  -- It read:
+  --     'You''ve been granted access to estate assets (' || p_category || ').'
+  --     'afterworth://accounts'
+  --     jsonb_build_object('kind','grant_created','grant_id', v_id, 'category', p_category)
+  --
+  -- 1. It concatenated `p_category` — a backend enum — into user-facing prose. The one lifecycle
+  --    notification in production reads "...to estate assets (estate_inventory)." on a real device.
+  --    The mobile client HAS an audit forbidding backend vocabulary on screen; it never fired,
+  --    because the enum arrived as server-authored copy rather than as a client-rendered value.
+  --    This is exactly why copy is now a constant looked up by event name.
+  -- 2. `afterworth://accounts` is not a route this app has (the route is `/assets`), so the link was
+  --    inert — fail-closed by the client allowlist, but a promise the product could not keep.
+  --    The payload additionally carried a raw grant id and category, which nothing needs.
+  --
+  -- ★ AND IT EMITTED UNCONDITIONALLY, WHICH IS THE MORE SERIOUS HALF. "You have access" was sent for
+  -- ANY grant this function created, including a `after_verified_death_or_incapacity` one that
+  -- releases nothing and must stay dormant until Phase 11 connects activation to release. The gate
+  -- below is the death/claim firewall: a grant that is not live RIGHT NOW produces silence.
+  --
+  -- ★ THE GATE READS THE STORED ROW, NOT THE PARAMETERS. `status` and `approved_at` are column
+  -- DEFAULTS here — the insert names neither — so deciding from `p_release_condition` alone would be
+  -- reasoning about the arguments rather than about what was actually written. A future default
+  -- change, or a trigger, would silently make the parameter-based answer wrong while looking right.
+  if exists (
+    select 1 from public.access_grants g
+    where g.id = v_id
+      and public.notification_grant_is_live(g.status, g.release_condition, g.approved_at)
+  ) then
+    perform public.emit_lifecycle_notification(
+      p_grantee_user_id,
+      p_estate_id,
+      'access_grant.created',
+      public.notification_estate_home(p_estate_id, p_grantee_user_id)
     );
-  exception when others then
-    null;  -- swallow: a notification error must not roll back the grant
-  end;
+  end if;
 
   return query select g.* from public.access_grants g where g.id = v_id;
 end;
