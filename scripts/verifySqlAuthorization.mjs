@@ -36,6 +36,10 @@ const PARTS = [
   'db/tests/estate_readiness_authorization.sql',
   'db/tests/professional_workspace_authorization.sql',
   'db/tests/lifecycle_notification_authorization.sql',
+  // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
+  // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
+  // an ambiguous mixture of the two.
+  'db/tests/phase10_exit_matrix.sql',
 ];
 
 // ★ CAPTURE, NOT ASSERT. Run with --capture to emit one REAL payload per viewer class into a JSON
@@ -258,7 +262,7 @@ for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
 // reported "0 assertions" against a suite that had in fact run every one of them.
 const okCount = (combined.match(/NOTICE:\s+ok\s{2,}/g) ?? []).length;
 const MIN_ASSERTIONS = 60;
-for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED', 'ALL READINESS ASSERTIONS PASSED']) {
+for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED', 'ALL READINESS ASSERTIONS PASSED', 'ALL PHASE 10-F EXIT MATRIX ASSERTIONS PASSED']) {
   if (!combined.includes(sentinel)) {
     cleanup();
     console.error(`✗ the suite did not reach "${sentinel}" — it did not run to completion.`);
