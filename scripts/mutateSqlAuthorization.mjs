@@ -141,6 +141,18 @@ const MUTATIONS = Object.freeze([
     to: 'grant execute on function public.emit_notification(uuid, uuid, text, text, text, text, jsonb) to authenticated;',
   },
   {
+    id: 'invitation-emit-above-idempotency-guard',
+    why: 'decline_invitation treats an already-declined invitation as a successful NO-OP. An emitter '
+      + 'placed above that guard notifies the owner on every repeat CALL rather than once per EVENT, '
+      + 'and nothing else in the system would notice. This is the mutation that justifies modelling '
+      + 'the invitations table in the harness at all.',
+    file: 'db/functions/decline_invitation.sql',
+    from: '  -- Idempotent: already declined is a successful no-op.',
+    to: "  perform public.emit_lifecycle_notification(\n"
+      + "    public.estate_owner_user_id(v_inv.estate_id), v_inv.estate_id, 'invitation.declined', null);\n"
+      + '  -- Idempotent: already declined is a successful no-op.',
+  },
+  {
     id: 'cross-estate-recipient',
     why: 'Recipient resolution must be scoped to the estate the event happened on. Dropping the '
       + 'estate predicate makes the "owner" an arbitrary owner, which is a cross-estate leak that '
