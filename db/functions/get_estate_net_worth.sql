@@ -80,7 +80,11 @@ begin
     and g.grantee_user_id = v_uid
     and g.category = 'total_asset_value'
     and g.status = 'active'
-    and g.release_condition = 'immediately'   -- signal-based conditions stay dormant-deny (A.4)
+    -- ★ PHASE 11-B — the canonical predicate replaces a local copy of the release rule.
+    -- `legacy_immediate_only` is this surface's existing answer, named rather than re-typed:
+    -- signal-based conditions (identity, death, incapacity, claim) and 'never' stay dormant-deny
+    -- (A.4), and an unknown condition refuses.
+    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
   limit 1;
 
   -- No total_asset_value grant -> nothing disclosed.
@@ -108,7 +112,10 @@ begin
       and g.grantee_user_id = v_uid
       and g.category = 'account_balances'
       and g.status = 'active'
-      and g.release_condition = 'immediately'
+      -- ★ THE EXCLUSION MUST ASK THE SAME QUESTION `list_estate_assets` ASKS, or the suppression
+      -- fires on a different set of grants than the disclosure it exists to suppress. Same
+      -- canonical predicate, same policy, one function.
+      and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
   ) then
     return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, true;  -- suppressed
     return;

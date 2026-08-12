@@ -1,0 +1,77 @@
+/**
+ * WHAT THE SQL AUTHORIZATION SUITE LOADS, IN ORDER — single-sourced.
+ *
+ * ★ WHY THIS IS NOT JUST AN ARRAY IN THE VERIFIER. `mutateSqlAuthorization.mjs` must know whether a
+ * mutated file actually REACHES the database the suite runs against. It used to answer that by
+ * rebuilding the bundles and searching them for the mutated text — correct while bundles were the
+ * only route in, and silently wrong the moment a part was loaded directly. A mutation in a file the
+ * suite loads but no bundle contains would report `HARNESS_FAILURE: the mutation is in no rebuilt
+ * bundle`, which is at least loud; the reverse — a runner that had defaulted to "carry on" — would
+ * have reported NOT_DETECTED and sent someone to rewrite tests that were fine.
+ *
+ * Two consumers reading one list is the whole point. A copy here would drift from the verifier on
+ * the first reordering, and the drift would be invisible: both files would still look right.
+ */
+
+/**
+ * ★ PARTS THAT ARE PRODUCTION SOURCE BUT NOT IN A DEPLOY BUNDLE, AND WHY.
+ *
+ * `get_estate_net_worth` and `require_aal2` are loaded here from `db/functions/` directly rather
+ * than through a paste-ready bundle. That is deliberate and it is a smaller claim, not a larger one:
+ *
+ *   · They MUST be loaded, because Phase 11-B found that FOUR of the seven release-condition copies
+ *     had never executed in any test. `list_estate_assets` was created by the estate bundle and
+ *     called by no assertion; `get_estate_net_worth` was not even installed, because it reads
+ *     `normalized_assets` and the harness did not model that table. The suite was green and two
+ *     whole disclosure surfaces had never been exercised. A centralization that rewires code nothing
+ *     runs is a centralization nobody can trust.
+ *
+ *   · They are NOT added to a deploy bundle, because neither has ever shipped in one, and this
+ *     repository has already come within one paste of REGRESSING production by re-applying a source
+ *     file that was behind the deployed body (`create_asset_grant`, Phase 10-E). The
+ *     source↔deployment reconciler cannot compare either of these — both read rows, so equal inputs
+ *     legitimately differ. Putting an unreconciled SECURITY DEFINER body into an artifact whose
+ *     header says "paste this and run it once" would be trading a known coverage gap for an unknown
+ *     deployment risk.
+ *
+ * So: loaded for TESTING, not offered for DEPLOYMENT, and the difference is stated rather than
+ * implied. Promoting them belongs with the evidence that source and deployment agree — which is a
+ * Phase 11-C item, recorded as one.
+ */
+export const SQL_SUITE_PARTS = Object.freeze([
+  'db/tests/preamble_real_auth.sql',
+  // ★ FIRST AMONG THE BUNDLES (Phase 11-B). `notification_grant_is_live` is `language sql`, so its
+  // body is resolved at CREATE time — the lifecycle bundle will not load at all against a database
+  // without `release_condition_satisfied`. This is the order an operator uses.
+  'db/bundles/release_conditions_bundle.sql',
+  'db/bundles/estate_inventory_and_discovery_bundle.sql',
+  'db/bundles/lifecycle_notifications_bundle.sql',
+  // Production source, loaded for coverage rather than offered for deployment — see the note above.
+  'db/functions/require_aal2.sql',
+  'db/functions/get_estate_net_worth.sql',
+  'db/tests/estate_assets_authorization.sql',
+  'db/tests/estate_discovery_authorization.sql',
+  'db/tests/estate_readiness_authorization.sql',
+  'db/tests/professional_workspace_authorization.sql',
+  'db/tests/lifecycle_notification_authorization.sql',
+  'db/tests/release_condition_authorization.sql',
+  // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
+  // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
+  // an ambiguous mixture of the two.
+  'db/tests/phase10_exit_matrix.sql',
+]);
+
+/** The rebuildable artifacts, paired with the builder that produces each. */
+export const SQL_BUNDLES = Object.freeze([
+  ['scripts/buildReleaseConditionBundle.mjs', 'db/bundles/release_conditions_bundle.sql'],
+  ['scripts/buildEstateAssetBundle.mjs', 'db/bundles/estate_inventory_and_discovery_bundle.sql'],
+  ['scripts/buildLifecycleNotificationBundle.mjs', 'db/bundles/lifecycle_notifications_bundle.sql'],
+]);
+
+/**
+ * Files the suite loads DIRECTLY (not via a bundle) — the routes a mutation can take into the test
+ * database without appearing in any rebuilt artifact.
+ */
+export const SQL_DIRECT_PARTS = Object.freeze(
+  SQL_SUITE_PARTS.filter((p) => !p.startsWith('db/bundles/'))
+);

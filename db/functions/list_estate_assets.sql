@@ -38,7 +38,12 @@ as $$
     and g.grantee_user_id = p_uid
     and g.category = p_category
     and g.status = 'active'
-    and g.release_condition = 'immediately'   -- signal-based conditions stay dormant-deny (A.4)
+    -- ★ PHASE 11-B — the canonical predicate. `legacy_immediate_only` is this surface's answer
+    -- carried forward verbatim: the asset-value paths have never honoured an approval-conditioned
+    -- grant, and 11-B centralizes the AUTHORITY without spending a product decision on the POLICY.
+    -- Signal-based conditions (identity, death, incapacity, claim) and 'never' stay dormant-deny
+    -- (A.4) under both policies; an unknown condition refuses.
+    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
   limit 1;
 $$;
 
@@ -113,7 +118,8 @@ begin
     and g.grantee_user_id = v_uid
     and g.category = 'account_balances'
     and g.status = 'active'
-    and g.release_condition = 'immediately'   -- signal-based conditions stay dormant-deny (A.4)
+    -- ★ PHASE 11-B — canonical predicate, `legacy_immediate_only` (see asset_grant_tier above).
+    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only')
   limit 1;
 
   -- No account_balances grant -> the non-owner sees NO asset rows (default-deny, safe).

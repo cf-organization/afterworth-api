@@ -337,9 +337,12 @@ begin
   delete from public.notifications;
   perform set_config('request.jwt.claim.sub', OWNER_A::text, true);
   set local role authenticated;
+  -- Phase 11-B: the SPLIT condition — `create_asset_grant` now refuses the deprecated fused value,
+  -- so this is the death-conditioned grant an owner can actually create from here on. It must be
+  -- just as silent as the fused one was.
   perform public.create_asset_grant(
     A, BENEFICIARY, 'beneficiary', 'estate_inventory', 'category_summary',
-    'after_verified_death_or_incapacity'
+    'after_verified_death'
   );
   reset role;
   select count(*) into n from public.notifications;

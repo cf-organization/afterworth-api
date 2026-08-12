@@ -31,6 +31,11 @@ buildBundle(
     root: ROOT,
     script: 'buildLifecycleNotificationBundle.mjs',
     parts: [
+      // ★ FIRST (Phase 11-B): `notification_grant_is_live` is `language sql` and delegates to
+      // `release_condition_satisfied`, so its CREATE fails outright on a database that lacks the
+      // predicate. Carrying the canonical module here keeps this bundle single-paste runnable —
+      // the property its header promises — at the cost of an idempotent re-CREATE.
+      'db/functions/release_conditions.sql',
       // ★ EVERY FUNCTION BEFORE THE MIGRATION, deliberately inverted from the usual migration-first
       // order. 0050 is entirely `revoke execute on function ...` plus one index, and a REVOKE names
       // a function that must already exist — on a fresh database it does not. Guarding the revokes
@@ -60,6 +65,7 @@ buildBundle(
      * a bundle built from pre-10-E sources fails here rather than deploying quietly.
      */
     controls: [
+      ['db/functions/release_conditions.sql', 'create or replace function public.release_condition_satisfied'],
       ['db/migrations/0050_20260811_lifecycle_notifications.sql', 'revoke execute on function public.emit_notification'],
       ['db/functions/emit_notification.sql', 'create or replace function public.emit_notification'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.notification_event_copy'],

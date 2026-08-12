@@ -248,8 +248,9 @@ begin
   -- A death-conditioned grant to a STRANGER must leave both of them exactly where they were.
   before_json := harness_exit.composed(BENE, X);
   refusal_bytes := harness_exit.composed(STRANGER, X)::text;
+  -- Phase 11-B: the SPLIT condition (the fused value is refused by the RPC this helper calls).
   perform harness_exit.grant(X, OWNER_X, STRANGER, 'beneficiary', 'category_summary',
-                             'after_verified_death_or_incapacity');
+                             'after_verified_death');
   if harness_exit.composed(STRANGER, X)::text is distinct from refusal_bytes then
     raise exception 'FAIL: a DEATH-CONDITIONED grant changed what its holder receives — it is not dormant';
   end if;

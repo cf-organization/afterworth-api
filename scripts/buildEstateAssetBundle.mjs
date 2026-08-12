@@ -26,6 +26,16 @@ buildBundle(
     // ★ ORDER IS LOAD-BEARING: each migration precedes the functions that depend on it, and 0049's
     // functions rewrite `create_asset_grant`, which 0008 must already have created.
     parts: [
+      // ★ FIRST, AND ADDED THE DAY THE DEPENDENCY WAS CREATED — not discovered missing later.
+      //
+      // Phase 11-B moved the release rule into `public.release_condition_satisfied`, and four
+      // functions in this bundle now call it (`inventory_disclosure_tier`, the two
+      // `list_estate_assets` sites, `create_asset_grant`'s write gate). A bundle whose header says
+      // "paste this whole file and run it once" but which references a function it does not carry
+      // is the Phase 10-F missing-bracket-functions defect with a new name. `create or replace` is
+      // idempotent, so carrying it here AND in the release-conditions bundle costs nothing and
+      // keeps every artifact self-sufficient.
+      'db/functions/release_conditions.sql',
       'db/migrations/0048_20260810_estate_assets.sql',
       'db/functions/estate_asset_rpcs.sql',
       // ★ ADDED IN PHASE 10-E, AND THE BUNDLE WAS NOT SELF-SUFFICIENT WITHOUT IT.
@@ -58,6 +68,7 @@ buildBundle(
       'db/functions/professional_workspace_rpcs.sql',
     ],
     controls: [
+      ['db/functions/release_conditions.sql', 'create or replace function public.release_condition_satisfied'],
       ['db/migrations/0048_20260810_estate_assets.sql', 'create table if not exists public.estate_assets'],
       ['db/migrations/0048_20260810_estate_assets.sql', 'estate_assets_read_owner'],
       ['db/functions/estate_asset_rpcs.sql', 'create or replace function public.create_estate_asset'],

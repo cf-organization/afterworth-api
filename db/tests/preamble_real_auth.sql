@@ -39,6 +39,22 @@ create or replace function auth.uid() returns uuid
  language sql stable
 as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 
+-- ★ `auth.jwt()` — ADDED IN PHASE 11-B, AND ITS ABSENCE WAS LOAD-BEARING.
+--
+-- `require_aal2()` reads `auth.jwt() ->> 'aal'`, and every financial RPC calls it. Without this
+-- function the financial surfaces could not be loaded into the harness at all — which is exactly
+-- what had happened: `get_estate_net_worth` was in no bundle and in no PARTS list, so TWO of the
+-- seven release-condition evaluation sites had never executed in any test. A third,
+-- `list_estate_assets`, was created by the estate bundle and called by no assertion.
+--
+-- Fail-closed the same way the real one does: an absent claim coalesces to aal1 in `require_aal2`,
+-- so a harness caller is un-stepped-up unless a scenario says otherwise. That matters here — the
+-- OWNER branch of `get_estate_net_worth` requires aal2 unconditionally, so a stand-in that returned
+-- aal2 by default would quietly disable an MFA gate inside the suite that is supposed to prove it.
+create or replace function auth.jwt() returns jsonb
+ language sql stable
+as $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
+
 create table if not exists public.estates (
   id       uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id),
@@ -179,6 +195,57 @@ create table if not exists public.access_grants (
     check ((document_id is not null) <> (category is not null))
 );
 alter table public.access_grants enable row level security;
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- ★ `normalized_assets` — ADDED IN PHASE 11-B, AND ITS ABSENCE HAD SILENCED TWO WHOLE SURFACES.
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- This is the aggregator-sourced financial table (migration 0007) that `list_estate_assets` and
+-- `get_estate_net_worth` read. The harness did not model it, with two consequences nothing reported:
+--
+--   · `get_estate_net_worth` could not be loaded at all, so the TWO release-condition evaluations
+--     inside it had never executed in any test;
+--   · `list_estate_assets` WAS created by the estate bundle, and calling it would have raised — so
+--     no assertion ever did. Its two evaluations had never executed either.
+--
+-- Four of the seven copies of the release rule, unexercised, while the suite reported 160 passing
+-- assertions. That is the "a green audit and an audit that inspects nothing are indistinguishable
+-- from the outside" failure, in the one place Phase 11 is about to change.
+--
+-- ★ THE SHAPE IS THE REAL ONE, columns and defaults copied from 0007 rather than reduced to what the
+-- current assertions happen to touch. A narrowed stand-in is how a function referencing a column
+-- that exists in production passes here and fails there — the `name` vs `display_name` note above,
+-- one table over. It is a TABLE, not a production function body, so no anti-shadow rule applies; the
+-- rows in it are fixture data and belong to whichever suite creates them.
+create table if not exists public.normalized_assets (
+  id                  uuid primary key default gen_random_uuid(),
+  estate_id           uuid not null references public.estates(id) on delete cascade,
+  connection_id       uuid,
+  institution_name    text,
+  provider_name       text,
+  asset_group         text not null,
+  asset_category      text,
+  asset_subtype       text,
+  source_type         text not null default 'aggregator',
+  masked_identifier   text,
+  balance_cents       bigint not null default 0,
+  currency            text not null default 'USD',
+  holdings            jsonb not null default '[]'::jsonb,
+  refresh_timestamp   timestamptz,
+  last_sync_status    text not null default 'live_connected',
+  confidence_level    text not null default 'high',
+  verification_status text not null default 'verified',
+  created_at          timestamptz not null default now()
+);
+alter table public.normalized_assets enable row level security;
+-- Owner-only at the RLS layer, mirroring 0010. Both RPCs above are SECURITY DEFINER and bypass this;
+-- it is here so a DIRECT select under `authenticated` is refused, which is what makes "the RPC is
+-- the boundary" a testable claim rather than an assumption.
+drop policy if exists normalized_assets_owner_all on public.normalized_assets;
+create policy normalized_assets_owner_all on public.normalized_assets
+  for all to authenticated
+  using (public.is_estate_owner(estate_id))
+  with check (public.is_estate_owner(estate_id));
 
 -- ★ FIDUCIARY CAPACITY LIVES HERE AND NOWHERE ELSE. `get_professional_workspace` reads this table
 -- directly, and `is_estate_executor` is the canonical predicate over it. A harness that omitted it
@@ -485,16 +552,29 @@ begin
     return false;
   end if;
 
-  -- Active release conditions: 'immediately' always; the two approval-based conditions
-  -- once approved_at is set. after_owner_approval (owner-initiated) and
-  -- after_access_request_approval (beneficiary-initiated) are the SAME gate — both mean
-  -- "owner approved the access", differing only by initiator. All other signal-based
-  -- conditions and 'never' still default-deny (A.4).
-  return g.release_condition = 'immediately'
-      or (g.release_condition in ('after_owner_approval','after_access_request_approval')
-          and g.approved_at is not null);
+  -- ★ THE CANONICAL RELEASE PREDICATE (Phase 11-B) — was seven scattered copies, now one call.
+  -- 'never' and every signal-based condition (identity, death, incapacity, claim) stay
+  -- dormant-deny (A.4), and an unknown condition refuses.
+  return public.release_condition_satisfied(g.release_condition, g.approved_at, 'standard');
 end;
 $$;
+-- ★ THE TWO BODIES ABOVE ARE HELD VERBATIM AGAINST `db/functions/` (Phase 11-B), and until this
+-- phase they were held against NOTHING. `verifySqlAuthorization.mjs` resolved a production
+-- counterpart by searching `db/functions/` only, so `can_access_document` and `document_grantable` —
+-- whose sole definitions lived inside migrations 0004 and 0002 — resolved to null and were skipped
+-- as "pure harness fixtures". The estate's document gate and its disclosure ceiling were exempt from
+-- the drift guard written to catch exactly this. They happened to agree; nothing said so.
+--
+-- They stay HERE rather than arriving from a bundle for the `is_estate_owner` reason: the
+-- `documents_read` policy below names `can_access_document`, and a policy cannot reference a
+-- function that does not yet exist. `release_conditions_bundle.sql` re-creates both a few files
+-- later with the same bytes, so the suite ends up exercising what an operator pastes.
+--
+-- The forward reference to `public.release_condition_satisfied` is safe: a plpgsql body is not
+-- resolved at CREATE time, and the predicate is installed by the first bundle, long before any
+-- assertion calls this gate. `db/tests/release_condition_authorization.sql` proves it resolved
+-- rather than assuming it.
+
 -- ★ THE BRACKET FUNCTIONS ARE NO LONGER COPIED HERE (10-F).
 --
 -- They used to be defined in this file AND inside `db/functions/list_estate_assets.sql`, and nothing

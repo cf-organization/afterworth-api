@@ -23,24 +23,15 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SQL_SUITE_PARTS } from './lib/sqlSuiteParts.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
 
-const PARTS = [
-  'db/tests/preamble_real_auth.sql',
-  'db/bundles/estate_inventory_and_discovery_bundle.sql',
-  'db/bundles/lifecycle_notifications_bundle.sql',
-  'db/tests/estate_assets_authorization.sql',
-  'db/tests/estate_discovery_authorization.sql',
-  'db/tests/estate_readiness_authorization.sql',
-  'db/tests/professional_workspace_authorization.sql',
-  'db/tests/lifecycle_notification_authorization.sql',
-  // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
-  // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
-  // an ambiguous mixture of the two.
-  'db/tests/phase10_exit_matrix.sql',
-];
+// ★ SINGLE-SOURCED WITH THE MUTATION RUNNER (Phase 11-B). The runner has to know whether a mutated
+// file reaches this database at all; a private copy of the list here would drift from that check on
+// the first reordering, invisibly. See scripts/lib/sqlSuiteParts.mjs.
+const PARTS = SQL_SUITE_PARTS;
 
 // ★ CAPTURE, NOT ASSERT. Run with --capture to emit one REAL payload per viewer class into a JSON
 // fixture the mobile decoder is written against. A decoder built from a hand-written fixture agrees
@@ -134,6 +125,44 @@ const PREAMBLE_DISPOSITION = new Map([
   // The audit sink records nothing here. The real body writes to an audit table this harness does
   // not model, and audit persistence is not what any assertion in these suites is about.
   ['write_audit', 'STUB'],
+  /**
+   * ★ SURFACED IN PHASE 11-B, AND ALL THREE HAD BEEN INVISIBLE FOR THEIR ENTIRE LIVES.
+   *
+   * `findSource` used to search `db/functions/` alone. A function whose source of truth lives in a
+   * MIGRATION therefore resolved to `null`, and the loop above reads a null source as "genuinely no
+   * production counterpart — a pure harness fixture" and skips it. Three production bodies sat in
+   * that hole:
+   *
+   *   · `can_access_document`   — THE document authorization gate, the only thing between a
+   *                               non-owner and a document row (defined in 0002 → 0003 → 0004);
+   *   · `document_grantable`    — the document disclosure ceiling (0002);
+   *   · `asset_category_grantable` — the ASSET disclosure ceiling (0008 → 0049).
+   *
+   * This is the `asset_bracket_low`/`asset_bracket_high` near-miss of Phase 10-F seen from one
+   * directory over: there the guard could not find a function defined in a file named after a
+   * different one; here it could not find one defined outside the directory it searched. The first
+   * two copies happened to match their migrations. Nothing would have said so if they had not.
+   *
+   * `can_access_document` and `document_grantable` are extracted to `db/functions/` in this phase
+   * and are held VERBATIM. They stay in the preamble rather than arriving from a bundle for the
+   * `is_estate_owner` reason: the `documents_read` policy created below them names
+   * `can_access_document`, and a policy cannot reference a function that does not yet exist.
+   */
+  ['can_access_document', 'VERBATIM'],
+  ['document_grantable', 'VERBATIM'],
+  /**
+   * ★ A GENUINE STUB — AND A DANGEROUS-LOOKING ONE, WHICH IS WHY IT IS NOW DECLARED.
+   *
+   * The preamble installs `asset_category_grantable` as `select false`, then the estate bundle
+   * replaces it with the real body a few files later. That is correct today and the suite exercises
+   * the real ceiling. But it means that if the estate bundle ever stopped carrying it, every ceiling
+   * assertion would run against a function that refuses everything — and "nothing is grantable" reads
+   * as SAFE. A vacuous pass in the shape of a security win.
+   *
+   * `db/tests/release_condition_authorization.sql` asserts the loaded body is the real one before it
+   * asserts anything with it, so the stub cannot be what a green run measured.
+   */
+  ['asset_category_grantable', 'STUB'],
 ]);
 
 /**
@@ -145,12 +174,55 @@ const PREAMBLE_DISPOSITION = new Map([
  * whole aggregate-disclosure defence rests on — sat in that blind spot with a shadow copy in the
  * harness the entire time. They happened to agree; nothing would have said so if they had not.
  */
-const SOURCE_FILES = readdirSync(join(ROOT, 'db/functions'))
-  .filter((f) => f.endsWith('.sql'))
-  .map((f) => ({ path: `db/functions/${f}`, text: readFileSync(join(ROOT, 'db/functions', f), 'utf8') }));
+const readDir = (rel) =>
+  readdirSync(join(ROOT, rel))
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((f) => ({ path: `${rel}/${f}`, text: readFileSync(join(ROOT, rel, f), 'utf8') }));
+
+const FUNCTION_FILES = readDir('db/functions');
+/**
+ * ★ MIGRATIONS ARE SEARCHED TOO — THE BLIND SPOT THAT HID THREE CEILINGS (Phase 11-B).
+ *
+ * Sorted, so the highest-numbered migration defining a name is the one compared: a body re-declared
+ * in 0004 supersedes 0003 supersedes 0002, and comparing the preamble against the OLDEST definition
+ * would manufacture drift findings out of ordinary history.
+ */
+const MIGRATION_FILES = readDir('db/migrations');
+if (FUNCTION_FILES.length === 0 || MIGRATION_FILES.length === 0) {
+  console.error('✗ CANNOT VERIFY — the source scan set is empty; every shadow check below would be vacuous.');
+  process.exit(2);
+}
+
 function findSource(name) {
   const re = new RegExp(`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\s*\\(`, 'i');
-  return SOURCE_FILES.find((f) => re.test(f.text)) ?? null;
+  // `db/functions/` is canonical and wins. A migration is only consulted when NO function file
+  // declares the name — otherwise a historical re-declaration would out-rank the source of truth.
+  const canonical = FUNCTION_FILES.find((f) => re.test(f.text));
+  if (canonical) return canonical;
+  const inMigrations = MIGRATION_FILES.filter((f) => re.test(f.text));
+  return inMigrations.length ? inMigrations[inMigrations.length - 1] : null;
+}
+
+/**
+ * ★ THE GUARD PROVES IT CAN SEE, BEFORE IT REPORTS THAT IT SAW NOTHING.
+ *
+ * A `findSource` that silently resolved nothing would skip every comparison and print the same
+ * success as a run in which all of them passed — the exact "63 assertions against an empty file
+ * list" shape this repository has shipped. So two positive controls run first: one function whose
+ * source is a file under `db/functions/`, and one whose ONLY definition is inside a migration. The
+ * second is the case that was invisible until Phase 11-B; if it ever resolves to null again, the
+ * blind spot is back and this exits 2 rather than reporting a clean scan.
+ */
+for (const [control, expectDir] of [['is_estate_owner', 'db/functions/'], ['enforce_grant_ceiling', 'db/migrations/']]) {
+  const found = findSource(control);
+  if (!found || !found.path.startsWith(expectDir)) {
+    console.error(`✗ CANNOT VERIFY — findSource positive control failed: public.${control} did not`);
+    console.error(`  resolve to a file under ${expectDir} (got ${found ? found.path : 'null'}).`);
+    console.error('  Every shadow-copy comparison below depends on this lookup; a null resolves as');
+    console.error('  "no production counterpart" and skips the check silently.');
+    process.exit(2);
+  }
 }
 
 const bodyOf = (sql, name) =>
@@ -292,7 +364,7 @@ for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
 // reported "0 assertions" against a suite that had in fact run every one of them.
 const okCount = (combined.match(/NOTICE:\s+ok\s{2,}/g) ?? []).length;
 const MIN_ASSERTIONS = 60;
-for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED', 'ALL READINESS ASSERTIONS PASSED', 'ALL PHASE 10-F EXIT MATRIX ASSERTIONS PASSED']) {
+for (const sentinel of ['ALL AUTHORIZATION ASSERTIONS PASSED', 'ALL DISCOVERY ASSERTIONS PASSED', 'ALL READINESS ASSERTIONS PASSED', 'ALL RELEASE-CONDITION ASSERTIONS PASSED', 'ALL PHASE 10-F EXIT MATRIX ASSERTIONS PASSED']) {
   if (!combined.includes(sentinel)) {
     cleanup();
     console.error(`✗ the suite did not reach "${sentinel}" — it did not run to completion.`);

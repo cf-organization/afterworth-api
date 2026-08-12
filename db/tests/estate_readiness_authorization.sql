@@ -298,7 +298,9 @@ begin
   raise notice '  ok   the owner count equals the owner list — no hidden denominator';
 
   -- ★ A DEATH-CONDITIONED GRANT STILL RELEASES NOTHING, INCLUDING THROUGH READINESS.
-  perform harness.grant_inventory(BENE, 'beneficiary', 'category_summary', 'after_verified_death_or_incapacity');
+  -- Phase 11-B: the SPLIT condition, because the fused value is no longer writable through the
+  -- real door. Legacy fused rows are proved dormant in release_condition_authorization.sql.
+  perform harness.grant_inventory(BENE, 'beneficiary', 'category_summary', 'after_verified_death');
   if (harness.readiness(BENE, A)->>'authorized') <> 'false' then
     raise exception 'FAIL: a death-conditioned grant produced readiness access';
   end if;

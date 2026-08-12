@@ -146,12 +146,54 @@ describe("2 · death- and claim-conditioned grants are dormant at EVERY evaluati
   const admits = (code: string, condition: string) =>
     new RegExp(`${SUBJECT}\\s*(=|in\\s*\\()[^;]{0,160}${condition}`, "i").test(code);
 
+  /**
+   * ★ UPDATED DELIBERATELY IN PHASE 11-B — THIS TRIPWIRE FIRED, WHICH IS WHAT IT IS FOR.
+   *
+   * The release rule now lives in ONE module, `release_conditions.sql`, and that module contains two
+   * functions with different relationships to this invariant:
+   *
+   *   · `release_condition_satisfied` — the EVALUATOR. The dormancy rule applies with full force,
+   *     and its body is inspected below exactly like every other evaluator.
+   *   · `release_condition_writable` — a WRITE-TIME VOCABULARY list. It compares the condition to
+   *     every legal value INCLUDING the dormant ones, because "an owner may STORE this" and "a
+   *     reader may SEE under this" are different questions. Listing `never` as storable is not
+   *     admitting `never` as satisfied — a matcher that cannot tell those apart would force the
+   *     vocabulary out of the canonical module, which is the opposite of what this file protects.
+   *
+   * So the writable gate's body is excised before the admission scan, ON THAT ONE FILE, and the
+   * excision is verified rather than assumed: the satisfied-evaluator's body must still be present
+   * and still be scanned. Everything else is scanned whole, exactly as before.
+   */
+  const scannable = (file: string, code: string): string => {
+    if (file !== "release_conditions.sql") return code;
+    const start = code.indexOf("function public.release_condition_writable");
+    expect(start, "the writable gate moved — update the excision").toBeGreaterThan(-1);
+    const end = code.indexOf("$function$;", start);
+    expect(end, "could not find the end of the writable gate body").toBeGreaterThan(start);
+    const remainder = code.slice(0, start) + code.slice(end);
+    // The evaluator must survive the excision, or this carve-out just blinded the tripwire.
+    expect(remainder).toContain("function public.release_condition_satisfied");
+    expect(remainder).toContain("'immediately'");
+    return remainder;
+  };
+
   it.each(DORMANT)("no evaluator admits %s as a released condition", (condition) => {
     for (const { file, code } of evaluators) {
       // A dormant condition may be NAMED (a catalog, a CHECK list) but never COMPARED as accepted.
-      expect(admits(code, condition), `${file} appears to admit ${condition}`).toBe(false);
+      expect(admits(scannable(file, code), condition), `${file} appears to admit ${condition}`).toBe(false);
     }
   });
+
+  it.each(["after_verified_death", "after_verified_incapacity"] as const)(
+    "the split condition %s is admitted by NO evaluator either",
+    (condition) => {
+      // The 11-B vocabulary widened; the set of SATISFIABLE conditions did not. The split values
+      // join the dormant list the moment they exist, not in some later phase.
+      for (const { file, code } of evaluators) {
+        expect(admits(scannable(file, code), condition), `${file} appears to admit ${condition}`).toBe(false);
+      }
+    }
+  );
 
   it("detection sanity: both the column and the variable spelling are caught", () => {
     expect(admits("and g.release_condition = 'after_verified_death_or_incapacity'", "after_verified_death_or_incapacity")).toBe(true);
