@@ -98,6 +98,7 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildLifecycleNotificationBundle.mjs', 'db/bundles/lifecycle_notifications_bundle.sql'],
   ['scripts/buildDeathVerificationBundle.mjs', 'db/bundles/death_verification_bundle.sql'],
   ['scripts/buildExecutorWorkspaceBundle.mjs', 'db/bundles/executor_workspace_bundle.sql'],
+  ['scripts/buildReleaseStateLockdownBundle.mjs', 'db/bundles/estate_release_state_lockdown_bundle.sql'],
 ]);
 
 /**

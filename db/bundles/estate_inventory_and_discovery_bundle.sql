@@ -2436,8 +2436,22 @@ as $function$
       limit 1),
     'active');
 $function$;
-revoke execute on function public.estate_release_state(uuid) from public, anon;
-grant  execute on function public.estate_release_state(uuid) to authenticated;
+-- ★ LOCKED HELPER (Phase 11-I hotfix). This is SECURITY DEFINER, takes an arbitrary estate id, and
+-- its body contains NO authorization gate — it is a bare read of `claim_packets` filtered only by
+-- `estate_id`. While it was granted to `authenticated`, any signed-in user could pass any estate id
+-- and learn that estate's claim/release state (`claim_submitted`, `under_review`, `claim_approved`,
+-- `released`, `claim_rejected`) for an estate they have no relationship to.
+--
+-- ★ THE FIX IS A REVOKE, NOT A GATE, AND THAT IS DERIVED RATHER THAN PREFERRED. Adding
+-- `is_estate_owner()` would be wrong: the sole production caller is `get_estate_discovery`, which is
+-- SECURITY DEFINER and serves NON-owner disclosure paths (beneficiaries, professional delegates), so
+-- an ownership gate would break exactly the readers this helper exists for. No client calls it
+-- directly — the mobile app has no production reference — so the direct client contract is dead
+-- surface, and removing it costs nothing.
+--
+-- Same posture as `estate_lifecycle_state` and `required_verification_level`: privileged internal
+-- helpers, reachable only through a DEFINER routine that has already authorized the caller.
+revoke execute on function public.estate_release_state(uuid) from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------------------------------
 -- inventory_disclosure_tier(p_estate, p_uid) -> text   — the viewer's effective tier

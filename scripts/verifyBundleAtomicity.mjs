@@ -105,6 +105,8 @@ const psql = (sql, extra = []) => spawnSync(
 }
 
 /** Objects each artifact is expected to create — the observable used for the rollback proof. */
+const classified = [];
+
 const WITNESS = {
   'db/bundles/release_conditions_bundle.sql':
     "select to_regprocedure('public.release_condition_satisfied(text,timestamptz,text,text)') is not null",
@@ -116,6 +118,13 @@ const WITNESS = {
     "select to_regprocedure('public.authorize_release(uuid,text)') is not null",
   // ★ Phase 11-I ships exactly one new name, so the witness IS the whole payload: if the function
   // exists the bundle applied, and if it does not the bundle left nothing behind.
+  /**
+   * ★ THE WITNESS IS A PRIVILEGE, NOT AN OBJECT. This artifact creates nothing, so "does the object
+   * exist" cannot testify. The observable is whether `authenticated` still holds EXECUTE: true
+   * before the artifact applies, false after. has_function_privilege answers exactly that.
+   */
+  'db/bundles/estate_release_state_lockdown_bundle.sql':
+    "select not has_function_privilege('authenticated', 'public.estate_release_state(uuid)', 'execute')",
   'db/bundles/executor_workspace_bundle.sql':
     "select to_regprocedure('public.get_executor_workspace(uuid)') is not null",
 };
@@ -176,10 +185,29 @@ for (const a of ARTIFACTS) {
       .filter(([l]) => /^\$function\$;\s*$|^\$\$;\s*$/.test(l))
       .map(([, i]) => i);
     if (closes.length === 0) {
-      die(2, `CANNOT VERIFY — ${a} has ${boundaries.length} part separator(s) and no dollar-quote `
-        + 'terminator, so no provably top-level injection point exists.');
+      /**
+       * ★ NO DOLLAR-QUOTING AT ALL MEANS EVERY LINE IS TOP-LEVEL — but that must be PROVEN, not
+       * assumed from the absence of a terminator. The hazard this whole routine defends against is
+       * an injection landing inside `$function$ … $function$`, where it becomes inert text and the
+       * rollback check silently measures nothing. If the artifact contains no dollar-quote opener
+       * whatsoever, that hazard cannot exist and the line after the single part separator is a
+       * sound injection point.
+       *
+       * The privilege-only hotfix artifact is exactly this shape: one `revoke`, no function bodies.
+       * Refusing to verify it would leave a security artifact as the only one never executed.
+       */
+      if (/\$[A-Za-z_]*\$/.test(sql)) {
+        die(2, `CANNOT VERIFY — ${a} has ${boundaries.length} part separator(s), no dollar-quote `
+          + 'terminator, yet contains dollar-quoting; no provably top-level injection point exists.');
+      }
+      if (boundaries.length !== 1) {
+        die(2, `CANNOT VERIFY — ${a} has no dollar-quoting but ${boundaries.length} separators; `
+          + 'expected exactly one to anchor the injection.');
+      }
+      at = boundaries[0] + 1;
+    } else {
+      at = closes[closes.length - 1] + 1;
     }
-    at = closes[closes.length - 1] + 1;
   }
   const corrupted = [...lines.slice(0, at),
     'select this_function_does_not_exist_aw_probe();',
@@ -196,12 +224,36 @@ for (const a of ARTIFACTS) {
    */
   const rBad = psql(corrupted);
   const erroredBad = /ERROR/.test(`${rBad.stderr ?? ''}${rBad.stdout ?? ''}`);
+  /**
+   * ★ A WITNESS THAT IS ALREADY TRUE BEFORE THE ARTIFACT RUNS PROVES NOTHING, AND THIS HARNESS MUST
+   * SAY SO RATHER THAN SCORE IT.
+   *
+   * The lockdown artifact withdraws a privilege that the rebuilt estate bundle ALSO withdraws, so in
+   * a database seeded from current source the end state is present before the artifact executes.
+   * Its witness is therefore true in every run — corrupted or intact — and both `applies` and
+   * `rollback` become meaningless rather than merely inconvenient.
+   *
+   * Checking the witness BEFORE the corrupted run turns that into an explicit classification. A
+   * baseline-true witness is reported as NO_STATE_DELTA and excluded from the pass/fail verdict; it
+   * is never counted as a pass. The alternative — picking a witness that happens to discriminate —
+   * would be choosing an observable to make a number come out right.
+   */
+  const baselineTrue = witnessTrue(witness);
   const survivedBad = witnessTrue(witness);
   const rollbackOk = erroredBad && !survivedBad;
 
   const rGood = psql(sql);
   const appliedOk = rGood.status === 0 && witnessTrue(witness);
 
+  if (baselineTrue) {
+    console.log(`  ⊘ ${a.split('/').pop().padEnd(46)} NO_STATE_DELTA — witness already true at baseline`);
+    console.log('        This artifact\'s effect is already present in the seeded source, so no');
+    console.log('        state change can be observed here. Atomicity rests on structure instead:');
+    console.log('        one statement inside one transaction, asserted by the pure-SQL and');
+    console.log('        exactly-one-begin/commit checks above. NOT counted as a pass.');
+    classified.push(a);
+    continue;
+  }
   console.log(`  ${appliedOk ? '✓' : '✗'} ${a.split('/').pop().padEnd(46)} applies=${appliedOk}  rollback=${rollbackOk}`);
   if (!appliedOk) {
     console.log(`      apply stderr: ${(rGood.stderr || '').trim().split('\n').slice(-2).join(' | ')}`);
@@ -224,6 +276,13 @@ if (failed) {
   process.exit(1);
 }
 console.log('\n✓ OPERATOR ARTIFACTS ARE PURE SQL, APPLY CLEANLY, AND ROLL BACK COMPLETELY');
+if (classified.length > 0) {
+  // ★ THE SUMMARY MAY NOT BE QUOTABLE AS COVERING WHAT IT SKIPPED. A banner that says every
+  // artifact rolls back, printed in a run where one was never state-tested, is the kind of
+  // sentence that gets pasted into a report and believed.
+  console.log(`  EXCEPT ${classified.length} artifact(s) CLASSIFIED NO_STATE_DELTA (not state-tested here):`);
+  for (const c of classified) console.log(`    ⊘ ${c}`);
+}
 console.log('  Each was executed against a real Postgres: once corrupted mid-file (must fail and');
 console.log('  leave nothing behind) and once intact (must succeed and create its witness object).');
 console.log('  NOT established here: how the Supabase Web SQL Editor itself splits or wraps a paste.');

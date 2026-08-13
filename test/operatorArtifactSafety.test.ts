@@ -34,10 +34,12 @@ const artifacts = fs
 
 describe("0 · the audit is reading something", () => {
   it("finds every generated operator artifact", () => {
-    // ★ 5 SINCE PHASE 11-I: executor_workspace_bundle.sql. The count is asserted rather than
-    // derived so that a new operator artifact cannot appear without a human deciding it should —
-    // every one of these is something Christ pastes into production by hand.
-    expect(artifacts.length).toBe(5);
+    // ★ 6 SINCE THE 11-I HOTFIX: executor_workspace_bundle.sql (11-I) and
+    // estate_release_state_lockdown_bundle.sql (the security lockdown, kept as its own artifact so
+    // a one-line privilege withdrawal does not require re-pasting the 14-part estate bundle).
+    // The count is asserted rather than derived so that a new operator artifact cannot appear
+    // without a human deciding it should — every one of these is pasted into production by hand.
+    expect(artifacts.length).toBe(6);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

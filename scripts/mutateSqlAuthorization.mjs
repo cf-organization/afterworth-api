@@ -1119,6 +1119,40 @@ const MUTATIONS = Object.freeze([
     from: "      'release_completed',     v_lifecycle = 'released'",
     to: "      'release_completed',     v_lifecycle = 'released' or exists (select 1 from public.encrypted_instructions i where i.estate_id = p_estate and i.released = true and i.release_condition = 'on_death')",
   },
+
+  /* ── HOTFIX · estate_release_state lockdown ────────────────────────────────────────────────── */
+  {
+    id: 'hotfix-release-state-regranted',
+    why: 'THE DEFECT, RESTORED. Re-granting EXECUTE to `authenticated` lets any signed-in user pass '
+      + 'any estate id to a SECURITY DEFINER helper with no gate in its body, and learn whether a '
+      + 'death claim has been filed on a stranger estate and whether it was approved. Estate ids '
+      + 'travel in deep links and invitations; they are not secrets.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: 'revoke execute on function public.estate_release_state(uuid) from public, anon, authenticated;',
+    to: 'grant  execute on function public.estate_release_state(uuid) to authenticated;',
+  },
+  {
+    id: 'hotfix-release-state-anon-granted',
+    why: 'THE SAME HOLE WITHOUT A LOGIN. Granting the helper to `anon` makes a foreign estate claim '
+      + 'state readable with no session at all — the worst reachable form of this defect.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: 'revoke execute on function public.estate_release_state(uuid) from public, anon, authenticated;',
+    to: 'revoke execute on function public.estate_release_state(uuid) from public, authenticated;\ngrant  execute on function public.estate_release_state(uuid) to anon;',
+  },
+  /**
+   * ★ A MUTATION DELIBERATELY NOT WRITTEN, AND WHY. Two attempts to model "the lockdown breaks its
+   * own consumer" both SURVIVED — revoking from `postgres`, and dropping SECURITY DEFINER from the
+   * helper. Neither is a harness defect: `get_estate_discovery` is itself SECURITY DEFINER, so the
+   * nested call resolves under the owner's identity regardless of what client roles hold, and
+   * regardless of the helper's own security mode.
+   *
+   * That is not a coverage hole — it is the property that makes this hotfix safe, and forcing a
+   * third variant until something finally failed would have been manufacturing a red result to
+   * decorate the matrix. The consumer is asserted DIRECTLY instead:
+   * `executor_workspace_authorization.sql` §7 calls `get_estate_discovery` through the product path
+   * as a non-owner beneficiary and requires `release_state` to still resolve. That assertion fails
+   * if the consumer ever does break, which is the guarantee the mutation was reaching for.
+   */
   {
     id: 'p11f-same-reviewer-allowed',
     why: 'D1 IN ONE CHARACTER. Turning the two-person comparison into an inequality that can never '

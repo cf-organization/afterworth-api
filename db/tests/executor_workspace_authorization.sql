@@ -373,4 +373,99 @@ begin
   raise notice '  ok   no instruction vocabulary in the projection (scanner control passed)';
 end $ew6$;
 
+
+-- =================================================================================================
+-- 7 · ★ estate_release_state IS A LOCKED HELPER — and the consumer that needs it still works
+-- =================================================================================================
+--
+-- ★ THE DEFECT THIS PINS. `estate_release_state` is SECURITY DEFINER, takes an arbitrary estate id,
+-- and has NO authorization gate in its body. While it was granted to `authenticated`, any signed-in
+-- user could pass any estate id and learn that estate's claim/release state. Estate ids are not
+-- secrets — they travel in deep links, invitations and support threads.
+--
+-- ★ BOTH HALVES ARE REQUIRED, AND THE SECOND IS THE ONE THAT CATCHES A BAD FIX. A revoke test alone
+-- passes just as happily when the revoke has broken every disclosure surface downstream. The sole
+-- production caller is `get_estate_discovery` — SECURITY DEFINER, serving NON-owner readers — so
+-- this section calls the CONSUMER through the product path and requires it to still answer.
+do $ew7$
+declare
+  OWN_ uuid; BEN uuid; STRANGER uuid; S uuid; denied boolean; disc jsonb;
+begin
+  raise notice '7 · estate_release_state lockdown';
+
+  insert into auth.users default values returning id into OWN_;
+  insert into auth.users default values returning id into BEN;
+  insert into auth.users default values returning id into STRANGER;
+  insert into public.estates (owner_id, name) values (OWN_, 'EW lockdown') returning id into S;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (S, OWN_, 'primary_user', 'approved'), (S, BEN, 'beneficiary', 'approved');
+  perform set_config('request.jwt.claim.sub', OWN_::text, true);
+  perform public.create_estate_asset(S, 'artwork', 'Lockdown piece', null, null, null, null, null, null, 3300000);
+  insert into public.access_grants (estate_id, grantee_user_id, grantee_role, category, visibility_tier, release_condition, granted_by_user_id)
+  values (S, BEN, 'beneficiary', 'estate_inventory', 'category_summary', 'immediately', OWN_);
+
+  -- ★ A COMPLETE STRANGER, AIMED AT A FOREIGN ESTATE — the exact shape of the defect.
+  perform set_config('request.jwt.claim.sub', STRANGER::text, true);
+  set local role authenticated;
+  begin
+    perform public.estate_release_state(S);
+    denied := false;
+  exception when insufficient_privilege then
+    denied := true;
+  when others then
+    -- ★ ONLY 42501 COUNTS. Any other error would mean the call ENTERED the routine and failed
+    -- inside it, which is not the same as being refused at the door.
+    denied := false;
+  end;
+  reset role;
+  if not denied then
+    raise exception 'SECURITY: an unrelated authenticated caller reached estate_release_state on a foreign estate';
+  end if;
+  raise notice '  ok   an unrelated authenticated caller is refused at the door (42501)';
+
+  -- The owner is locked out of the DIRECT contract too: it is an internal helper, not an API.
+  perform set_config('request.jwt.claim.sub', OWN_::text, true);
+  set local role authenticated;
+  begin
+    perform public.estate_release_state(S);
+    denied := false;
+  exception when insufficient_privilege then denied := true;
+  when others then denied := false;
+  end;
+  reset role;
+  if not denied then
+    raise exception 'estate_release_state is still directly callable by the owner — the direct contract is meant to be closed';
+  end if;
+  raise notice '  ok   the direct contract is closed for every client role, owner included';
+
+  -- ★ AND ANON, WHICH THE FIRST VERSION OF THIS SECTION NEVER CHECKED. The mutation
+  -- `hotfix-release-state-anon-granted` SURVIVED against the original assertions: granting the
+  -- helper to `anon` makes a foreign estate's claim state readable with no session at all, and
+  -- nothing here noticed. Testing the role you expect to be attacked is not the same as testing
+  -- every role that can hold the privilege.
+  set local role anon;
+  begin
+    perform public.estate_release_state(S);
+    denied := false;
+  exception when insufficient_privilege then denied := true;
+  when others then denied := false;
+  end;
+  reset role;
+  if not denied then
+    raise exception 'SECURITY: estate_release_state is reachable by anon';
+  end if;
+  raise notice '  ok   anon is refused at the door';
+
+  -- ★ AND THE DOWNSTREAM CONSUMER STILL WORKS. get_estate_discovery is SECURITY DEFINER and calls
+  -- the helper internally; a revoke that broke it would be a worse defect than the one being fixed.
+  disc := harness_ew.disclosure(BEN, S);
+  if (disc #>> '{discovery,authorized}') is distinct from 'true' then
+    raise exception 'REVOKE BROKE THE CONSUMER: the beneficiary discovery payload is no longer authorized: %', disc;
+  end if;
+  if (disc #>> '{discovery,release_state}') is null then
+    raise exception 'REVOKE BROKE THE CONSUMER: discovery no longer carries release_state: %', disc;
+  end if;
+  raise notice '  ok   get_estate_discovery still resolves release_state for a non-owner reader';
+end $ew7$;
+
 do $ewdone$ begin raise notice 'ALL EXECUTOR WORKSPACE ASSERTIONS PASSED'; end $ewdone$;

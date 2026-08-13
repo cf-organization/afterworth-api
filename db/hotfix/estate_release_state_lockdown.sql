@@ -1,0 +1,39 @@
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- HOTFIX — estate_release_state becomes a LOCKED internal helper
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- ★ THE DEFECT. `public.estate_release_state(uuid)` is SECURITY DEFINER, accepts an arbitrary estate
+-- id, and its body contains NO authorization gate — it is a bare read of `claim_packets` filtered
+-- only by `estate_id`. It is granted to `authenticated`, so ANY signed-in user can pass ANY estate
+-- id and learn that estate's claim/release state:
+--
+--     claim_submitted · claim_under_review · claim_approved · claim_rejected · released · active
+--
+-- Estate ids are not secrets. They appear in deep links, invitations and support threads. This tells
+-- a stranger whether a death claim has been filed on someone else's estate, and whether it was
+-- approved — one of the most sensitive facts the product holds, about people who never shared it.
+--
+-- Proven by execution, not by reading: `db/tests/executor_workspace_authorization.sql` §7 puts an
+-- unrelated authenticated user in front of a foreign estate. Before this change the call SUCCEEDED.
+--
+-- ★ WHY A REVOKE AND NOT A GATE. Adding `is_estate_owner()` would be the reflexive fix and would be
+-- wrong. The sole production caller is `get_estate_discovery`, which is SECURITY DEFINER and serves
+-- NON-owner readers — beneficiaries and professional delegates — so an ownership gate would break
+-- exactly the disclosure paths this helper exists to support. No client calls it directly: the
+-- mobile app has no production reference to it. The direct client contract is dead surface, and
+-- removing it costs nothing while closing the hole completely.
+--
+-- ★ THE INTERNAL CALLER IS UNAFFECTED. `get_estate_discovery` is SECURITY DEFINER and executes as
+-- its owner, so it retains EXECUTE regardless of what client roles hold. §7 asserts this directly
+-- rather than assuming it — a revoke that silently broke discovery would be a worse defect than the
+-- one being fixed.
+--
+-- ★ SAME POSTURE AS THE EXISTING LOCKED HELPERS in this schema: `estate_lifecycle_state(uuid)` and
+-- `required_verification_level(uuid)` both carry exactly this revoke. This is a correction to match
+-- an established pattern, not a new access model.
+--
+-- ★ IDEMPOTENT. `revoke` on a privilege that is already absent is a no-op. Re-pasting is safe.
+-- ★ NO DDL. Nothing is created, dropped or replaced; only a privilege is withdrawn. There is no
+--   intermediate state in which a routine is half-defined.
+
+revoke execute on function public.estate_release_state(uuid) from public, anon, authenticated;
