@@ -1,0 +1,164 @@
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- PHASE 11-I — get_executor_workspace: the fiduciary's OWN WORKFLOW, and nothing about the estate
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- ★ THE GAP THIS CLOSES. Phase 11-H established, by census, that a fiduciary designation unlocks
+-- five MUTATION doors and zero disclosure surfaces. That is the correct architecture and this file
+-- does not change it. What it fixes is the asymmetry it left behind: an executor could
+-- `initiate_death_verification_case`, `attach_death_verification_evidence` and `submit_claim_packet`
+-- — and then had NO client-reachable way to read any of it back. Every routine touching
+-- `death_verification_cases` and `claim_packets` was either a mutation or admin-gated. A fiduciary
+-- could start the most consequential process in the product and could not see whether it was still
+-- running.
+--
+-- ★ WHY A NEW PROJECTION RATHER THAN A COMPOSITION. Composition was tried first and does not reach:
+--
+--     get_professional_workspace  is a DISCLOSURE projection — it returns document_count, documents
+--                                 and an inventory block, and it is gated on delegate membership an
+--                                 executor need not hold. Adding workflow state to it would both
+--                                 violate the workflow-only rule and put the answer behind the wrong
+--                                 relationship.
+--     estate_release_state        derives a claim-shaped release state and knows nothing about the
+--                                 verification case.
+--     (nothing)                   reads `death_verification_cases` for the fiduciary at all.
+--
+-- So the missing fact has no authoritative reader, and this adds exactly one.
+--
+-- ★ IT ANSWERS "WHAT IS THE STATE OF MY WORK", NEVER "WHAT MAY I NOW SEE". Every field below is a
+-- fact about a PROCESS the caller is party to. There are no assets, no counts, no categories, no net
+-- worth, no documents, no beneficiaries, no grants, no tiers. Adding any of them would convert a
+-- workflow surface into an estate-content oracle, which is the one thing this phase must not build.
+--
+-- ★ THREE FIELDS DELIBERATELY OMITTED THAT A REASONABLE PERSON WOULD ADD.
+--
+--   `initiator_capacity` / any "did I start this?" flag — a case is one-per-estate, so telling
+--       fiduciary B that a case exists which B did not open tells B that ANOTHER fiduciary exists.
+--       Stage 2 forbids disclosing other fiduciaries. The case STATE is still returned, because that
+--       fact is already reachable through the mutation door: `initiate_death_verification_case`
+--       raises `lifecycle_conflict` when a case is open, so a caller can learn it by attempting a
+--       write. Returning it in a read discloses nothing new — it only removes the need to fail a
+--       write to find out. The initiator's identity and capacity are new information, and stay out.
+--
+--   `decided_by` / `reviewer_id` — reviewer identities, explicitly forbidden.
+--
+--   `decision_note` / `review_notes` — free text authored by an administrator. Its contents are
+--       unbounded and could name a reviewer, a provider, or an estate fact. An unbounded text field
+--       cannot be audited for disclosure, so it is not returned.
+--
+-- ★ THE CLAIM IS SCOPED TO THE CALLER. `claim_packets` may hold rows from several people; a claim
+-- another person filed is theirs, not the caller's. The claim block therefore filters on
+-- `requested_by = auth.uid()`, and a caller with no claim of their own gets state 'none' — the same
+-- answer they would get on an estate where nobody has ever claimed.
+--
+-- ★ AUTHORIZATION IS DELEGATED, NOT REBUILT. `is_estate_executor` decides fiduciary standing,
+-- `estate_lifecycle_state` decides where the death process stands, and
+-- `preview_required_verification_level` decides the evidence bar. This file resolves none of those
+-- itself. It is SECURITY DEFINER so it can read the authoritative tables, and its FIRST act is the
+-- capacity gate — a definer function that reads before it gates is a leak with extra steps.
+--
+-- ★ ONE REFUSAL SHAPE. A non-fiduciary, a foreign estate and an estate that does not exist all
+-- receive `{"authorized": false}` — the established pattern from `get_estate_discovery` and
+-- `get_professional_workspace`. Distinguishing them would rebuild the existence oracle the rest of
+-- the system refuses to be.
+
+create or replace function public.get_executor_workspace(p_estate uuid)
+returns jsonb
+language plpgsql
+security definer
+stable
+set search_path to 'public'
+as $function$
+declare
+  v_uid        uuid := auth.uid();
+  v_capacity   text;
+  v_lifecycle  text;
+  v_case       record;
+  v_claim      record;
+  v_required   text;
+  v_actions    jsonb := '[]'::jsonb;
+  v_case_state text;
+begin
+  -- ★ THE GATE IS THE FIRST STATEMENT. Nothing above this line reads estate data.
+  if v_uid is null then
+    return jsonb_build_object('authorized', false);
+  end if;
+  if not public.is_estate_executor(p_estate, v_uid) then
+    return jsonb_build_object('authorized', false);
+  end if;
+
+  -- The caller's OWN capacity, read from their own active designation. Never another person's.
+  select d.designation_type into v_capacity
+    from public.estate_designations d
+   where d.estate_id = p_estate
+     and d.user_id   = v_uid
+     and d.status    = 'active'
+     and d.designation_type in ('executor', 'trustee')
+   order by d.designation_type
+   limit 1;
+
+  v_lifecycle := public.estate_lifecycle_state(p_estate);
+  v_required  := public.preview_required_verification_level(p_estate);
+
+  -- The estate's one live verification case. Identity of the initiator is NOT selected.
+  select c.status, c.required_level_at_initiation, c.attained_level, c.created_at, c.decided_at
+    into v_case
+    from public.death_verification_cases c
+   where c.estate_id = p_estate
+   order by (c.status = 'open') desc, c.created_at desc
+   limit 1;
+
+  v_case_state := coalesce(v_case.status, 'none');
+
+  -- The caller's OWN claim packet.
+  select k.status, k.submitted_at, k.decided_at
+    into v_claim
+    from public.claim_packets k
+   where k.estate_id   = p_estate
+     and k.requested_by = v_uid
+   order by (k.status <> 'rejected') desc, k.submitted_at desc
+   limit 1;
+
+  /**
+   * ★ ACTIONS ARE DERIVED FROM THE SAME AUTHORITIES THE MUTATIONS ENFORCE, so the list cannot
+   * promise something the door would refuse. It is advisory, never an authorization: every action
+   * below is re-checked by the routine that performs it.
+   */
+  if v_case_state <> 'open' and v_lifecycle = 'active' then
+    v_actions := v_actions || '["initiate_verification"]'::jsonb;
+  end if;
+  if v_case_state = 'open' then
+    v_actions := v_actions || '["attach_evidence","cancel_verification"]'::jsonb;
+  end if;
+  if v_claim.status is null then
+    v_actions := v_actions || '["submit_claim"]'::jsonb;
+  end if;
+
+  return jsonb_build_object(
+    'authorized', true,
+    'capacity',   v_capacity,
+    'verification', jsonb_build_object(
+      'state',          v_case_state,
+      'required_level', v_required,
+      -- The bar recorded when the case opened, which may differ from today's policy.
+      'level_at_initiation', v_case.required_level_at_initiation,
+      'attained_level', v_case.attained_level,
+      'initiated_at',   v_case.created_at,
+      'decided_at',     v_case.decided_at
+    ),
+    'claim', jsonb_build_object(
+      'state',        coalesce(v_claim.status, 'none'),
+      'submitted_at', v_claim.submitted_at,
+      'decided_at',   v_claim.decided_at
+    ),
+    'process', jsonb_build_object(
+      'challenge_window_open', v_lifecycle = 'challenge_window',
+      'challenge_halted',      v_lifecycle = 'challenge_halted',
+      'release_completed',     v_lifecycle = 'released'
+    ),
+    'actions', v_actions
+  );
+end
+$function$;
+
+revoke execute on function public.get_executor_workspace(uuid) from public, anon;
+grant  execute on function public.get_executor_workspace(uuid) to authenticated;

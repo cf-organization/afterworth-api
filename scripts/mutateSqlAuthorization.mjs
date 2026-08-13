@@ -1048,6 +1048,77 @@ const MUTATIONS = Object.freeze([
     from: "  if not public.is_estate_executor(p_estate, v_uid) then",
     to: "  if not (public.is_estate_executor(p_estate, v_uid)\n          or exists (select 1 from public.estate_memberships m\n                      where m.estate_id = p_estate and m.user_id = v_uid and m.status = 'approved')) then",
   },
+
+  /* ── PHASE 11-I · the fiduciary workflow read ──────────────────────────────────────────────── */
+  {
+    id: 'p11i-workspace-ungated',
+    why: 'THE WHOLE GATE. Without it this is a SECURITY DEFINER reader of death-verification and '
+      + 'claim rows exposed to every authenticated user on every estate — the worst possible '
+      + 'outcome of adding a definer projection, and the one a refactor is most likely to cause by '
+      + 'moving the gate below the first read.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then\n    return jsonb_build_object('authorized', false);\n  end if;",
+    to: "  if false then\n    return jsonb_build_object('authorized', false);\n  end if;",
+  },
+  {
+    id: 'p11i-workspace-ignores-designation',
+    why: 'THE MIRROR FAILURE: a projection that authorizes NOBODY. It would pass every "capacity '
+      + 'discloses nothing" assertion perfectly, because a function that returns a refusal to all '
+      + 'callers leaks nothing. The invariant needs both halves, and this is the mutation that '
+      + 'proves the second half is actually being measured.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then",
+    to: "  if true or not public.is_estate_executor(p_estate, v_uid) then",
+  },
+  {
+    id: 'p11i-workspace-leaks-asset-count',
+    why: 'THE MOST TEMPTING ADDITION IN THE PRODUCT. "The executor is administering the estate, so '
+      + 'show them how many assets there are" turns a workflow surface into an inventory oracle — '
+      + 'and a count is a disclosure even when no name or value is attached, because it moves when '
+      + 'the estate does.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "    'actions', v_actions\n  );",
+    to: "    'actions', v_actions,\n    'asset_count', (select count(*) from public.estate_assets a where a.estate_id = p_estate)\n  );",
+  },
+  {
+    id: 'p11i-workspace-leaks-beneficiary-count',
+    why: 'A HIDDEN-PARTY COUNT. It tells a fiduciary how many people the owner named without naming '
+      + 'them, which reads as anonymised and is not: it moves the moment the owner adds anyone, so '
+      + 'repeated reads reconstruct the owner private decisions over time.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "    'actions', v_actions\n  );",
+    to: "    'actions', v_actions,\n    'beneficiary_count', (select count(*) from public.beneficiaries b where b.estate_id = p_estate)\n  );",
+  },
+  {
+    id: 'p11i-workspace-leaks-net-worth',
+    why: 'THE SINGLE MOST SENSITIVE FIGURE IN THE ESTATE, attached to a workflow payload because it '
+      + 'is convenient for a header. Capacity is not a disclosure tier, and a total is the whole '
+      + 'inventory compressed into one number.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "    'actions', v_actions\n  );",
+    to: "    'actions', v_actions,\n    'net_worth_cents', (select coalesce(sum(a.value_cents), 0) from public.estate_assets a where a.estate_id = p_estate and a.archived_at is null)\n  );",
+  },
+  {
+    id: 'p11i-workspace-reveals-initiator',
+    why: 'ANOTHER FIDUCIARY, DISCLOSED. A case is one-per-estate, so returning who opened it tells '
+      + 'fiduciary B that fiduciary A exists — a fact about a person, not about B own work. The '
+      + 'case STATE is legitimately returned; the identity behind it is not, and the difference is '
+      + 'exactly the line this projection is drawn along.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "      'decided_at',     v_case.decided_at\n    ),",
+    to: "      'decided_at',     v_case.decided_at,\n      'initiated_by',   (select c.initiated_by from public.death_verification_cases c where c.estate_id = p_estate order by c.created_at desc limit 1)\n    ),",
+  },
+  {
+    id: 'p11i-instructions-reach-workspace',
+    why: 'THE DORMANT SECOND RELEASE ENGINE, WIRED IN. `encrypted_instructions` carries its own '
+      + 'release vocabulary (on_death / on_executor_claim / manual) and its own `released` boolean, '
+      + 'neither of which the canonical predicate has ever seen. Letting it influence this '
+      + 'projection would make a second authority source real, and it would look like enabling a '
+      + 'feature that was already built.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "      'release_completed',     v_lifecycle = 'released'",
+    to: "      'release_completed',     v_lifecycle = 'released' or exists (select 1 from public.encrypted_instructions i where i.estate_id = p_estate and i.released = true and i.release_condition = 'on_death')",
+  },
   {
     id: 'p11f-same-reviewer-allowed',
     why: 'D1 IN ONE CHARACTER. Turning the two-person comparison into an inequality that can never '
