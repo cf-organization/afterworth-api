@@ -1002,6 +1002,40 @@ const MUTATIONS = Object.freeze([
    * fallback, an optional notice, a reviewer parameter — and each names the instrument that must
    * object.
    */
+
+  /* ── PHASE 11-G · survivor mode ───────────────────────────────────────────────────────────────
+   * Survivor Mode consumes the release architecture rather than adding one, so its mutations aim at
+   * the two ways that claim could quietly become false: a lifecycle state other than `released`
+   * starting to disclose, and a RELATIONSHIP starting to decide a TIER.
+   */
+  {
+    id: 'p11g-relationship-becomes-tier',
+    why: 'G3 IN ONE EDIT. Giving an approved beneficiary membership a tier when no grant resolves '
+      + 'one is the most natural-sounding survivor bug there is — "they are a beneficiary, show them '
+      + 'the estate" — and it converts a relationship into disclosure the owner never authored.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if v_tier is null then return 'hidden'; end if;",
+    to: "  if v_tier is null then\n    if exists (select 1 from public.estate_memberships m\n                where m.estate_id = p_estate and m.user_id = p_uid\n                  and m.role = 'beneficiary' and m.status = 'approved')\n    then return 'category_summary'; end if;\n    return 'hidden';\n  end if;",
+  },
+  {
+    id: 'p11g-executor-capacity-becomes-tier',
+    why: 'G3, THE FIDUCIARY VARIANT. "The executor is administering the estate, so show them the '
+      + 'estate" is the single most plausible Phase 11 mistake — and capacity is not a disclosure '
+      + 'tier. The survivor matrix puts an executor with NO grant in front of a RELEASED estate '
+      + 'precisely so this cannot pass.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "  if public.is_estate_owner(p_estate) then return 'full_detail'; end if;",
+    to: "  if public.is_estate_owner(p_estate) then return 'full_detail'; end if;\n  if public.is_estate_executor(p_estate, p_uid) then return 'limited_detail'; end if;",
+  },
+  {
+    id: 'p11g-archived-assets-rejoin-released-aggregate',
+    why: 'WITHDRAWN MATERIAL MUST STAY WITHDRAWN, INCLUDING AFTER RELEASE. An owner who archived an '
+      + 'asset removed it from the inventory; surfacing it to a survivor would overstate the estate '
+      + 'at the worst possible moment, and would make deletion observable to a third party.',
+    file: 'db/functions/estate_discovery_rpcs.sql',
+    from: "       and a.archived_at is null\n     group by a.category",
+    to: "       and (a.archived_at is null or a.archived_at is not null)\n     group by a.category",
+  },
   {
     id: 'p11f-same-reviewer-allowed',
     why: 'D1 IN ONE CHARACTER. Turning the two-person comparison into an inequality that can never '

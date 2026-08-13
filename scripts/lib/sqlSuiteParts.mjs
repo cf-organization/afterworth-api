@@ -76,6 +76,11 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // `harness_dv`'s helpers, and it is the file that proves the ACTIVATION the verification suite
   // now deliberately refuses to see.
   'db/tests/release_safety_authorization.sql',
+  // ★ PHASE 11-G, AFTER the safety suite (it reuses harness_dv/harness_rc helpers and needs the
+  // release path proven) and BEFORE the exit matrix. It asserts the survivor-facing consequence of
+  // everything above: six lifecycle states change nothing, `released` changes exactly what the
+  // owner authored, and relationship never becomes a tier.
+  'db/tests/survivor_mode_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.
