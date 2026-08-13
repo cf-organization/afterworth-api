@@ -16,6 +16,8 @@
  *   node scripts/verifySqlAuthorization.mjs                     # ephemeral docker postgres
  *   node scripts/verifySqlAuthorization.mjs --database-url URL  # an existing throwaway database
  *   node scripts/verifySqlAuthorization.mjs --keep              # leave the container up to inspect
+ *   node scripts/verifySqlAuthorization.mjs --capture           # + write the discovery payload fixture
+ *   node scripts/verifySqlAuthorization.mjs --capture-executor  # + write the executor payload fixture
  *
  * NEVER point --database-url at production. The suite creates roles, tables and users.
  */
@@ -37,8 +39,28 @@ const PARTS = SQL_SUITE_PARTS;
 // fixture the mobile decoder is written against. A decoder built from a hand-written fixture agrees
 // with whatever the client already believes; only a payload the database produced can teach it the
 // real nullability.
-const CAPTURE = process.argv.includes('--capture');
-const CAPTURE_PART = 'db/tests/capture_discovery_payloads.sql';
+//
+// ★ EACH CAPTURE DECLARES ITS OWN NON-VACUITY FLOOR. The floor is not decoration: an empty object
+// parses fine, and a capture file that half-failed emits a SMALLER object rather than an error. The
+// floor is what turns "fewer scenarios than intended" from a silent fixture regression into a
+// failure. It lives beside the part it governs so adding a capture cannot forget one.
+const CAPTURES = Object.freeze([
+  {
+    flag: '--capture',
+    part: 'db/tests/capture_discovery_payloads.sql',
+    out: 'db/tests/captured_discovery_payloads.json',
+    minScenarios: 13,
+  },
+  {
+    // Phase 11-I. The fiduciary workflow projection, per workflow state.
+    flag: '--capture-executor',
+    part: 'db/tests/capture_executor_payloads.sql',
+    out: 'db/tests/captured_executor_payloads.json',
+    minScenarios: 16,
+  },
+]);
+const ACTIVE_CAPTURES = CAPTURES.filter((c) => process.argv.includes(c.flag));
+const CAPTURE_PARTS = new Set(ACTIVE_CAPTURES.map((c) => c.part));
 
 const missing = PARTS.filter((p) => !existsSync(join(ROOT, p)));
 if (missing.length) {
@@ -331,12 +353,12 @@ if (urlIdx > -1) {
 }
 
 let combined = '';
-let capturedJson = '';
-for (const part of [...PARTS, ...(CAPTURE ? [CAPTURE_PART] : [])]) {
-  const isCapture = part === CAPTURE_PART;
+const capturedJson = new Map();
+for (const part of [...PARTS, ...ACTIVE_CAPTURES.map((c) => c.part)]) {
+  const isCapture = CAPTURE_PARTS.has(part);
   // -A -t: unaligned, tuples-only. Aligned output pads with '+' continuation markers and is not JSON.
   const r = psql(join(ROOT, part), isCapture ? ['-A', '-t'] : []);
-  if (isCapture) capturedJson = r.stdout ?? '';
+  if (isCapture) capturedJson.set(part, r.stdout ?? '');
   combined += (r.stdout ?? '') + (r.stderr ?? '');
   if (r.status !== 0) {
     cleanup();
@@ -396,11 +418,11 @@ if (okCount < MIN_ASSERTIONS) {
   process.exit(1);
 }
 
-if (CAPTURE) {
+for (const capture of ACTIVE_CAPTURES) {
   // psql prints the jsonb_pretty result between the column header and the row count.
   // The capture file also runs DDL, whose command tags ("DO", "CREATE FUNCTION") share stdout with
   // the result. Take the outermost JSON object rather than assuming the stream is pure.
-  const raw = capturedJson;
+  const raw = capturedJson.get(capture.part) ?? '';
   const first = raw.indexOf('{');
   const last = raw.lastIndexOf('}');
   const text = first >= 0 && last > first ? raw.slice(first, last + 1) : '';
@@ -409,20 +431,22 @@ if (CAPTURE) {
     parsed = JSON.parse(text);
   } catch {
     cleanup();
-    console.error('✗ capture did not produce parseable JSON — refusing to write a fixture from nothing.');
+    console.error(`✗ ${capture.part} did not produce parseable JSON — refusing to write a fixture from nothing.`);
     console.error(text.slice(0, 300));
     process.exit(1);
   }
   // ★ ASSERT THE CAPTURE IS NON-VACUOUS. An empty object parses fine and would silently become a
   // fixture that proves nothing about the contract.
   const scenarios = Object.keys(parsed);
-  if (scenarios.length < 13) {
+  if (scenarios.length < capture.minScenarios) {
     cleanup();
-    console.error(`✗ capture holds only ${scenarios.length} scenarios; expected every viewer class.`);
+    console.error(
+      `✗ ${capture.part} holds only ${scenarios.length} scenarios; expected at least ${capture.minScenarios}.`
+    );
     process.exit(1);
   }
-  writeFileSync(join(ROOT, 'db/tests/captured_discovery_payloads.json'), `${JSON.stringify(parsed, null, 2)}\n`);
-  console.log('✓ wrote db/tests/captured_discovery_payloads.json');
+  writeFileSync(join(ROOT, capture.out), `${JSON.stringify(parsed, null, 2)}\n`);
+  console.log(`✓ wrote ${capture.out} (${scenarios.length} scenarios)`);
 }
 
 cleanup();
