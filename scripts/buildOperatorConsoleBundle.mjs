@@ -70,14 +70,25 @@ buildBundle(
       // The migration must keep its own apply-time guard: a migration that lost its self-check
       // cannot ship (the 11-B precedent — do not let the build mask the runtime layer).
       ['db/migrations/0056_20260813_operator_console_foundation.sql', '0056 FAILED: outcomeUncertain is not an admitted'],
-      ['db/functions/outbox_safety.sql', 'grant  execute on function public.claim_owner_notices(int) to service_role;'],
+      // ★ THE NEEDLE STOPS SHORT OF THE ROLE LIST AND THE SEMICOLON, DELIBERATELY — the
+      // `p11b-legacy-fused-becomes-writable` lesson applied to a grant. Pinning the exact line
+      // `… to service_role;` would make the BUILD refuse any mutation that widens the grant, so
+      // the mutation could only ever be caught here and nothing would prove the runtime layer
+      // fires. One defensive layer would be hiding whether the second works at all. This control
+      // still fails if the grant is absent entirely; a WIDENED grant is caught where it should be
+      // — at runtime, by `operator_console_authorization.sql` §0, which asserts
+      // has_function_privilege('authenticated', …) is false.
+      ['db/functions/outbox_safety.sql', 'grant  execute on function public.claim_owner_notices(int) to service_role'],
       ['db/functions/outbox_safety.sql', 'create or replace function public.record_owner_notice_outcome('],
       ['db/functions/outbox_safety.sql', 'grant  execute on function public.record_owner_notice_outcome(uuid, text, text) to service_role;'],
       ['db/functions/outbox_safety.sql', "'uncertain', (select count(*) from rows r where r.status = 'outcomeUncertain')"],
       ['db/functions/operator_console.sql', 'create or replace function public.admin_list_death_verification_cases('],
       ['db/functions/operator_console.sql', 'create or replace function public.admin_get_death_verification_case(p_case uuid)'],
       ['db/functions/operator_console.sql', 'owner_channel_resolvable'],
-      ['db/functions/operator_console.sql', "'viewer_is_reviewer_a', v_c.decided_by is not null and v_c.decided_by = v_uid"],
+      // Same discipline: the KEY must be present (a projection that dropped it would break the
+      // console's two-person messaging), but its EXPRESSION is left to the runtime assertion in
+      // §4, which reads the same case as two different admins and requires the answer to flip.
+      ['db/functions/operator_console.sql', "'viewer_is_reviewer_a'"],
     ],
     out: 'db/bundles/operator_console_bundle.sql',
   },
