@@ -43,6 +43,7 @@ buildBundle(
       // release announcement 11-F owns.
       'db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
       'db/migrations/0054_20260812_challenge_window_release_seam.sql',
+      'db/migrations/0055_20260812_release_authorization.sql',
       'db/functions/release_conditions.sql',
       // ★ EVERY FUNCTION BEFORE THE MIGRATION, deliberately inverted from the usual migration-first
       // order. 0050 is entirely `revoke execute on function ...` plus one index, and a REVOKE names

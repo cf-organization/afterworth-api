@@ -220,7 +220,14 @@ const PENDING_EVENTS = new Set(['death_process.window_opened']);
 const results = [];
 const record = (name, verdict, detail, cases) => {
   results.push({ name, verdict, detail, cases });
-  const mark = verdict === 'EXACT' ? '✓' : verdict === 'UNVERIFIABLE' ? '·' : '✗';
+  // ★ FIVE CLASSES, FIVE MARKS (Stage 8). PENDING_DEPLOYMENT is neither agreement nor drift: it is
+  // "source is ahead, on purpose, and production has not been pasted yet". Giving it the drift mark
+  // would cry wolf before every deployment; giving it the EXACT mark would report a missing
+  // deployment as agreement, which is the one thing this script must never do.
+  const mark = verdict === 'EXACT' ? '✓'
+    : verdict === 'UNVERIFIABLE' ? '·'
+    : verdict === 'PENDING_DEPLOYMENT' ? '⋯'
+    : '✗';
   console.log(`  ${mark} ${name.padEnd(30)} ${verdict.padEnd(18)} ${detail}`);
 };
 
@@ -495,6 +502,58 @@ function classify(diffs) {
   }
 }
 
+/* 6 · PHASE 11-F — the two-person release surface, in FIVE explicit verdict classes. */
+{
+  /**
+   * ★ THE FIVE CLASSES ARE REPORTED SEPARATELY BECAUSE THEY MEAN DIFFERENT THINGS (Stage 8), and
+   * the one that must never be silent is PENDING_DEPLOYMENT. A missing deployment reported as
+   * agreement is the failure this whole script exists to prevent: source ahead of production reads
+   * as "fine" in every table that simply omits the row.
+   *
+   *   EXACT              deployed and answering as source does
+   *   PENDING_DEPLOYMENT source authors it; production has never seen it — expected before a paste
+   *   DEPLOYMENT_NEWER   production has something source does not — re-pasting would REGRESS it
+   *   SOURCE_NEWER       source has something production lacks, where that is drift rather than a
+   *                      known-pending artifact
+   *   UNVERIFIABLE       stateful; equal inputs legitimately differ, named rather than omitted
+   *
+   * ★ AND THE 11-F SHAPE IS PARTLY AN ABSENCE. `release_estate` must be GONE: a deployment that
+   * still carries it has a one-person release lever beside the two-person door, which is
+   * DEPLOYMENT_NEWER in the most dangerous direction — production able to do something source
+   * forbids.
+   */
+  const probe = async (n, args) => {
+    const { error } = await deployed.rpc(n, args);
+    return { missing: error?.code === 'PGRST202', code: error?.code ?? null };
+  };
+  const NIL = '00000000-0000-4000-8000-000000000000';
+  const authorize = await probe('authorize_release', { p_estate: NIL, p_reason: 'drift probe' });
+  const dispatch = await probe('dispatch_owner_safety_notice', { p_estate: NIL });
+  const oldLever = await probe('release_estate', { p_estate: NIL });
+
+  if (!oldLever.missing) {
+    // Production can release on ONE operator. Source cannot. Re-pasting fixes it, but reporting it
+    // as agreement would be a false security claim.
+    record('release_estate (one-person lever)', 'DEPLOYMENT_NEWER',
+      'PRESENT IN PRODUCTION, REMOVED IN SOURCE — a one-person release path exists; apply 0055', []);
+  }
+  const f = [authorize, dispatch];
+  if (f.every((p) => p.missing)) {
+    record('release_authorization_authority', 'PENDING_DEPLOYMENT',
+      'source authors authorize_release + dispatch_owner_safety_notice; production has neither '
+      + '(apply death_verification_bundle.sql LAST)', []);
+  } else if (f.every((p) => !p.missing)) {
+    record('release_authorization_authority', 'UNVERIFIABLE',
+      'DEPLOYED · stateful (two-person, window, dispatch) — behaviour covered by '
+      + 'db/tests/release_safety_authorization.sql', []);
+  } else {
+    die(1, 'PARTIAL DEPLOYMENT — the Phase 11-F release surface is half-applied: '
+      + `authorize_release ${authorize.missing ? 'ABSENT' : 'present'}, `
+      + `dispatch_owner_safety_notice ${dispatch.missing ? 'ABSENT' : 'present'}. `
+      + 'Re-apply db/bundles/death_verification_bundle.sql in full.');
+  }
+}
+
 /* ── what this instrument deliberately does not reconcile ──────────────────────────────────────── */
 console.log('\nNOT RECONCILABLE BY THIS INSTRUMENT (stateful — equal inputs legitimately differ)');
 for (const [name, why] of [
@@ -510,7 +569,7 @@ for (const [name, why] of [
 }
 
 /* ── verdict ───────────────────────────────────────────────────────────────────────────────────── */
-const drifted = results.filter((r) => !['EXACT', 'UNVERIFIABLE'].includes(r.verdict));
+const drifted = results.filter((r) => !['EXACT', 'UNVERIFIABLE', 'PENDING_DEPLOYMENT'].includes(r.verdict));
 const exact = results.filter((r) => r.verdict === 'EXACT').length;
 console.log('\n' + '─'.repeat(78));
 if (drifted.length > 0) {
@@ -531,7 +590,16 @@ if (drifted.length > 0) {
   }
   process.exit(1);
 }
+const pendingRows = results.filter((r) => r.verdict === 'PENDING_DEPLOYMENT');
 console.log(`✓ SOURCE AND DEPLOYMENT AGREE EXACTLY on all ${exact} reconcilable contract(s).`);
+if (pendingRows.length > 0) {
+  // ★ SAID OUT LOUD IN THE SUMMARY, not only in the table. A reader who skims to the last line must
+  // not come away believing production carries everything this repository does.
+  console.log(`\n⋯ ${pendingRows.length} contract(s) are PENDING DEPLOYMENT — source authors them and`);
+  console.log('  production has never seen them. This is NOT agreement; it is the expected state');
+  console.log('  before the operator paste, and it becomes drift the moment a paste is claimed done:');
+  for (const p of pendingRows) console.log(`    ⋯ ${p.name} — ${p.detail}`);
+}
 console.log('  Compared by EXECUTING the source in an ephemeral Postgres and putting the same input');
 console.log('  matrix through both sides — no hand-written mirror of any policy exists in this script.');
 console.log(`  ${results.length - exact} stateful contract(s) are listed above as unreconcilable by name,`);

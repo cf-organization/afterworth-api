@@ -117,7 +117,14 @@ as $function$
     -- state. The set is the deployed CHECK's (0052 widened by 0054), spelled here because a pure
     -- function cannot read the catalog; `db/tests/release_condition_authorization.sql` enumerates
     -- the CHECK at run time and fails if the two vocabularies ever drift.
+    -- ★ THE GATE MUST NAME EVERY STORABLE STATE, INCLUDING ONES THAT SATISFY NOTHING. A state
+    -- missing here refuses EVERY condition for that estate — including `immediately` — so an
+    -- owner's ordinary live grants would go dark the moment a death process reached the unlisted
+    -- state. Failing closed on an UNKNOWN state is the design; failing closed on a KNOWN one is a
+    -- disclosure outage. 11-F's `owner_notification_dispatched` joins the list for that reason and
+    -- for no other: it satisfies nothing, exactly like the two states either side of it.
     p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified',
+                          'owner_notification_dispatched',
                           'challenge_window', 'challenge_halted', 'released')
     and case p_policy
       -- Documents, the estate-documents category, estate inventory, and notification speech.

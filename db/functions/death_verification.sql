@@ -40,26 +40,33 @@
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 --
 -- ★ THE ONLY WRITER of `estate_lifecycle`, and the transition map is written out as the closed set
--- it is. Eight legal moves since 11-E:
+-- it is. Ten legal moves since 11-F:
 --
---     active                      → death_verification_pending   (case initiated)
---     death_verification_pending  → active                       (case rejected / cancelled)
---     death_verification_pending  → death_verified               (admin decision, attained ≥ required)
---     death_verified              → challenge_window             (window opened, owner notified — 11-E)
---     death_verification_pending  → challenge_halted             (owner challenge — 11-E)
---     death_verified              → challenge_halted             (owner challenge — 11-E)
---     challenge_window            → challenge_halted             (owner challenge — 11-E)
---     challenge_window            → released                     (window elapsed, release_estate — 11-E)
+--     active                        → death_verification_pending   (case initiated)
+--     death_verification_pending    → active                       (case rejected / cancelled)
+--     death_verification_pending    → death_verified               (admin decision, attained ≥ required)
+--     death_verified                → owner_notification_dispatched (11-F: the owner was TOLD — D2/D4)
+--     owner_notification_dispatched → challenge_window             (the clock is running)
+--     death_verification_pending    → challenge_halted             (owner challenge)
+--     death_verified                → challenge_halted             (owner challenge)
+--     owner_notification_dispatched → challenge_halted             (owner challenge — 11-F)
+--     challenge_window              → challenge_halted             (owner challenge)
+--     challenge_window              → released                     (two-person authorization — 11-F)
 --
--- Everything else raises. Two absences are the load-bearing half of the 11-E map:
+-- ★ THE 11-F INSERTION IS THE POINT: `death_verified → challenge_window` IS GONE. A window may only
+-- open on an estate whose owner has actually been sent an independently-reachable notice, so the
+-- edge that skipped the notice no longer exists — a routine that forgets to dispatch cannot open a
+-- window by accident, it raises.
+--
+-- Everything else raises. Two absences remain the load-bearing half of the map:
 --
 --   · NOTHING LEAVES challenge_halted. The owner said no; there is no resume, no admin override,
 --     no reopen — restoring one is a future product decision, not a bigger map (R: 11-E brief §7).
 --   · NOTHING LEAVES released. Disclosure cannot be undone (R15); a post-release freeze would be a
 --     new product surface, not an edge here.
 --
--- And `released` is REACHABLE only through `release_estate` (client-revoked, no caller in 11-E),
--- which alone checks the window guards before asking for this edge.
+-- And `released` is REACHABLE only through `authorize_release` (11-F), which alone checks the window
+-- guards, the dispatch facts, and the TWO-PERSON rule before asking for this edge.
 --
 -- ★ TRANSACTIONAL + AUDITED (the 11-A §7 requirement): the current row is locked, the move is
 -- validated against it, and one audit row records from/to/case/reason with the acting user.
@@ -92,9 +99,11 @@ begin
        (v_from = 'active'                     and p_to = 'death_verification_pending')
     or (v_from = 'death_verification_pending' and p_to = 'active')
     or (v_from = 'death_verification_pending' and p_to = 'death_verified')
-    or (v_from = 'death_verified'             and p_to = 'challenge_window')
+    or (v_from = 'death_verified'             and p_to = 'owner_notification_dispatched')
+    or (v_from = 'owner_notification_dispatched' and p_to = 'challenge_window')
     or (v_from = 'death_verification_pending' and p_to = 'challenge_halted')
     or (v_from = 'death_verified'             and p_to = 'challenge_halted')
+    or (v_from = 'owner_notification_dispatched' and p_to = 'challenge_halted')
     or (v_from = 'challenge_window'           and p_to = 'challenge_halted')
     or (v_from = 'challenge_window'           and p_to = 'released')
   ) then

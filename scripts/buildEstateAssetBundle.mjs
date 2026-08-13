@@ -41,6 +41,7 @@ buildBundle(
       'db/migrations/0052_20260812_death_verification_foundation.sql',
       'db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
       'db/migrations/0054_20260812_challenge_window_release_seam.sql',
+      'db/migrations/0055_20260812_release_authorization.sql',
       'db/functions/release_conditions.sql',
       'db/functions/estate_lifecycle_state.sql',
       'db/migrations/0048_20260810_estate_assets.sql',

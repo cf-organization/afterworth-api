@@ -65,25 +65,42 @@ comment on function public.challenge_window_duration() is
   'clock; the owner surface answers through get_owner_safety_status.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
--- begin_challenge_window(p_estate) → text                                      [admin, AAL2+fresh]
+-- dispatch_owner_safety_notice(p_estate) → text                               [admin, AAL2+fresh]
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 --
--- Opens the safety window on a death_verified estate: notifies the owner (same transaction,
--- REQUIRED — see the header) and moves the lifecycle. The same platform authority that decides a
--- verification case (admin_require_gate) opens the window; unlike release, this action is
--- safety-INCREASING — it starts the owner's clock and discloses nothing.
-create or replace function public.begin_challenge_window(p_estate uuid)
+-- ★ PHASE 11-F, D4 — "the owner was told" MUST mean an independently reachable channel. 11-E wrote
+-- one in-app notification and required it to commit; that is a real guarantee and it is not enough,
+-- because a person who has stopped opening the app is exactly the person a false death process
+-- targets successfully. This routine additionally commits an EMAIL row addressed to the owner, in
+-- the SAME transaction as the state change, and refuses the whole transition if it cannot.
+--
+-- ★ THE REQUIREMENT IS DISPATCH INITIATION, NOT DELIVERY (Stage 2, stated exactly). No read
+-- receipt, no open tracking, no acknowledgement — none of which this product can honestly observe,
+-- and each of which would let a silent mail server hold a release hostage forever. What IS required
+-- is that a real address was resolved and a real row was committed to a real queue.
+--
+-- ★ AND AN UNRESOLVABLE ADDRESS IS A HARD FAILURE. Queueing a row with no recipient would be
+-- "dispatch initiated" in name only — the fail-closed answer is to refuse the transition, leaving
+-- the estate at `death_verified` where nothing can release, rather than starting a clock nobody can
+-- hear ticking.
+--
+-- ★ D2 — THE CLOCK STARTS HERE. `owner_notified_at` is stamped at dispatch, so the seven days run
+-- from the moment the owner was told; not from claim creation, evidence upload, verification, or
+-- administrative review, none of which the owner can see.
+create or replace function public.dispatch_owner_safety_notice(p_estate uuid)
  returns text
  language plpgsql
  security definer
  set search_path to 'public'
 as $function$
 declare
-  v_uid    uuid;
-  v_state  text;
-  v_owner  uuid;
-  v_case   uuid;
-  v_notice uuid;
+  v_uid       uuid;
+  v_state     text;
+  v_owner     uuid;
+  v_recipient text;
+  v_case      uuid;
+  v_notice    uuid;
+  v_outbox    uuid;
 begin
   perform public.admin_require_gate();
   v_uid := auth.uid();
@@ -93,14 +110,13 @@ begin
    where l.estate_id = p_estate
    for update;
 
-  if v_state = 'challenge_window' then
-    return 'challenge_window'; -- idempotent replay: no re-notify, no re-audit
+  if v_state = 'owner_notification_dispatched' then
+    return 'owner_notification_dispatched'; -- idempotent replay: no re-dispatch, no re-audit
   end if;
   if v_state is distinct from 'death_verified' then
-    raise exception 'invalid_window_state' using errcode = 'P0001';
+    raise exception 'invalid_dispatch_state' using errcode = 'P0001';
   end if;
 
-  -- The verified case is the workflow evidence the window rests on (belt beside the state machine).
   select c.id into v_case
     from public.death_verification_cases c
    where c.estate_id = p_estate and c.status = 'verified'
@@ -115,8 +131,26 @@ begin
     raise exception 'owner_unresolved' using errcode = 'P0001';
   end if;
 
-  -- ★ THE INVERTED TRADE: the safety notice must COMMIT or the window must not open. A null here
-  -- means the emitter refused or failed; raising rolls back everything this routine did.
+  -- ★ THE INDEPENDENT CHANNEL, RESOLVED FROM THE IDENTITY PROVIDER rather than from anything a
+  -- claimant can write. `profiles.email` is user-editable in principle; `auth.users.email` is the
+  -- address the account authenticates with, which is the one a claimant cannot repoint.
+  select u.email into v_recipient from auth.users u where u.id = v_owner;
+  if v_recipient is null or btrim(v_recipient) = '' then
+    raise exception 'owner_channel_unreachable' using errcode = 'P0001';
+  end if;
+
+  -- EMAIL FIRST: the row whose existence is the dispatch. Same transaction as the transition, so a
+  -- rollback anywhere below un-dispatches it and the window never opened.
+  insert into public.owner_notice_outbox
+    (estate_id, user_id, channel, recipient, notice_kind, status)
+  values (p_estate, v_owner, 'email', v_recipient, 'death_process.window_opened', 'queued')
+  returning id into v_outbox;
+  if v_outbox is null then
+    raise exception 'owner_notification_failed' using errcode = 'P0001';
+  end if;
+
+  -- IN-APP SECOND, and still REQUIRED (11-E's guarantee is kept, not replaced). Two channels, both
+  -- committed, before any clock starts.
   v_notice := public.emit_lifecycle_notification(
     v_owner, p_estate, 'death_process.window_opened', 'afterworth://challenge');
   if v_notice is null then
@@ -124,18 +158,102 @@ begin
   end if;
 
   perform public.apply_estate_lifecycle_transition(
-    p_estate, 'challenge_window', v_case, 'window_opened');
+    p_estate, 'owner_notification_dispatched', v_case, 'owner_notice_dispatched');
 
   update public.estate_lifecycle
      set owner_notified_at = now(),
-         challenge_window_started_at = now(),
          safety_notification_id = v_notice
+   where estate_id = p_estate;
+
+  -- ★ THE AUDIT RECORDS THE CHANNEL CLASS, NEVER THE ADDRESS. That a notice went to email is an
+  -- operational fact; WHICH address is a living owner's contact detail, and an audit row outlives
+  -- every reason anyone had to read it.
+  insert into public.audit_logs (actor_id, estate_id, action, target_table, target_id, metadata, source)
+  values (v_uid, p_estate, 'death_process.owner_notice_dispatched', 'owner_notice_outbox', v_outbox,
+          jsonb_build_object('severity', 'high', 'case_id', v_case, 'channel', 'email',
+                            'in_app_notification_id', v_notice),
+          'admin');
+  return 'owner_notification_dispatched';
+end $function$;
+revoke execute on function public.dispatch_owner_safety_notice(uuid) from public, anon;
+grant  execute on function public.dispatch_owner_safety_notice(uuid) to authenticated;
+
+comment on function public.dispatch_owner_safety_notice(uuid) is
+  'Phase 11-F (D4): commits an EMAIL row and an in-app notice to the owner, in the same transaction '
+  'as the death_verified -> owner_notification_dispatched transition, and stamps owner_notified_at '
+  '(D2: the challenge clock starts at dispatch). Requires dispatch INITIATION, never delivery '
+  'confirmation. An unresolvable owner address refuses the transition. Admin-gated; idempotent.';
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- begin_challenge_window(p_estate) → text                                      [admin, AAL2+fresh]
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- ★ REWRITTEN IN 11-F: it no longer notifies, because it no longer can. The notice moved to
+-- `dispatch_owner_safety_notice`, and the edge `death_verified → challenge_window` was DELETED from
+-- the transition map — so this routine's only legal input is an estate whose owner has already been
+-- sent an email and an in-app notice. The guarantee "no window opens un-notified" is now carried by
+-- the state machine rather than by this function remembering to check.
+create or replace function public.begin_challenge_window(p_estate uuid)
+ returns text
+ language plpgsql
+ security definer
+ set search_path to 'public'
+as $function$
+declare
+  v_uid   uuid;
+  v_state text;
+  v_case  uuid;
+  v_row   public.estate_lifecycle%rowtype;
+begin
+  perform public.admin_require_gate();
+  v_uid := auth.uid();
+
+  select l.* into v_row
+    from public.estate_lifecycle l
+   where l.estate_id = p_estate
+   for update;
+  v_state := v_row.state;
+
+  if v_state = 'challenge_window' then
+    return 'challenge_window'; -- idempotent replay
+  end if;
+  if v_state is distinct from 'owner_notification_dispatched' then
+    raise exception 'invalid_window_state' using errcode = 'P0001';
+  end if;
+
+  -- Belt beside the state machine: the dispatch facts must actually be on the row.
+  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then
+    raise exception 'owner_not_notified' using errcode = 'P0001';
+  end if;
+  if not exists (
+    select 1 from public.owner_notice_outbox o
+     where o.estate_id = p_estate
+       and o.channel = 'email'
+       and o.status <> 'cancelled'
+  ) then
+    raise exception 'owner_channel_unreachable' using errcode = 'P0001';
+  end if;
+
+  select c.id into v_case
+    from public.death_verification_cases c
+   where c.estate_id = p_estate and c.status = 'verified'
+   order by c.decided_at desc
+   limit 1;
+  if v_case is null then
+    raise exception 'no_verified_case' using errcode = 'P0001';
+  end if;
+
+  perform public.apply_estate_lifecycle_transition(
+    p_estate, 'challenge_window', v_case, 'window_opened');
+
+  update public.estate_lifecycle
+     set challenge_window_started_at = now()
    where estate_id = p_estate;
 
   insert into public.audit_logs (actor_id, estate_id, action, target_table, target_id, metadata, source)
   values (v_uid, p_estate, 'death_process.window_opened', 'estate_lifecycle', v_case,
           jsonb_build_object('severity', 'high', 'case_id', v_case,
-                            'safety_notification_id', v_notice),
+                            'owner_notified_at', v_row.owner_notified_at),
           'admin');
   return 'challenge_window';
 end $function$;
@@ -143,9 +261,137 @@ revoke execute on function public.begin_challenge_window(uuid) from public, anon
 grant  execute on function public.begin_challenge_window(uuid) to authenticated;
 
 comment on function public.begin_challenge_window(uuid) is
-  'Opens the owner-challenge window on a death_verified estate (Phase 11-E). Admin-gated '
-  '(AAL2 + freshness). The owner safety notice is REQUIRED to commit in the same transaction — '
-  'a window cannot begin un-notified. Idempotent. Discloses nothing; starts the safety clock.';
+  'Opens the owner-challenge window (Phase 11-E, rewritten 11-F). Its ONLY legal input is '
+  'owner_notification_dispatched — the death_verified -> challenge_window edge was deleted, so a '
+  'window cannot open on an un-notified owner even by mistake. Admin-gated; idempotent; discloses '
+  'nothing.';
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- authorize_release(p_estate, p_reason) → text                                 [admin, AAL2+fresh]
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- ★ THE TWO-PERSON RULE (D1), AND WHY IT LIVES IN THE DATABASE. The operator who verified the death
+-- may not authorize the release. A console can enforce that and a console can be bypassed — by a
+-- direct RPC, a future admin tool, a script, or the next rewrite. Here the rule is enforced twice on
+-- purpose: this routine refuses, AND `release_authorizations` carries a CHECK constraint that makes
+-- a single-reviewer row unwritable by ANY path. The routine is the door; the constraint is the wall.
+--
+-- ★ reviewer_a IS DERIVED, NEVER SUPPLIED. It is read from the verified case's `decided_by` — the
+-- operator who actually made the call. A parameter would let the caller nominate a different
+-- "first reviewer" and satisfy the rule against someone who never reviewed anything.
+--
+-- ★ THIS ROUTINE REPLACES 11-E's `release_estate`, WHICH IS DROPPED BY 0055. Leaving a one-person
+-- lever beside a two-person door would be the whole decision undone by an un-rewired caller.
+--
+-- ★ AND IT STILL MANUFACTURES NOTHING (D5). No grant, no tier, no membership, no designation. The
+-- lifecycle moves and the ONE canonical predicate answers differently for grants the owner already
+-- authored.
+create or replace function public.authorize_release(p_estate uuid, p_reason text)
+ returns text
+ language plpgsql
+ security definer
+ set search_path to 'public'
+as $function$
+declare
+  v_row        public.estate_lifecycle%rowtype;
+  v_uid        uuid;
+  v_case       uuid;
+  v_reviewer_a uuid;
+  v_verified   timestamptz;
+  v_duration   interval;
+begin
+  perform public.admin_require_gate();
+  v_uid := auth.uid();
+
+  if p_reason is null or btrim(p_reason) = '' then
+    raise exception 'audit_reason_required' using errcode = 'P0001';
+  end if;
+
+  select l.* into v_row
+    from public.estate_lifecycle l
+   where l.estate_id = p_estate
+   for update;
+
+  if v_row.state = 'released' then
+    return 'released'; -- idempotent replay: no second authorization row, no re-audit
+  end if;
+  if v_row.state is distinct from 'challenge_window' then
+    -- challenge_halted lands here too: release can NEVER proceed from a halted process.
+    raise exception 'invalid_release_state' using errcode = 'P0001';
+  end if;
+
+  -- The dispatch facts (D4). A window that somehow lacks them cannot elapse into disclosure.
+  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then
+    raise exception 'owner_not_notified' using errcode = 'P0001';
+  end if;
+  if not exists (
+    select 1 from public.owner_notice_outbox o
+     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'
+  ) then
+    raise exception 'owner_channel_unreachable' using errcode = 'P0001';
+  end if;
+
+  select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified
+    from public.death_verification_cases c
+   where c.estate_id = p_estate and c.status = 'verified'
+   order by c.decided_at desc
+   limit 1;
+  if v_case is null then
+    raise exception 'no_verified_case' using errcode = 'P0001';
+  end if;
+  if v_reviewer_a is null then
+    raise exception 'reviewer_a_unresolved' using errcode = 'P0001';
+  end if;
+
+  -- ★ D1, ENFORCED HERE AND AGAIN BY THE TABLE CONSTRAINT BELOW.
+  if v_uid = v_reviewer_a then
+    raise exception 'two_person_rule_violated' using errcode = 'P0001';
+  end if;
+
+  v_duration := public.challenge_window_duration();
+  if v_duration is null then
+    raise exception 'release_window_not_configured' using errcode = 'P0001';
+  end if;
+
+  -- ★ STRICTLY ELAPSED (D3). At the exact boundary instant this refuses and the owner challenge —
+  -- serialized on the same row lock — still succeeds. The coalesce is the three-valued-logic
+  -- discipline: a NULL comparison must refuse, not pass.
+  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then
+    raise exception 'release_window_not_elapsed' using errcode = 'P0001';
+  end if;
+
+  insert into public.release_authorizations
+    (estate_id, case_id, reviewer_a, reviewer_b, verified_at, authorized_at, released_at, audit_reason)
+  values (p_estate, v_case, v_reviewer_a, v_uid, v_verified, now(), now(), p_reason);
+
+  perform public.apply_estate_lifecycle_transition(
+    p_estate, 'released', v_case, 'two_person_release');
+
+  update public.estate_lifecycle
+     set released_at = now()
+   where estate_id = p_estate;
+
+  insert into public.audit_logs (actor_id, estate_id, action, target_table, target_id, metadata, source)
+  values (v_uid, p_estate, 'death_process.released', 'release_authorizations', v_case,
+          jsonb_build_object('severity', 'high', 'case_id', v_case,
+                            'reviewer_a', v_reviewer_a, 'reviewer_b', v_uid,
+                            'verified_at', v_verified,
+                            'owner_notified_at', v_row.owner_notified_at,
+                            'window_duration', v_duration::text,
+                            'audit_reason', p_reason),
+          'admin');
+  return 'released';
+end $function$;
+revoke execute on function public.authorize_release(uuid, text) from public, anon;
+grant  execute on function public.authorize_release(uuid, text) to authenticated;
+
+comment on function public.authorize_release(uuid, text) is
+  'THE release transition (Phase 11-F): challenge_window -> released, by a SECOND platform operator. '
+  'Requires admin gate, a non-empty audit reason, a committed owner email + in-app notice, a '
+  'verified case, a STRICTLY elapsed 7-day window (ties go to the owner challenge), and '
+  'reviewer_b <> reviewer_a where reviewer_a is DERIVED from the case decider. Records a '
+  'release_authorizations row whose CHECK constraint makes a single-reviewer release unwritable by '
+  'any path. Creates no grant, tier, membership or designation.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- challenge_death_process(p_estate) → text                          [the authenticated OWNER only]
@@ -227,88 +473,19 @@ comment on function public.challenge_death_process(uuid) is
   'Produces challenge_halted, terminal in 11-E. Records no provenance beyond the act itself.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
--- release_estate(p_estate) → text            [INTERNAL — no client role, no reachable door in 11-E]
+-- release_estate — REMOVED IN PHASE 11-F. Its replacement is `authorize_release` above.
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 --
--- ★ THE ACTOR IS DELIBERATELY UNWIRED. Who may pull this lever — a single admin, a two-person
--- rule, an automated elapse job — is a product decision (11-A threat model T5) that 11-E does not
--- own. The routine exists so the guards are real and testable; EXECUTE is revoked from every
--- client role and no routine calls it. Wiring an actor is the named 11-F decision, and the drift
--- verifier reports this function's privilege posture so a quiet future GRANT is loud.
-create or replace function public.release_estate(p_estate uuid)
- returns text
- language plpgsql
- security definer
- set search_path to 'public'
-as $function$
-declare
-  v_row      public.estate_lifecycle%rowtype;
-  v_case     uuid;
-  v_duration interval;
-begin
-  select l.* into v_row
-    from public.estate_lifecycle l
-   where l.estate_id = p_estate
-   for update;
-
-  if v_row.state = 'released' then
-    return 'released'; -- idempotent replay: no re-stamp, no re-audit
-  end if;
-  if v_row.state is distinct from 'challenge_window' then
-    -- challenge_halted lands here too: release can NEVER proceed from a halted process.
-    raise exception 'invalid_release_state' using errcode = 'P0001';
-  end if;
-
-  -- The window rests on a committed safety notice and a verified case — facts, re-checked.
-  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then
-    raise exception 'owner_not_notified' using errcode = 'P0001';
-  end if;
-  select c.id into v_case
-    from public.death_verification_cases c
-   where c.estate_id = p_estate and c.status = 'verified'
-   order by c.decided_at desc
-   limit 1;
-  if v_case is null then
-    raise exception 'no_verified_case' using errcode = 'P0001';
-  end if;
-
-  -- The duration is read LIVE (H2 precedent). Unconfigured = the window never elapses.
-  v_duration := public.challenge_window_duration();
-  if v_duration is null then
-    raise exception 'release_window_not_configured' using errcode = 'P0001';
-  end if;
-
-  -- ★ STRICTLY ELAPSED (R14). At the exact boundary instant (`now() = notified + duration`) this
-  -- refuses — and the owner challenge, serialized on the same row lock, still succeeds. The
-  -- coalesce is the three-valued-logic discipline: a NULL comparison must refuse, not pass.
-  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then
-    raise exception 'release_window_not_elapsed' using errcode = 'P0001';
-  end if;
-
-  perform public.apply_estate_lifecycle_transition(
-    p_estate, 'released', v_case, 'window_elapsed');
-
-  update public.estate_lifecycle
-     set released_at = now()
-   where estate_id = p_estate;
-
-  perform public.write_audit(
-    'death_process.released', 'estate_lifecycle', v_case, p_estate,
-    jsonb_build_object('severity', 'high', 'case_id', v_case,
-                       'owner_notified_at', v_row.owner_notified_at,
-                       'window_started_at', v_row.challenge_window_started_at,
-                       'window_duration', v_duration::text));
-  return 'released';
-end $function$;
-revoke execute on function public.release_estate(uuid) from public, anon, authenticated;
-
-comment on function public.release_estate(uuid) is
-  'THE release transition (Phase 11-E): challenge_window -> released, only when the owner was '
-  'notified (committed safety notice), a verified case exists, the configured window has STRICTLY '
-  'elapsed (ties refuse - the owner challenge wins them, R14), and no challenge halted the process '
-  '(the map has no edge from challenge_halted). Idempotent, audited. INTERNAL: EXECUTE revoked '
-  'from every client role and called by nothing - the release ACTOR is an explicitly deferred '
-  'product decision (11-F), so in 11-E released is unreachable in any deployed environment.';
+-- ★ REMOVED FROM SOURCE, AND DROPPED BY MIGRATION 0055 — both halves are required. 11-E's
+-- `release_estate(uuid)` released on ONE operator's say-so, which D1 forbids. Deleting only the
+-- source would leave the function alive in every database that ever applied 11-E, because
+-- `create or replace` cannot remove what it no longer mentions; dropping only in the migration
+-- would let the next bundle paste recreate it from source. So the definition is gone from here and
+-- the drop ships in the migration beside it — the 0053 precedent, applied to an actor rather than
+-- to an argument.
+--
+-- A caller that was never rewired now fails loudly (`function does not exist`) instead of quietly
+-- releasing an estate without a second reviewer.
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- get_owner_safety_status(p_estate) → text                          [authenticated, owner-gated]
@@ -342,12 +519,18 @@ begin
   end if;
 
   v_state := public.estate_lifecycle_state(p_estate);
+  -- ★ THE 11-F STATE JOINS THE `challengeable` GROUP, and that is the safety-preserving mapping:
+  -- an owner who has just received the email is squarely in the population this surface exists for.
+  -- The union stays four values on purpose — the owner needs "can I stop this", never the machine's
+  -- internals, and a client that could distinguish dispatched from windowed would be a client with
+  -- something to branch on.
   return case v_state
-    when 'death_verification_pending' then 'challengeable'
-    when 'death_verified'             then 'challengeable'
-    when 'challenge_window'           then 'challengeable'
-    when 'challenge_halted'           then 'halted'
-    when 'released'                   then 'released'
+    when 'death_verification_pending'    then 'challengeable'
+    when 'death_verified'                then 'challengeable'
+    when 'owner_notification_dispatched' then 'challengeable'
+    when 'challenge_window'              then 'challengeable'
+    when 'challenge_halted'              then 'halted'
+    when 'released'                      then 'released'
     else 'none'
   end;
 end $function$;

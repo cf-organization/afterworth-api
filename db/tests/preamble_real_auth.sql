@@ -30,7 +30,17 @@ end $$;
 grant usage on schema public to anon, authenticated, service_role;
 
 create schema if not exists auth;
-create table if not exists auth.users (id uuid primary key default gen_random_uuid());
+-- ★ `email` MODELLED SINCE PHASE 11-F. It is not decoration: `dispatch_owner_safety_notice` resolves
+-- the owner's INDEPENDENTLY REACHABLE channel from `auth.users.email` — the address the account
+-- authenticates with, which a claimant cannot repoint — and REFUSES the whole transition when it is
+-- absent. Without the column the harness could not exercise either half of that: the dispatch that
+-- succeeds, or the `owner_channel_unreachable` refusal that keeps an unreachable owner's estate at
+-- `death_verified` where nothing can release.
+create table if not exists auth.users (
+  id    uuid primary key default gen_random_uuid(),
+  email text
+);
+alter table auth.users add column if not exists email text;
 
 -- ★ THE REAL SHAPE. Supabase's `auth.uid()` reads the `sub` claim of the request JWT. Reading it from
 -- the same GUC makes caller identity switchable per transaction, which is what lets one harness

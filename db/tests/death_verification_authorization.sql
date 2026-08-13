@@ -296,13 +296,14 @@ begin
     raise exception 'FAIL: an unapproved lifecycle state is STORABLE: %', v_def;
   end if;
   foreach v_state in array array['active', 'death_verification_pending', 'death_verified',
+                                 'owner_notification_dispatched',
                                  'challenge_window', 'challenge_halted', 'released'] loop
     if position('''' || v_state || '''' in v_def) = 0 then
       raise exception 'FAIL: the lifecycle CHECK is missing the 11-E state %: %', v_state, v_def;
     end if;
   end loop;
-  if (select count(*) from regexp_matches(v_def, '''[a-z_]+''', 'g')) <> 6 then
-    raise exception 'FAIL: the lifecycle vocabulary is not exactly six states: %', v_def;
+  if (select count(*) from regexp_matches(v_def, '''[a-z_]+''', 'g')) <> 7 then
+    raise exception 'FAIL: the lifecycle vocabulary is not exactly seven states: %', v_def;
   end if;
   select pg_get_constraintdef(con.oid) into v_def
     from pg_constraint con
