@@ -97,7 +97,17 @@ as $function$
     ('invitation.accepted',     'invitationUpdate', 'Invitation accepted',
      'Someone you invited has joined this estate.'),
     ('invitation.declined',     'invitationUpdate', 'Invitation declined',
-     'An invitation to this estate was declined.')
+     'An invitation to this estate was declined.'),
+
+    -- ── the owner safety notice (Phase 11-E) ────────────────────────────────────────────────────
+    -- To the OWNER, and ONLY the owner, when the challenge window opens on their estate. The copy
+    -- uses exactly the epistemically honest claims the 11-E brief sanctions: a process is waiting,
+    -- and the owner can halt it. It asserts no death, names no claimant, no evidence, no deadline
+    -- arithmetic, and no estate name. Emitted by begin_challenge_window, which REQUIRES this row
+    -- to commit before the window may open — the one notification in the product that is
+    -- load-bearing rather than a heads-up.
+    ('death_process.window_opened', 'safetyNotice', 'A release process is waiting',
+     'A release process is waiting on your estate. You can review and halt it now.')
   ) as c(event, category, title, body)
   where c.event = p_event;
 $function$;

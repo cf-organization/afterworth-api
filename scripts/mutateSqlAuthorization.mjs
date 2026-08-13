@@ -606,8 +606,8 @@ const MUTATIONS = Object.freeze([
       + 'disclosure. Written to PRESERVE the conjunct the bundler control requires, so the '
       + 'RUNTIME layer testifies rather than the build refusing (the Stage-17 masking shape).',
     file: 'db/functions/release_conditions.sql',
-    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
-    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')\n        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verification_pending')",
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
+    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')\n        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'challenge_window')",
   },
   {
     id: 'p11d-death-ignores-lifecycle',
@@ -617,7 +617,7 @@ const MUTATIONS = Object.freeze([
       + 'redundant check, and the truth table must be what objects (the bundler deliberately '
       + 'carries no needle for the conjunction, so this layer stays testable).',
     file: 'db/functions/release_conditions.sql',
-    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
     to: "        or p_release_condition = 'after_verified_death'",
   },
   {
@@ -627,7 +627,7 @@ const MUTATIONS = Object.freeze([
       + 'typo — evaluate as though the lifecycle were fine. Fail-closed on this axis is what makes '
       + 'a wiring mistake loud instead of permissive.',
     file: 'db/functions/release_conditions.sql',
-    from: "    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified')",
+    from: "    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified',\n                          'challenge_window', 'challenge_halted', 'released')",
     to: "    p_lifecycle_state is distinct from 'released'",
   },
   {
@@ -638,7 +638,7 @@ const MUTATIONS = Object.freeze([
       + 'legacy cell false; the surface matrix pins asset rows dormant at death_verified.',
     file: 'db/functions/release_conditions.sql',
     from: "      when 'legacy_immediate_only' then\n        p_release_condition = 'immediately'",
-    to: "      when 'legacy_immediate_only' then\n        p_release_condition = 'immediately'\n        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+    to: "      when 'legacy_immediate_only' then\n        p_release_condition = 'immediately'\n        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
   },
   {
     id: 'p11d-never-satisfied-at-death',
@@ -646,8 +646,8 @@ const MUTATIONS = Object.freeze([
       + 'death arm is the shape of "the owner is gone, surely the block lapses" — it does not: '
       + 'never is the owner\'s standing refusal, and death does not rewrite owner intent (R3/R4).',
     file: 'db/functions/release_conditions.sql',
-    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
-    to: "        or (p_release_condition in ('after_verified_death', 'never')\n            and p_lifecycle_state = 'death_verified')",
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
+    to: "        or (p_release_condition in ('after_verified_death', 'never')\n            and p_lifecycle_state = 'released')",
   },
   {
     id: 'p11d-consumer-pins-lifecycle',
@@ -746,7 +746,7 @@ const MUTATIONS = Object.freeze([
       + 'a side effect. The notification firewall row must object.',
     file: 'db/functions/lifecycle_notification_rpcs.sql',
     from: "     and public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active');",
-    to: "     and (public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active')\n          or public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'death_verified'));",
+    to: "     and (public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'active')\n          or public.release_condition_satisfied(p_release_condition, p_approved_at, 'standard', 'released'));",
   },
   {
     id: 'p11d-notification-copy-death-language',
@@ -786,6 +786,223 @@ const MUTATIONS = Object.freeze([
     file: 'db/tests/death_verification_authorization.sql',
     from: "  ) into v;\n  reset role;\n  return v;\nexception when others then",
     to: "  ) into v;\n  reset role;\n  return '{}'::jsonb;\nexception when others then",
+  },
+
+  /* ── PHASE 11-E · the challenge window and the release seam ───────────────────────────────────
+   * The safety seam only means something if every way around it is loud. These aim at the four
+   * shapes that would each silently restore the 11-D behaviour or defeat the owner's protection:
+   * satisfying the death condition too early, releasing without the guards, taking the owner's
+   * challenge away, and leaking who challenged.
+   */
+  {
+    id: 'p11e-death-satisfied-at-verified',
+    why: 'THE 11-E REVERSAL, UNDONE (matrix #1). Re-pointing the death arm at death_verified is '
+      + 'literally the 11-D behaviour, and it deletes the owner-challenge window from the product '
+      + 'without touching a single safety routine — the whole seam bypassed by one word.',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
+    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'death_verified')",
+  },
+  {
+    id: 'p11e-death-satisfied-during-window',
+    why: 'THE WINDOW MUST NOT DISCLOSE (matrix #2). Admitting challenge_window means the estate is '
+      + 'read while the owner still has time to object — the protection is a countdown that already '
+      + 'gave the information away.',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
+    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state in ('released', 'challenge_window'))",
+  },
+  {
+    id: 'p11e-death-satisfied-at-halted',
+    why: 'A HALTED PROCESS RELEASES NOTHING (matrix #3). Admitting challenge_halted turns the '
+      + 'owner saying "I am alive" into the disclosure they were trying to stop — the worst '
+      + 'available outcome in the whole phase.',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
+    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state in ('released', 'challenge_halted'))",
+  },
+  {
+    id: 'p11e-release-skips-window',
+    why: 'RELEASE MUST PASS THROUGH THE WINDOW (matrix #5). Admitting death_verified as a release '
+      + 'source state lets an accepted verification go straight to disclosure. Aimed at the MAP '
+      + 'AUDIT deliberately: release_estate carries its own state guard, so widening the map alone '
+      + 'moves no runtime fixture — the two layers are independent, and this proves the structural '
+      + 'one fires on its own rather than being carried by the behavioural one.',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    file: 'db/functions/death_verification.sql',
+    from: "    or (v_from = 'challenge_window'           and p_to = 'released')",
+    to: "    or (v_from = 'challenge_window'           and p_to = 'released')\n    or (v_from = 'death_verified'             and p_to = 'released')",
+  },
+  {
+    id: 'p11e-halted-can-be-reopened',
+    why: 'CHALLENGE_HALTED IS TERMINAL IN 11-E (matrix #43). An edge back to the window is the '
+      + '"surely an admin can resume it after review" edit — and resuming a halted process is a '
+      + 'product decision nobody has taken, taken silently in a map.',
+    file: 'db/functions/death_verification.sql',
+    from: "    or (v_from = 'challenge_window'           and p_to = 'challenge_halted')",
+    to: "    or (v_from = 'challenge_window'           and p_to = 'challenge_halted')\n    or (v_from = 'challenge_halted'           and p_to = 'challenge_window')",
+  },
+  {
+    id: 'p11e-release-before-window-elapses',
+    why: 'THE WINDOW IS THE PROTECTION (matrix #5). Dropping the elapsed check releases the instant '
+      + 'the window opens — the owner is notified and disclosed in the same breath.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then\n    raise exception 'release_window_not_elapsed' using errcode = 'P0001';\n  end if;",
+    to: "  if false then\n    raise exception 'release_window_not_elapsed' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11e-challenge-loses-the-tie',
+    why: 'THE TIE BELONGS TO THE OWNER (matrix #8, R14). `>` becoming `>=` is a ONE-CHARACTER edit '
+      + 'that hands the exact boundary instant to release instead of the challenge. No behavioural '
+      + 'test that samples times either side of the boundary can see it; only the exact-instant '
+      + 'fixture can.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then",
+    to: "  if not coalesce(now() >= v_row.owner_notified_at + v_duration, false) then",
+  },
+  {
+    id: 'p11e-release-without-owner-notice',
+    why: 'THE WINDOW MAY NOT BEGIN UN-NOTIFIED (§9, matrix #6). Dropping the committed-notice guard '
+      + 'lets a window that never reached the owner still elapse into disclosure — the safety '
+      + 'precondition becomes decorative.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;",
+    to: "  if false then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11e-window-opens-without-notifying',
+    why: 'THE INVERTED EMITTER TRADE IS THE SAFETY CONTRACT (§9). Swallowing a failed notice — the '
+      + 'DEFAULT behaviour everywhere else in the product, which is why this is the natural edit — '
+      + 'starts the release clock on an owner who was never told. Aimed at the STRUCTURAL audit '
+      + 'deliberately: the happy path still commits a notice, so no runtime fixture distinguishes '
+      + 'this weakening without breaking the catalog to force an emit failure. The instrument that '
+      + 'can see it is the one that reads the error path.',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_notice is null then\n    raise exception 'owner_notification_failed' using errcode = 'P0001';\n  end if;",
+    to: "  if v_notice is null then\n    v_notice := gen_random_uuid();\n  end if;",
+  },
+  {
+    id: 'p11e-non-owner-can-challenge',
+    why: 'THE CHALLENGE IS OWNER-ONLY (matrix #12-14). Widening to approved members lets the '
+      + 'claimant halt — or, read the other way, lets a beneficiary interfere with a legitimate '
+      + 'process. Both directions are wrong, and the byte-identical refusal matrix must object.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if not public.is_estate_owner(p_estate) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  select l.state into v_state\n    from public.estate_lifecycle l\n   where l.estate_id = p_estate\n   for update;",
+    to: "  if not (public.is_estate_owner(p_estate)\n          or exists (select 1 from public.estate_memberships m\n                      where m.estate_id = p_estate and m.user_id = v_uid and m.status = 'approved')) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  select l.state into v_state\n    from public.estate_lifecycle l\n   where l.estate_id = p_estate\n   for update;",
+  },
+  {
+    id: 'p11e-challenge-requires-designation',
+    why: 'THE CHALLENGE MUST BE CHEAPER THAN THE CLAIM (R13, matrix #10). Requiring a designation '
+      + 'means an owner who never named an executor cannot object to their own death — the exact '
+      + 'population most exposed to a false claim.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if not public.is_estate_owner(p_estate) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  select l.state into v_state\n    from public.estate_lifecycle l\n   where l.estate_id = p_estate\n   for update;",
+    to: "  if not public.is_estate_owner(p_estate)\n     or not exists (select 1 from public.estate_designations d\n                     where d.estate_id = p_estate and d.status = 'active') then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  select l.state into v_state\n    from public.estate_lifecycle l\n   where l.estate_id = p_estate\n   for update;",
+  },
+  {
+    id: 'p11e-challenge-requires-window-open',
+    why: 'THE OWNER MAY OBJECT AT ANY PRE-RELEASE STAGE (§7). Narrowing to challenge_window alone '
+      + 'means an owner who learns of a pending case cannot stop it until the platform decides to '
+      + 'open a window — the protection arrives only when the claimant has already succeeded.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_state = 'active' then\n    raise exception 'nothing_to_challenge' using errcode = 'P0001';\n  end if;",
+    to: "  if v_state <> 'challenge_window' then\n    raise exception 'nothing_to_challenge' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11e-release-proceeds-after-challenge',
+    why: 'A HALTED PROCESS CAN NEVER RELEASE (matrix #7). Accepting challenge_halted as a release '
+      + 'source is the "the review concluded anyway" edit — it overrides a living owner with a '
+      + 'workflow.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_row.state is distinct from 'challenge_window' then",
+    to: "  if v_row.state not in ('challenge_window', 'challenge_halted') then",
+  },
+  {
+    id: 'p11e-window-duration-seeded',
+    why: 'THE WINDOW DURATION IS A PRODUCT DECISION, NOT A DEFAULT (§30). A migration seeding one '
+      + 'hour makes every deployment silently agree to a challenge period nobody approved — and '
+      + 'the fail-closed "never elapses" property disappears with it.',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    file: 'db/migrations/0054_20260812_challenge_window_release_seam.sql',
+    from: "alter table public.release_safety_policy enable row level security;",
+    to: "alter table public.release_safety_policy enable row level security;\ninsert into public.release_safety_policy (id, challenge_window) values (true, interval '1 hour') on conflict (id) do nothing;",
+  },
+  {
+    id: 'p11e-challenge-audit-leaks-provenance',
+    why: 'CHALLENGE PROVENANCE IS INFORMATION ABOUT A LIVING OWNER (§17, matrix #32). Recording the '
+      + 'channel that responded tells anyone with audit access which of the owner\'s devices or '
+      + 'addresses is alive — a targeting aid, added in the name of forensics.',
+    file: 'db/functions/release_safety.sql',
+    from: "    jsonb_build_object('severity', 'high', 'from_state', v_state));",
+    to: "    jsonb_build_object('severity', 'high', 'from_state', v_state,\n                      'channel', 'in_app', 'device', current_setting('request.headers', true)));",
+  },
+  {
+    id: 'p11e-release-manufactures-grant',
+    why: 'RELEASE IS EVALUATIVE, NEVER A WRITE (matrix #20, R6). Inserting a grant "so the survivor '
+      + 'can see something" at the moment of release is disclosure authority leaving the owner\'s '
+      + 'hands at exactly the point nobody can take it back.',
+    file: 'db/functions/release_safety.sql',
+    from: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'window_elapsed');",
+    to: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'window_elapsed');\n  insert into public.access_grants\n    (estate_id, grantee_user_id, grantee_role, category, visibility_tier, release_condition, status, granted_by_user_id)\n  select p_estate, c.initiated_by, 'beneficiary', 'estate_inventory', 'full_detail', 'immediately', 'active', c.initiated_by\n    from public.death_verification_cases c where c.id = v_case;",
+  },
+  {
+    id: 'p11e-release-raises-tier',
+    why: 'RELEASE MUST NOT TOUCH A TIER (matrix #21, R6). Raising existing grants at release '
+      + 'rewrites owner-authored disclosure at the worst possible moment, and the composed '
+      + 'equivalence matrix must see the delegate move beyond what the owner authored.',
+    file: 'db/functions/release_safety.sql',
+    from: "  update public.estate_lifecycle\n     set released_at = now()\n   where estate_id = p_estate;",
+    to: "  update public.estate_lifecycle\n     set released_at = now()\n   where estate_id = p_estate;\n  update public.access_grants set visibility_tier = 'full_detail' where estate_id = p_estate;",
+  },
+  {
+    id: 'p11e-release-creates-membership',
+    why: 'RELEASE MANUFACTURES NO RELATIONSHIP (matrix #22, R6). Materializing a membership for the '
+      + 'claimant makes the release event an identity writer — the bracket over memberships must '
+      + 'object.',
+    file: 'db/functions/release_safety.sql',
+    from: "  update public.estate_lifecycle\n     set released_at = now()\n   where estate_id = p_estate;",
+    to: "  update public.estate_lifecycle\n     set released_at = now()\n   where estate_id = p_estate;\n  insert into public.estate_memberships (estate_id, user_id, role, status)\n  select p_estate, c.initiated_by, 'beneficiary', 'approved'\n    from public.death_verification_cases c where c.id = v_case;",
+  },
+  {
+    id: 'p11e-safety-notice-asserts-death',
+    why: 'THE COPY MAY NOT ASSERT A DEATH (§18, matrix #33). "We have confirmed your death" to a '
+      + 'living owner is both false and cruel, and it is the most natural wording anyone would '
+      + 'reach for when describing what happened.',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    file: 'db/functions/lifecycle_notification_rpcs.sql',
+    from: "     'A release process is waiting on your estate. You can review and halt it now.')",
+    to: "     'We have verified your death and will release your estate. Halt this if you are alive.')",
+  },
+  {
+    id: 'p11e-owner-status-leaks-lifecycle',
+    why: 'THE OWNER SURFACE IS A CLOSED PRESENTATION UNION (§5). Returning the raw lifecycle hands '
+      + 'the client machine internals to branch on — the first step toward a client that decides '
+      + 'release eligibility for itself.',
+    file: 'db/functions/release_safety.sql',
+    from: "  return case v_state\n    when 'death_verification_pending' then 'challengeable'",
+    to: "  return case v_state\n    when 'death_verification_pending' then v_state\n    when 'aw_never' then 'challengeable'",
+  },
+  {
+    id: 'p11e-status-read-loses-owner-gate',
+    why: 'ONLY THE OWNER MAY ASK ABOUT THEIR OWN ESTATE (§16). Dropping the gate turns the safety '
+      + 'status into a death-process oracle for any authenticated user against any estate id.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if not public.is_estate_owner(p_estate) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  v_state := public.estate_lifecycle_state(p_estate);",
+    to: "  if false then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  v_state := public.estate_lifecycle_state(p_estate);",
+  },
+  {
+    id: 'p11e-release-lever-granted-to-clients',
+    why: 'THE RELEASE ACTOR IS A DEFERRED PRODUCT DECISION (§6, matrix #15). Granting EXECUTE to '
+      + 'authenticated hands every signed-in account the ability to release any estate whose window '
+      + 'has elapsed — and it reads like fixing an oversight.',
+    file: 'db/functions/release_safety.sql',
+    from: "revoke execute on function public.release_estate(uuid) from public, anon, authenticated;",
+    to: "grant execute on function public.release_estate(uuid) to authenticated;",
   },
 ]);
 

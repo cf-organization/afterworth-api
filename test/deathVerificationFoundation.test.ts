@@ -77,7 +77,14 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
     "estate_lifecycle_state.sql",
     "get_estate_net_worth.sql",
     "list_estate_assets.sql",
+    // ★ PHASE 11-E. The safety module reads the lifecycle to gate its own transitions — the one
+    // sanctioned NON-disclosure consumer. It is exempt from the only-as-an-argument rule below
+    // (it decides transitions, not disclosure) and carries its own dedicated rules in section 6.
+    "release_safety.sql",
   ] as const;
+
+  /** Files that legitimately WRITE or gate on the lifecycle rather than disclose from it. */
+  const LIFECYCLE_MODULES = ["death_verification.sql", "estate_lifecycle_state.sql", "release_safety.sql"];
 
   const namesTheReader = (code: string) => /\bpublic\.estate_lifecycle_state\s*\(/.test(code);
   const namesTheTable = (code: string) => /\bpublic\.estate_lifecycle\b(?!_state)/.test(code);
@@ -87,10 +94,8 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
     expect(callers).toEqual([...SANCTIONED_READER_CALLERS].sort());
   });
 
-  it("only the reader and the transition writer touch the TABLE", () => {
-    const offenders = sources.filter(
-      (s) => !["death_verification.sql", "estate_lifecycle_state.sql"].includes(s.file) && namesTheTable(s.code)
-    );
+  it("only the lifecycle modules touch the TABLE", () => {
+    const offenders = sources.filter((s) => !LIFECYCLE_MODULES.includes(s.file) && namesTheTable(s.code));
     expect(offenders.map((o) => o.file)).toEqual([]);
   });
 
@@ -101,9 +106,7 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
      * to OPEN, unclosed, within the 200 characters before the mention. A local `if`/`case`
      * comparison has no such unclosed call in front of it.
      */
-    const evaluators = SANCTIONED_READER_CALLERS.filter(
-      (f) => f !== "death_verification.sql" && f !== "estate_lifecycle_state.sql"
-    );
+    const evaluators = SANCTIONED_READER_CALLERS.filter((f) => !LIFECYCLE_MODULES.includes(f));
     for (const f of evaluators) {
       const code = sources.find((s) => s.file === f)!.code;
       for (const m of code.matchAll(/public\.estate_lifecycle_state\s*\(/g)) {
@@ -183,24 +186,88 @@ describe("3 · the transition map is closed and release-shaped states are unwrit
     return rest.slice(0, rest.indexOf("$function$;"));
   })();
 
-  it("the map admits exactly the three 11-C moves", () => {
-    expect(transitionBody).toContain("(v_from = 'active'                     and p_to = 'death_verification_pending')");
-    expect(transitionBody).toContain("(v_from = 'death_verification_pending' and p_to = 'active')");
-    expect(transitionBody).toContain("(v_from = 'death_verification_pending' and p_to = 'death_verified')");
-    expect(transitionBody).not.toContain("'released'");
-    expect(transitionBody).not.toContain("'frozen'");
+  /**
+   * ★ RE-ANCHORED IN 11-E, AND THE TWO ABSENCES ARE NOW THE POINT. The 11-C version pinned three
+   * moves and the unwritability of `released`; 11-E adds the safety seam, so the map admits eight
+   * moves — and what this rule protects becomes the shape of the machine rather than its size:
+   *
+   *   · nothing leaves `challenge_halted` (the owner said no; no resume, no admin override);
+   *   · nothing leaves `released` (disclosure cannot be undone, R15);
+   *   · `released` is entered from `challenge_window` ALONE — never from `death_verified`, which
+   *     would skip the owner's window entirely.
+   */
+  const EXPECTED_EDGES = [
+    ["active", "death_verification_pending"],
+    ["death_verification_pending", "active"],
+    ["death_verification_pending", "death_verified"],
+    ["death_verified", "challenge_window"],
+    ["death_verification_pending", "challenge_halted"],
+    ["death_verified", "challenge_halted"],
+    ["challenge_window", "challenge_halted"],
+    ["challenge_window", "released"],
+  ] as const;
+
+  /** Every (from → to) pair the map actually admits, parsed from the conjunction list. */
+  const actualEdges = (): [string, string][] =>
+    [...transitionBody.matchAll(/v_from\s*=\s*'(\w+)'\s*and\s+p_to\s*=\s*'(\w+)'/g)].map(
+      (m) => [m[1], m[2]] as [string, string]
+    );
+
+  it("the map admits exactly the eight 11-E moves, and no others", () => {
+    const got = actualEdges().map(([f, t]) => `${f}->${t}`).sort();
+    const want = EXPECTED_EDGES.map(([f, t]) => `${f}->${t}`).sort();
+    expect(got).toEqual(want);
   });
 
-  it("the lifecycle CHECK in 0052 admits no release-shaped state", () => {
-    const m52 = migrations.find((m) => m.file.startsWith("0052"))!;
-    const check = m52.code.slice(
-      m52.code.indexOf("create table if not exists public.estate_lifecycle"),
-      m52.code.indexOf("alter table public.estate_lifecycle")
+  it("challenge_halted and released are TERMINAL — no edge leaves either", () => {
+    const leaving = actualEdges().filter(([from]) => from === "challenge_halted" || from === "released");
+    expect(
+      leaving.map(([f, t]) => `${f}->${t}`),
+      "a halted or released process can be moved on — 11-E forbids both (no resume, no un-disclosure)"
+    ).toEqual([]);
+  });
+
+  it("released is entered ONLY from challenge_window", () => {
+    const into = actualEdges().filter(([, to]) => to === "released").map(([from]) => from);
+    expect(into, "release must pass through the owner-challenge window").toEqual(["challenge_window"]);
+  });
+
+  it("detection sanity: the edge parser sees a real map and a widened one", () => {
+    expect(actualEdges().length).toBe(8);
+    const widened = "or (v_from = 'death_verified'             and p_to = 'released')";
+    expect([...widened.matchAll(/v_from\s*=\s*'(\w+)'\s*and\s+p_to\s*=\s*'(\w+)'/g)].map((m) => [m[1], m[2]]))
+      .toEqual([["death_verified", "released"]]);
+  });
+
+  it("the lifecycle CHECK admits exactly the six approved states, and nothing invented", () => {
+    // ★ THE VOCABULARY MOVED TO 0054 IN 11-E: 0052 creates the table with the foundation states,
+    // 0054 widens it to the safety machine. The rule follows the vocabulary rather than the file.
+    const m54 = migrations.find((m) => m.file.startsWith("0054"));
+    expect(m54, "migration 0054 is missing — the safety vocabulary has no source").toBeDefined();
+    const check = m54!.code.slice(
+      m54!.code.indexOf("add constraint estate_lifecycle_state_check"),
+      m54!.code.indexOf("end $$;")
     );
-    expect(check).toContain("'death_verification_pending'");
-    expect(check).toContain("'death_verified'");
-    expect(check).not.toContain("'released'");
+    for (const s of ["active", "death_verification_pending", "death_verified",
+                     "challenge_window", "challenge_halted", "released"]) {
+      expect(check, `the lifecycle CHECK is missing ${s}`).toContain(`'${s}'`);
+    }
+    expect((check.match(/'[a-z_]+'/g) ?? []).length, "the vocabulary is not exactly six states").toBe(6);
     expect(check).not.toContain("'frozen'");
+    // And the migration carries its own apply-time guard, so a CHECK that silently failed to move
+    // raises at paste time rather than reading as success.
+    expect(m54!.code).toContain("0054 FAILED");
+  });
+
+  it("the window-duration configuration ships EMPTY — no seeded product decision", () => {
+    const m54 = migrations.find((m) => m.file.startsWith("0054"))!;
+    expect(m54.code).toContain("create table if not exists public.release_safety_policy");
+    expect(
+      /insert\s+into\s+public\.release_safety_policy/i.test(m54.code),
+      "the migration seeds a challenge-window duration — that is a product decision, not a default"
+    ).toBe(false);
+    // No client role may reach the safety clock.
+    expect(m54.code).not.toMatch(/grant\s+(select|insert|update|delete|all)[\s\S]{0,120}release_safety_policy/i);
   });
 
   it("event_type is 'death' alone — incapacity unrepresentable for new rows", () => {
@@ -266,6 +333,147 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
 
   it("the setter takes public.verification_level, not text", () => {
     expect(dv!.code).toContain("p_level public.verification_level");
+  });
+
+  it("the safety module touches no disclosure surface either (Phase 11-E)", () => {
+    /**
+     * ★ THE SAME FORBIDDEN SET THE CASE MODULE CARRIES, APPLIED TO THE ROUTINES THAT MOVE THE
+     * LIFECYCLE. Release is EVALUATIVE: the state moves and the canonical predicate answers
+     * differently. A safety routine that wrote a grant, raised a tier, or called the predicate
+     * itself would be manufacturing disclosure at the exact moment the product is least able to
+     * take it back.
+     */
+    const rs = sources.find((s) => s.file === "release_safety.sql");
+    expect(rs, "release_safety.sql is missing — the 11-E safety module has no source").toBeDefined();
+    for (const term of [
+      "access_grants", "visibility_tier", "encrypted_instructions", "claim_packets",
+      "release_condition_satisfied", "release_condition_writable", "estate_release_state",
+      "can_access_document", "inventory_disclosure_tier", "document_grantable",
+      "asset_category_grantable", "estate_memberships", "estate_designations",
+    ]) {
+      expect(rs!.code, `release_safety.sql names ${term}`).not.toContain(term);
+    }
+  });
+
+  it("the challenge is owner-gated, evidence-free and takes ONE argument (R13)", () => {
+    const rs = sources.find((s) => s.file === "release_safety.sql")!;
+    const body = rs.code.slice(rs.code.indexOf("function public.challenge_death_process"));
+    const fn = body.slice(0, body.indexOf("$function$;"));
+    // One argument: an estate. A second parameter would be somewhere to put an evidence
+    // requirement, a reason code, or a review token — none of which the owner should owe anyone.
+    expect(rs.code).toMatch(/function public\.challenge_death_process\(p_estate uuid\)/);
+    expect(fn).toContain("public.is_estate_owner(p_estate)");
+    // The gate precedes any state or existence lookup, so a nonexistent estate and a foreign one
+    // refuse with the same bytes.
+    expect(fn.indexOf("is_estate_owner")).toBeLessThan(fn.indexOf("from public.estate_lifecycle"));
+    // Nothing about designations, evidence, review, admin gates or waiting.
+    for (const term of ["is_estate_executor", "estate_designations", "death_verification_evidence",
+                        "admin_require_gate", "required_verification_level", "attained_level",
+                        "challenge_window_duration"]) {
+      expect(fn, `the challenge consults ${term} — it must be cheaper than the claim (R13)`).not.toContain(term);
+    }
+  });
+
+  it("release requires a STRICTLY elapsed window and stays client-unreachable", () => {
+    const rs = sources.find((s) => s.file === "release_safety.sql")!;
+    const body = rs.code.slice(rs.code.indexOf("function public.release_estate"));
+    const fn = body.slice(0, body.indexOf("$function$;"));
+    // ★ STRICT `>`, NOT `>=`. At the exact boundary instant release must refuse so the owner
+    // challenge wins the tie (R14). `>=` is the one-character edit that loses it.
+    expect(fn).toMatch(/now\(\)\s*>\s*v_row\.owner_notified_at\s*\+\s*v_duration/);
+    expect(fn, "the boundary comparison is non-strict — a tie would go to release, not the owner")
+      .not.toMatch(/now\(\)\s*>=\s*v_row\.owner_notified_at/);
+    // The three-valued-logic discipline: a NULL comparison must refuse, not pass.
+    expect(fn).toContain("coalesce(now() > v_row.owner_notified_at + v_duration, false)");
+    // Guards: state, committed notice, verified case, configured duration.
+    for (const guard of ["invalid_release_state", "owner_not_notified", "no_verified_case",
+                         "release_window_not_configured", "release_window_not_elapsed"]) {
+      expect(fn, `release lost its ${guard} guard`).toContain(guard);
+    }
+    // And no client role may pull the lever — the actor is a deferred product decision.
+    expect(rs.code).toMatch(
+      /revoke execute on function public\.release_estate\(uuid\)\s+from public, anon, authenticated/
+    );
+    expect(rs.code, "release_estate was granted to a client role").not.toMatch(
+      /grant\s+execute on function public\.release_estate/
+    );
+  });
+
+  it("the owner safety notice is REQUIRED before a window may open", () => {
+    /**
+     * ★ THE EMITTER'S USUAL TRADE IS INVERTED HERE, AND THAT IS THE SAFETY PRECONDITION (§9).
+     * `emit_lifecycle_notification` deliberately swallows failure so a grant still commits when a
+     * heads-up cannot be written. The window-open notice is not a heads-up — it is the owner's one
+     * chance to object — so a null return must roll the transition back.
+     */
+    const rs = sources.find((s) => s.file === "release_safety.sql")!;
+    const body = rs.code.slice(rs.code.indexOf("function public.begin_challenge_window"));
+    const fn = body.slice(0, body.indexOf("$function$;"));
+    expect(fn).toContain("'death_process.window_opened'");
+    expect(fn).toMatch(/if v_notice is null then\s*\n\s*raise exception 'owner_notification_failed'/);
+    // The notice is emitted BEFORE the transition, so a failure cannot leave a window open.
+    expect(fn.indexOf("emit_lifecycle_notification")).toBeLessThan(fn.indexOf("apply_estate_lifecycle_transition"));
+    expect(fn).toContain("public.admin_require_gate()");
+  });
+
+  /**
+   * ★ THE SAFETY NOTICE DOES NOT TRAVEL THE OUTBOX, AND THAT IS A DELIVERY-CLASS DECISION (§10).
+   *
+   * The invitation email outbox is an at-least-once, eventually-delivered queue drained by a DAILY
+   * cron — so a row it carries can be up to roughly a day behind, and its claim predicate has NO
+   * age gate (any `queued` row is claimable whenever the drain next runs). That is the right class
+   * for an invitation email and the wrong one for the notice that starts a release clock: a window
+   * that opened today on a notice delivered tomorrow has spent a day of the owner's protection
+   * before they could read it.
+   *
+   * So `begin_challenge_window` writes an in-app notification in its OWN transaction and REQUIRES
+   * it to commit. This rule keeps the two paths from merging quietly — routing the safety notice
+   * through the outbox would be a silent downgrade from "committed before the window opens" to
+   * "queued, probably delivered", which is exactly the substitution §10 forbids.
+   */
+  it("the safety notice is committed in-transaction and never queued to the email outbox (§10)", () => {
+    const rs = sources.find((s) => s.file === "release_safety.sql")!;
+    for (const term of ["invitation_delivery_outbox", "claim_invitation_delivery_batch",
+                        "issue_invitation_delivery_notice", "purge_outbox", "outbox"]) {
+      expect(rs.code, `release_safety.sql routes the safety notice through ${term}`).not.toContain(term);
+    }
+    // It uses the in-app emitter, and the emitter's own transactional contract is what makes the
+    // "required to commit" guarantee meaningful.
+    expect(rs.code).toContain("public.emit_lifecycle_notification");
+    const rpcs = sources.find((s) => s.file === "lifecycle_notification_rpcs.sql")!;
+    const emitter = rpcs.code.slice(rpcs.code.indexOf("function public.emit_lifecycle_notification"));
+    expect(emitter.slice(0, emitter.indexOf("$function$;"))).not.toContain("outbox");
+  });
+
+  it("the safety notice copy asserts no death and names no claimant (§18)", () => {
+    /**
+     * ★ THE EVENT KEY IS NOT COPY, AND CONFLATING THEM IS HOW THIS RULE FIRST FAILED. The catalog
+     * row's first string is `death_process.window_opened` — a server-side identifier that never
+     * reaches a screen, and which SHOULD name the process it belongs to. The three strings after
+     * it are the category, title and body, and those are what a person reads. Scanning the whole
+     * row condemned the key for containing "death"; scanning the rendered strings tests the thing
+     * the rule is named for.
+     */
+    const rpcs = sources.find((s) => s.file === "lifecycle_notification_rpcs.sql")!;
+    const catalog = rpcs.code.slice(rpcs.code.indexOf("function public.notification_event_copy"));
+    const row = catalog.slice(catalog.indexOf("('death_process.window_opened'"));
+    const strings = [...row.slice(0, 400).matchAll(/'([^']*)'/g)].map((m) => m[1]);
+    expect(strings.length, "could not extract the catalog row's strings").toBeGreaterThanOrEqual(4);
+    expect(strings[0], "the event key moved — this rule is reading the wrong row").toBe("death_process.window_opened");
+    const rendered = strings.slice(1, 4); // category, title, body — everything a person sees
+    expect(rendered[1]).toBe("A release process is waiting");
+    for (const forbidden of ["died", "death", "deceased", "passed away", "executor", "claimant",
+                             "fraud", "probate", "estate of"]) {
+      for (const s of rendered) {
+        expect(s.toLowerCase(), `rendered copy "${s}" contains "${forbidden}"`).not.toContain(forbidden);
+      }
+    }
+    // Pure ASCII, like every other catalog entry (the Hermes-bundle extraction rule).
+    for (const s of rendered) {
+      expect(/^[\x20-\x7E]*$/.test(s), `rendered copy "${s}" contains a non-ASCII character`).toBe(true);
+    }
+    // Detection sanity: the matcher WOULD catch a death assertion in the body.
+    expect("Your loved one has died.".toLowerCase()).toContain("died");
   });
 
   it("the internal routines are revoked from every client role", () => {

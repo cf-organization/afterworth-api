@@ -202,7 +202,14 @@ do $$
 declare
   v_def text;
 begin
-  -- Lifecycle vocabulary: exactly the three 11-C states, and no release-shaped value.
+  -- Lifecycle vocabulary: the three foundation states this migration owns must be present.
+  --
+  -- ★ EDITED IN PHASE 11-E (0052 has never been deployed; the bundles re-apply this file after
+  -- 0054). The original check raised if 'released' was storable — correct while 0052 was the last
+  -- word on the vocabulary, and WRONG the moment 0054 deliberately widened it: a re-applied bundle
+  -- would read the widened CHECK and abort its own idempotent re-paste. The absence pin did not
+  -- weaken — it MOVED to where the vocabulary now lives: 0054's self-check pins exactly six states
+  -- and refuses invented ones, and the SQL suite enumerates the deployed CHECK on every run.
   select pg_get_constraintdef(con.oid) into v_def
     from pg_constraint con
     join pg_class rel on rel.oid = con.conrelid
@@ -212,13 +219,10 @@ begin
   if v_def is null then
     raise exception '0052 FAILED: estate_lifecycle has no state CHECK';
   end if;
-  if position('death_verification_pending' in v_def) = 0
+  if position('active' in v_def) = 0
+     or position('death_verification_pending' in v_def) = 0
      or position('death_verified' in v_def) = 0 then
-    raise exception '0052 FAILED: lifecycle CHECK is missing an 11-C state: %', v_def;
-  end if;
-  if position('released' in v_def) > 0 or position('frozen' in v_def) > 0 then
-    raise exception '0052 FAILED: a release-shaped state is storable — that is the 11-D change, '
-      'not a value waiting for a writer: %', v_def;
+    raise exception '0052 FAILED: lifecycle CHECK is missing an 11-C foundation state: %', v_def;
   end if;
 
   -- Event vocabulary: death only; the fused shape unrepresentable.

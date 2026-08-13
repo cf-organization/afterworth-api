@@ -197,13 +197,17 @@ describe("2 · death- and claim-conditioned grants are dormant at EVERY evaluati
   });
 
   /**
-   * ★ THIS TRIPWIRE FIRED IN PHASE 11-D, WHICH IS WHAT IT WAS FOR. Until 11-D the split death
-   * condition was admitted by no evaluator; the 11-D change admits it in EXACTLY ONE place — the
-   * canonical predicate — and only conjoined with the authoritative death_verified lifecycle. Both
-   * halves are pinned: the one sanctioned admission must exist in the shape that carries the
-   * conjunction, and every OTHER evaluator must still admit nothing.
+   * ★ THIS TRIPWIRE HAS FIRED TWICE, ONCE PER PHASE, WHICH IS WHAT IT IS FOR. 11-D admitted the
+   * death condition conjoined with `death_verified`; 11-E RE-POINTED that conjunction at
+   * `released`, because an accepted verification must not reach disclosure without the owner's
+   * challenge window in between. Three halves are pinned here:
+   *
+   *   · every OTHER evaluator still admits nothing (release policy has not leaked out of the centre);
+   *   · the ONE sanctioned admission exists and is conjoined with `released`;
+   *   · `death_verified` no longer appears as a SATISFYING lifecycle anywhere in the module — the
+   *     regression that would silently restore the 11-D behaviour and skip the safety seam.
    */
-  it("after_verified_death is admitted ONLY by the canonical predicate, conjoined with death_verified", () => {
+  it("after_verified_death is admitted ONLY by the canonical predicate, conjoined with RELEASED", () => {
     for (const { file, code } of evaluators) {
       if (file === "release_conditions.sql") continue;
       expect(
@@ -212,17 +216,31 @@ describe("2 · death- and claim-conditioned grants are dormant at EVERY evaluati
       ).toBe(false);
     }
     const canonical = scannable("release_conditions.sql", evaluators.find((e) => e.file === "release_conditions.sql")!.code);
-    expect(admits(canonical, "after_verified_death"), "the canonical predicate no longer admits the death condition — the 11-D activation was reverted silently").toBe(true);
-    // The admission is CONJOINED with the lifecycle fact, in one expression: condition equality
-    // AND the death_verified comparison, with nothing but whitespace/comments-free code between.
+    expect(admits(canonical, "after_verified_death"), "the canonical predicate no longer admits the death condition — the activation was reverted silently").toBe(true);
+    // The admission is CONJOINED with the lifecycle fact, in one expression.
     expect(canonical).toMatch(
-      /p_release_condition\s*=\s*'after_verified_death'\s*\n?\s*and\s+p_lifecycle_state\s*=\s*'death_verified'/
+      /p_release_condition\s*=\s*'after_verified_death'\s*\n?\s*and\s+p_lifecycle_state\s*=\s*'released'/
     );
+    // ★ AND `death_verified` IS NOT A SATISFYING STATE. It may appear in the VALIDITY GATE (the
+    // closed vocabulary list) — that is what makes an unknown lifecycle fail closed — but never as
+    // the right-hand side of a satisfying comparison. Excising the gate line makes the difference
+    // checkable rather than approximate.
+    const gateLine = canonical.split("\n").find((l) => l.includes("p_lifecycle_state in ("));
+    expect(gateLine, "the lifecycle validity gate disappeared — unknown states would no longer fail closed").toBeDefined();
+    const withoutGate = canonical.split("\n").filter((l) => !l.includes("p_lifecycle_state in (") && !/^\s*'(challenge_window|challenge_halted|released)',?\)?\s*$/.test(l)).join("\n");
+    expect(
+      /p_lifecycle_state\s*=\s*'death_verified'/.test(withoutGate),
+      "death_verified is compared as a SATISFYING lifecycle — the 11-E challenge window is bypassed"
+    ).toBe(false);
+    expect(
+      /p_lifecycle_state\s*=\s*'challenge_(window|halted)'/.test(withoutGate),
+      "a challenge state is compared as a satisfying lifecycle — the window or a halt would release"
+    ).toBe(false);
     // And the conjunction lives under the STANDARD policy arm, after it and before the legacy arm.
     const standardArm = canonical.slice(canonical.indexOf("when 'standard' then"), canonical.indexOf("when 'legacy_immediate_only' then"));
     expect(standardArm).toContain("'after_verified_death'");
     const legacyArm = canonical.slice(canonical.indexOf("when 'legacy_immediate_only' then"), canonical.indexOf("else false"));
-    expect(legacyArm, "the legacy policy arm names the death condition — the policies were harmonized (R12)").not.toContain("'after_verified_death'");
+    expect(legacyArm, "the legacy policy arm names the death condition — the policies were harmonized (R10)").not.toContain("'after_verified_death'");
   });
 
   it("detection sanity: both the column and the variable spelling are caught", () => {

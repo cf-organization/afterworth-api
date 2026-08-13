@@ -42,6 +42,7 @@ buildBundle(
       // never consults a lifecycle, because a "You have access" born from death_verified is the
       // release announcement 11-F owns.
       'db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
+      'db/migrations/0054_20260812_challenge_window_release_seam.sql',
       'db/functions/release_conditions.sql',
       // ★ EVERY FUNCTION BEFORE THE MIGRATION, deliberately inverted from the usual migration-first
       // order. 0050 is entirely `revoke execute on function ...` plus one index, and a REVOKE names
@@ -76,6 +77,11 @@ buildBundle(
       ['db/migrations/0050_20260811_lifecycle_notifications.sql', 'revoke execute on function public.emit_notification'],
       ['db/functions/emit_notification.sql', 'create or replace function public.emit_notification'],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.notification_event_copy'],
+      // ★ THE 11-E OWNER SAFETY NOTICE MUST SHIP WITH ITS COPY. begin_challenge_window REQUIRES
+      // this event to emit before any window can open; a catalog without it makes every window
+      // opening fail loudly (owner_notification_failed) — correct, but a bundle that cannot open
+      // a window is not the artifact this manifest describes.
+      ['db/functions/lifecycle_notification_rpcs.sql', "'death_process.window_opened'"],
       ['db/functions/lifecycle_notification_rpcs.sql', 'create or replace function public.notification_grant_is_live'],
       // ★ THE 11-D EMISSION PIN: the speech predicate evaluates against the BASE lifecycle, so a
       // death-conditioned grant emits nothing even at death_verified. A source where this literal

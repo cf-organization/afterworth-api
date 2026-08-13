@@ -114,10 +114,11 @@ create or replace function public.release_condition_satisfied(
 as $function$
   select coalesce(
     -- ★ THE LIFECYCLE VALIDITY GATE COMES FIRST and refuses EVERYTHING on an out-of-vocabulary
-    -- state. The set is the 0052 CHECK's, spelled here because a pure function cannot read the
-    -- catalog; `db/tests/release_condition_authorization.sql` enumerates the CHECK at run time and
-    -- fails if the two vocabularies ever drift.
-    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified')
+    -- state. The set is the deployed CHECK's (0052 widened by 0054), spelled here because a pure
+    -- function cannot read the catalog; `db/tests/release_condition_authorization.sql` enumerates
+    -- the CHECK at run time and fails if the two vocabularies ever drift.
+    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified',
+                          'challenge_window', 'challenge_halted', 'released')
     and case p_policy
       -- Documents, the estate-documents category, estate inventory, and notification speech.
       -- `after_owner_approval` (owner-initiated) and `after_access_request_approval`
@@ -127,13 +128,17 @@ as $function$
         p_release_condition = 'immediately'
         or (p_release_condition in ('after_owner_approval', 'after_access_request_approval')
             and p_approved_at is not null)
-        -- ★ PHASE 11-D — THE DEATH ARM. Satisfied exactly while the authoritative lifecycle is
-        -- death_verified; pending verification satisfies nothing, and the conjunction is the
-        -- firewall: claim approval, evidence, and attained levels never appear here because they
-        -- cannot move the lifecycle. Incapacity and the legacy fused value stay out of this arm
-        -- entirely — dormant under every policy, every lifecycle (R6/R7).
+        -- ★ THE DEATH ARM — RE-POINTED IN PHASE 11-E (R7). 11-D satisfied this at death_verified;
+        -- that connected an accepted verification DIRECTLY to irreversible disclosure, and 11-E
+        -- inserts the safety seam: the condition is satisfied ONLY at `released`, which is
+        -- reachable only through the challenge window — owner notified in the same transaction,
+        -- configured duration strictly elapsed, no owner challenge. death_verified satisfies
+        -- NOTHING; challenge_window satisfies NOTHING; challenge_halted satisfies NOTHING.
+        -- Claim approval, evidence, and attained levels never appear here because they cannot
+        -- move the lifecycle. Incapacity and the legacy fused value stay out of this arm
+        -- entirely — dormant under every policy, every lifecycle (R8/R9).
         or (p_release_condition = 'after_verified_death'
-            and p_lifecycle_state = 'death_verified')
+            and p_lifecycle_state = 'released')
 
       -- The asset-value surfaces (account balances, institution names, total asset value, linked
       -- account details). Carried forward EXACTLY as written in 11-B, including their narrowness
@@ -150,13 +155,14 @@ as $function$
 $function$;
 
 comment on function public.release_condition_satisfied(text, timestamptz, text, text) is
-  'THE canonical release-condition authority (Phase 11-B; lifecycle-aware since 11-D). Answers only '
-  '"is this condition presently satisfied", never who may receive a grant, what tier they get, or '
-  'whether anyone has died. PURE: the lifecycle arrives as an argument, resolved by SECURITY DEFINER '
-  'consumers through public.estate_lifecycle_state — never from claim status, evidence, or attained '
-  'levels. after_verified_death is satisfied only under the standard policy at death_verified; '
-  'incapacity, the legacy fused value, identity and claim conditions are dormant under every policy. '
-  'Unknown condition, unknown policy, unknown lifecycle and NULL all refuse.';
+  'THE canonical release-condition authority (Phase 11-B; lifecycle-aware since 11-D; safety-seamed '
+  'in 11-E). Answers only "is this condition presently satisfied", never who may receive a grant, '
+  'what tier they get, or whether anyone has died. PURE: the lifecycle arrives as an argument, '
+  'resolved by SECURITY DEFINER consumers through public.estate_lifecycle_state — never from claim '
+  'status, evidence, or attained levels. after_verified_death is satisfied only under the standard '
+  'policy at RELEASED (R7) — death_verified, challenge_window and challenge_halted all satisfy '
+  'nothing; incapacity, the legacy fused value, identity and claim conditions are dormant under '
+  'every policy. Unknown condition, unknown policy, unknown lifecycle and NULL all refuse.';
 
 revoke execute on function public.release_condition_satisfied(text, timestamptz, text, text) from public, anon;
 grant  execute on function public.release_condition_satisfied(text, timestamptz, text, text) to authenticated;
