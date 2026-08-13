@@ -627,7 +627,7 @@ const MUTATIONS = Object.freeze([
       + 'typo — evaluate as though the lifecycle were fine. Fail-closed on this axis is what makes '
       + 'a wiring mistake loud instead of permissive.',
     file: 'db/functions/release_conditions.sql',
-    from: "    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified',\n                          'challenge_window', 'challenge_halted', 'released')",
+    from: "    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified',\n                          'owner_notification_dispatched',\n                          'challenge_window', 'challenge_halted', 'released')",
     to: "    p_lifecycle_state is distinct from 'released'",
   },
   {
@@ -867,8 +867,8 @@ const MUTATIONS = Object.freeze([
       + 'lets a window that never reached the owner still elapse into disclosure — the safety '
       + 'precondition becomes decorative.',
     file: 'db/functions/release_safety.sql',
-    from: "  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;",
-    to: "  if false then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;",
+    from: "  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;\n  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by",
+    to: "  if false then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;\n  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by",
   },
   {
     id: 'p11e-window-opens-without-notifying',
@@ -946,8 +946,8 @@ const MUTATIONS = Object.freeze([
       + 'can see something" at the moment of release is disclosure authority leaving the owner\'s '
       + 'hands at exactly the point nobody can take it back.',
     file: 'db/functions/release_safety.sql',
-    from: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'window_elapsed');",
-    to: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'window_elapsed');\n  insert into public.access_grants\n    (estate_id, grantee_user_id, grantee_role, category, visibility_tier, release_condition, status, granted_by_user_id)\n  select p_estate, c.initiated_by, 'beneficiary', 'estate_inventory', 'full_detail', 'immediately', 'active', c.initiated_by\n    from public.death_verification_cases c where c.id = v_case;",
+    from: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'two_person_release');",
+    to: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'two_person_release');\n  insert into public.access_grants\n    (estate_id, grantee_user_id, grantee_role, category, visibility_tier, release_condition, status, granted_by_user_id)\n  select p_estate, c.initiated_by, 'beneficiary', 'estate_inventory', 'full_detail', 'immediately', 'active', c.initiated_by\n    from public.death_verification_cases c where c.id = v_case;",
   },
   {
     id: 'p11e-release-raises-tier',
@@ -984,8 +984,8 @@ const MUTATIONS = Object.freeze([
       + 'the client machine internals to branch on — the first step toward a client that decides '
       + 'release eligibility for itself.',
     file: 'db/functions/release_safety.sql',
-    from: "  return case v_state\n    when 'death_verification_pending' then 'challengeable'",
-    to: "  return case v_state\n    when 'death_verification_pending' then v_state\n    when 'aw_never' then 'challengeable'",
+    from: "  return case v_state\n    when 'death_verification_pending'    then 'challengeable'",
+    to: "  return case v_state\n    when 'death_verification_pending'    then v_state\n    when 'aw_never' then 'challengeable'",
   },
   {
     id: 'p11e-status-read-loses-owner-gate',
@@ -995,14 +995,164 @@ const MUTATIONS = Object.freeze([
     from: "  if not public.is_estate_owner(p_estate) then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  v_state := public.estate_lifecycle_state(p_estate);",
     to: "  if false then\n    raise exception 'not_authorized' using errcode = '42501';\n  end if;\n\n  v_state := public.estate_lifecycle_state(p_estate);",
   },
+
+  /* ── PHASE 11-F · two-person release, owner-liveness delivery, outbox safety ──────────────────
+   * The five approved decisions each have a one-edit undo. These are those edits, written as the
+   * change a well-meaning contributor would actually make — a relaxed comparison, a "helpful"
+   * fallback, an optional notice, a reviewer parameter — and each names the instrument that must
+   * object.
+   */
+  {
+    id: 'p11f-same-reviewer-allowed',
+    why: 'D1 IN ONE CHARACTER. Turning the two-person comparison into an inequality that can never '
+      + 'fire lets the operator who verified the death authorize its release — one person, start to '
+      + 'finish, which is the entire decision undone.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_uid = v_reviewer_a then\n    raise exception 'two_person_rule_violated' using errcode = 'P0001';\n  end if;",
+    to: "  if false then\n    raise exception 'two_person_rule_violated' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11f-reviewer-a-supplied-not-derived',
+    why: 'D1 DEFEATED WITHOUT TOUCHING THE COMPARISON. Reading reviewer_a from the estate owner '
+      + 'instead of the case decider means the check compares the admin against someone who never '
+      + 'reviewed anything — the rule passes and one operator still released alone.',
+    file: 'db/functions/release_safety.sql',
+    from: "  select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified",
+    to: "  select c.id, public.estate_owner_user_id(p_estate), c.decided_at into v_case, v_reviewer_a, v_verified",
+  },
+  {
+    id: 'p11f-two-person-constraint-dropped',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    why: 'THE WALL BEHIND THE DOOR (D1). Removing the table CHECK leaves the routine check standing '
+      + 'and looks harmless — until any other writer, a future admin tool or a repair script, '
+      + 'records a single-reviewer release that no code path refused.',
+    file: 'db/migrations/0055_20260812_release_authorization.sql',
+    from: "  constraint release_authorizations_two_person check (reviewer_a <> reviewer_b)",
+    to: "  constraint release_authorizations_two_person check (reviewer_a is not null)",
+  },
+  {
+    id: 'p11f-notification-optional',
+    why: 'D4 MADE ADVISORY. Softening the unreachable-owner refusal to a queued row with no '
+      + 'recipient starts a seven-day clock on a person nobody can reach — the exact population a '
+      + 'false death process succeeds against.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_recipient is null or btrim(v_recipient) = '' then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;",
+    to: "  if v_recipient is null or btrim(v_recipient) = '' then\n    v_recipient := 'unknown@invalid';\n  end if;",
+  },
+  {
+    id: 'p11f-notification-failure-ignored',
+    why: 'THE INVERTED EMITTER TRADE, RE-BROKEN AT THE IN-APP CHANNEL. Swallowing a failed emit — '
+      + 'the default behaviour everywhere else, which is why this is the natural edit — dispatches '
+      + 'a window on one channel while claiming two. Aimed at the STRUCTURAL audit deliberately: '
+      + 'the happy path still commits a notice, so no runtime fixture separates this from correct '
+      + 'code without breaking the catalog to force an emit failure.',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    file: 'db/functions/release_safety.sql',
+    from: "  v_notice := public.emit_lifecycle_notification(\n    v_owner, p_estate, 'death_process.window_opened', 'afterworth://challenge');\n  if v_notice is null then\n    raise exception 'owner_notification_failed' using errcode = 'P0001';\n  end if;",
+    to: "  v_notice := public.emit_lifecycle_notification(\n    v_owner, p_estate, 'death_process.window_opened', 'afterworth://challenge');\n  if v_notice is null then\n    v_notice := gen_random_uuid();\n  end if;",
+  },
+  {
+    id: 'p11f-release-skips-dispatch-check',
+    why: 'D4 AT THE RELEASE DOOR. Dropping the email-channel precondition lets an estate whose '
+      + 'notice was cancelled — or never really addressed — elapse into disclosure anyway.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified",
+    to: "  select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified",
+  },
+  {
+    id: 'p11f-window-opens-without-dispatch',
+    target: 'npx',
+    spec: 'test/deathVerificationFoundation.test.ts',
+    why: 'THE DELETED EDGE, RESTORED (D2). Re-adding death_verified -> challenge_window lets a '
+      + 'window open on an owner who was never told, and it reads like restoring a transition '
+      + 'somebody removed by mistake. The map audit must object.',
+    file: 'db/functions/death_verification.sql',
+    from: "    or (v_from = 'death_verified'             and p_to = 'owner_notification_dispatched')",
+    to: "    or (v_from = 'death_verified'             and p_to = 'owner_notification_dispatched')\n    or (v_from = 'death_verified'             and p_to = 'challenge_window')",
+  },
+  {
+    id: 'p11f-window-duration-shortened',
+    why: 'D2 IS SEVEN DAYS, NOT SEVEN HOURS. A shortened window is the edit that looks like a '
+      + 'configuration tweak and is actually a decision about how long a living owner has to notice '
+      + 'and object.',
+    file: 'db/migrations/0055_20260812_release_authorization.sql',
+    from: "values (true, interval '7 days')",
+    to: "values (true, interval '7 hours')",
+  },
+  {
+    id: 'p11f-age-gate-removed',
+    why: 'STAGE 3: A STALE SAFETY NOTICE MUST NOT BE SENT. Aimed at the STALE-MARKING update, which '
+      + 'is the load-bearing layer: the claim SELECT carries the same bound as defence in depth, so '
+      + 'mutating THAT proved nothing — the marking pass settled the row either way, one layer '
+      + 'masking the other. Widening the marking bound lets a month-old notice stay queued and go '
+      + 'out describing a window that closed weeks ago.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "   where o.status in ('queued', 'processing')\n     and o.requested_at < now() - v_gate;",
+    to: "   where o.status in ('queued', 'processing')\n     and o.requested_at < now() - interval '100 years';",
+  },
+  {
+    id: 'p11f-purge-writes-no-audit',
+    why: 'STAGE 3: NEVER SILENTLY DELETE. Moving the audit insert after the delete makes it a step '
+      + 'a failure can skip — rows gone, no record of who removed them or why. The purge assertions '
+      + 'require the audit row to exist alongside the deletion.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "  insert into public.outbox_purge_audit\n    (outbox_name, actor_id, row_count, oldest_row_at, newest_row_at, reason)\n  values (p_outbox, v_uid, v_count, v_oldest, v_newest, p_reason)\n  returning id into v_audit;",
+    to: "  v_audit := gen_random_uuid();",
+  },
+  {
+    id: 'p11f-purge-takes-inflight-rows',
+    why: 'AN IN-FLIGHT SAFETY MESSAGE IS NOT HOUSEKEEPING. Widening the purge to queued rows deletes '
+      + 'an owner\'s warning while it is still on its way to them.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "  delete from public.owner_notice_outbox\n   where status in ('dispatched', 'failedPermanent', 'cancelled')\n     and requested_at < p_before;",
+    to: "  delete from public.owner_notice_outbox\n   where requested_at < p_before;",
+  },
+  {
+    id: 'p11f-release-manufactures-membership',
+    why: 'D5 — RELEASE UNLOCKS OWNER-AUTHORED INTENT AND NOTHING ELSE. Materializing a membership '
+      + 'for the case initiator at the moment of release makes the release event an identity '
+      + 'writer; the authority bracket must object.',
+    file: 'db/functions/release_safety.sql',
+    from: "  update public.estate_lifecycle\n     set released_at = now()\n   where estate_id = p_estate;",
+    to: "  update public.estate_lifecycle\n     set released_at = now()\n   where estate_id = p_estate;\n  insert into public.estate_memberships (estate_id, user_id, role, status)\n  select p_estate, c.initiated_by, 'beneficiary', 'approved'\n    from public.death_verification_cases c where c.id = v_case;",
+  },
+  {
+    id: 'p11f-release-elevates-tier',
+    why: 'D5 AT THE TIER. Raising existing grants during release rewrites owner-authored disclosure '
+      + 'at the one moment nobody can take it back.',
+    file: 'db/functions/release_safety.sql',
+    from: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'two_person_release');",
+    to: "  perform public.apply_estate_lifecycle_transition(\n    p_estate, 'released', v_case, 'two_person_release');\n  update public.access_grants set visibility_tier = 'full_detail' where estate_id = p_estate;",
+  },
+  {
+    id: 'p11f-audit-reason-optional',
+    why: 'STAGE 5: THE AUDIT REASON IS THE RECONSTRUCTABLE PART. Accepting a blank reason leaves the '
+      + 'release record technically complete and forensically useless a year later, when someone is '
+      + 'asking why this estate was opened.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if p_reason is null or btrim(p_reason) = '' then\n    raise exception 'audit_reason_required' using errcode = 'P0001';\n  end if;",
+    to: "  if false then\n    raise exception 'audit_reason_required' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11f-dispatched-state-satisfies-death',
+    why: 'THE SEVENTH STATE MUST DISCLOSE NOTHING. Telling the owner is not telling everyone else — '
+      + 'admitting owner_notification_dispatched into the death arm would disclose at the exact '
+      + 'moment the owner has only just been warned.',
+    file: 'db/functions/release_conditions.sql',
+    from: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state = 'released')",
+    to: "        or (p_release_condition = 'after_verified_death'\n            and p_lifecycle_state in ('released', 'owner_notification_dispatched'))",
+  },
   {
     id: 'p11e-release-lever-granted-to-clients',
-    why: 'THE RELEASE ACTOR IS A DEFERRED PRODUCT DECISION (§6, matrix #15). Granting EXECUTE to '
-      + 'authenticated hands every signed-in account the ability to release any estate whose window '
-      + 'has elapsed — and it reads like fixing an oversight.',
-    file: 'db/functions/release_safety.sql',
-    from: "revoke execute on function public.release_estate(uuid) from public, anon, authenticated;",
-    to: "grant execute on function public.release_estate(uuid) to authenticated;",
+    why: 'AN INTERNAL DELIVERY ROUTINE IS NOT A CLIENT SURFACE. Re-anchored in 11-F: the one-person '
+      + '`release_estate` lever no longer exists, so the equivalent mistake is granting EXECUTE on '
+      + 'the internal owner-notice claim routine — which hands every signed-in account the ability '
+      + 'to drain, and therefore to settle, another owner\'s safety notices.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "revoke execute on function public.claim_owner_notices(int) from public, anon, authenticated;",
+    to: "grant execute on function public.claim_owner_notices(int) to authenticated;",
   },
 ]);
 
@@ -1054,9 +1204,25 @@ const treeBefore = git(['status', '--porcelain']);
 const untracked = git(['ls-files', '--others', '--exclude-standard']).split('\n').filter(Boolean);
 const workingPatch = gitRaw(['diff', 'HEAD']);
 
-function seed(wt) {
+/**
+ * ★ THE PATCH GOES VIA A FILE, NOT VIA STDIN — AND THAT IS A FIX, NOT A STYLE CHOICE.
+ *
+ * This used to be `execFileSync('git', ['apply', '-'], { input: workingPatch })`. It worked for
+ * every phase up to 11-E and then HUNG for 96 minutes on the first 11-F run: the working patch had
+ * grown to ~252 KB, and piping that much into a child's stdin deadlocked — the parent blocked
+ * writing stdin while the child was not draining it, and neither side moved again. The symptom was
+ * the worst kind: not a crash, not a failure, just an attestation frozen at 39/110 that would have
+ * looked like "still running" indefinitely.
+ *
+ * Writing the patch to a file inside the throwaway temp dir removes the pipe entirely, so the
+ * failure class cannot recur at any patch size. The temp dir is already per-mutation and already
+ * deleted in the `finally`, so this adds no cleanup obligation.
+ */
+function seed(wt, dir) {
   if (workingPatch.length > 0) {
-    execFileSync('git', ['apply', '--whitespace=nowarn', '-'], { cwd: wt, input: workingPatch });
+    const patchFile = join(dir, 'working.patch');
+    writeFileSync(patchFile, workingPatch, 'utf8');
+    execFileSync('git', ['apply', '--whitespace=nowarn', patchFile], { cwd: wt });
   }
   for (const f of untracked) {
     const dest = join(wt, f);
@@ -1073,7 +1239,7 @@ for (const m of selected) {
   let detail = '';
   try {
     git(['worktree', 'add', '--detach', wt, 'HEAD']);
-    seed(wt);
+    seed(wt, dir);
 
     /**
      * ★ A MUTATION MAY NAME COMPANION EDITS (`also`) that must land in the same worktree — the case

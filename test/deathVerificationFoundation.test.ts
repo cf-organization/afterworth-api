@@ -200,9 +200,14 @@ describe("3 · the transition map is closed and release-shaped states are unwrit
     ["active", "death_verification_pending"],
     ["death_verification_pending", "active"],
     ["death_verification_pending", "death_verified"],
-    ["death_verified", "challenge_window"],
+    // ★ PHASE 11-F (D2/D4): the owner is TOLD before any clock starts, and the edge that skipped
+    // that step — death_verified -> challenge_window — is GONE. A routine that forgets to dispatch
+    // cannot open a window by accident; it raises.
+    ["death_verified", "owner_notification_dispatched"],
+    ["owner_notification_dispatched", "challenge_window"],
     ["death_verification_pending", "challenge_halted"],
     ["death_verified", "challenge_halted"],
+    ["owner_notification_dispatched", "challenge_halted"],
     ["challenge_window", "challenge_halted"],
     ["challenge_window", "released"],
   ] as const;
@@ -213,7 +218,7 @@ describe("3 · the transition map is closed and release-shaped states are unwrit
       (m) => [m[1], m[2]] as [string, string]
     );
 
-  it("the map admits exactly the eight 11-E moves, and no others", () => {
+  it("the map admits exactly the ten 11-F moves, and no others", () => {
     const got = actualEdges().map(([f, t]) => `${f}->${t}`).sort();
     const want = EXPECTED_EDGES.map(([f, t]) => `${f}->${t}`).sort();
     expect(got).toEqual(want);
@@ -232,8 +237,16 @@ describe("3 · the transition map is closed and release-shaped states are unwrit
     expect(into, "release must pass through the owner-challenge window").toEqual(["challenge_window"]);
   });
 
+  it("the challenge window is entered ONLY from owner_notification_dispatched (D2/D4)", () => {
+    const into = actualEdges().filter(([, to]) => to === "challenge_window").map(([from]) => from);
+    expect(
+      into,
+      "a window can open on an owner who was never told — the release clock would start in silence"
+    ).toEqual(["owner_notification_dispatched"]);
+  });
+
   it("detection sanity: the edge parser sees a real map and a widened one", () => {
-    expect(actualEdges().length).toBe(8);
+    expect(actualEdges().length).toBe(10);
     const widened = "or (v_from = 'death_verified'             and p_to = 'released')";
     expect([...widened.matchAll(/v_from\s*=\s*'(\w+)'\s*and\s+p_to\s*=\s*'(\w+)'/g)].map((m) => [m[1], m[2]]))
       .toEqual([["death_verified", "released"]]);
@@ -259,15 +272,45 @@ describe("3 · the transition map is closed and release-shaped states are unwrit
     expect(m54!.code).toContain("0054 FAILED");
   });
 
-  it("the window-duration configuration ships EMPTY — no seeded product decision", () => {
+  /**
+   * ★ WHICH MIGRATION OWNS THE DURATION IS THE POINT, AND IT MOVED IN 11-F. 0054 CREATED the table
+   * and deliberately seeded nothing, because in 11-E the length was undecided and the fail-closed
+   * posture was "no window can ever elapse". D2 decides 7 x 24h, so 0055 records it — in a
+   * migration, reviewably, once — rather than in a console session nobody can reconstruct. Both
+   * halves are pinned so neither can drift: 0054 still must not seed, and 0055 must seed exactly
+   * the approved value.
+   */
+  it("0054 creates the duration table and seeds NOTHING; 0055 seeds the APPROVED 7 days", () => {
     const m54 = migrations.find((m) => m.file.startsWith("0054"))!;
     expect(m54.code).toContain("create table if not exists public.release_safety_policy");
     expect(
       /insert\s+into\s+public\.release_safety_policy/i.test(m54.code),
-      "the migration seeds a challenge-window duration — that is a product decision, not a default"
+      "0054 seeds a duration — in 11-E that was an undecided product decision"
     ).toBe(false);
-    // No client role may reach the safety clock.
-    expect(m54.code).not.toMatch(/grant\s+(select|insert|update|delete|all)[\s\S]{0,120}release_safety_policy/i);
+    const m55 = migrations.find((m) => m.file.startsWith("0055"))!;
+    expect(m55.code).toMatch(/insert into public\.release_safety_policy[\s\S]{0,120}interval '7 days'/);
+    // Re-applying must RE-ASSERT the approved value, so a hand-edited production row is corrected
+    // by the next paste rather than silently kept.
+    expect(m55.code).toMatch(/on conflict \(id\) do update set challenge_window = excluded\.challenge_window/);
+    // No client role may reach the safety clock, in either migration.
+    for (const m of [m54, m55]) {
+      expect(m.code).not.toMatch(/grant\s+(select|insert|update|delete|all)[\s\S]{0,120}release_safety_policy/i);
+    }
+  });
+
+  it("0055 widens the lifecycle vocabulary to exactly seven approved states", () => {
+    const m55 = migrations.find((m) => m.file.startsWith("0055"))!;
+    const check = m55.code.slice(
+      m55.code.indexOf("add constraint estate_lifecycle_state_check"),
+      m55.code.indexOf("end $$;")
+    );
+    for (const st of ["active", "death_verification_pending", "death_verified",
+                      "owner_notification_dispatched", "challenge_window", "challenge_halted", "released"]) {
+      expect(check, `the 11-F lifecycle CHECK is missing ${st}`).toContain(`'${st}'`);
+    }
+    expect((check.match(/'[a-z_]+'/g) ?? []).length, "the vocabulary is not exactly seven states").toBe(7);
+    expect(check).not.toContain("'frozen'");
+    expect(m55.code).toContain("0055 FAILED");
   });
 
   it("event_type is 'death' alone — incapacity unrepresentable for new rows", () => {
@@ -374,9 +417,9 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
     }
   });
 
-  it("release requires a STRICTLY elapsed window and stays client-unreachable", () => {
+  it("release requires a STRICTLY elapsed window, two distinct reviewers, and a reason (D1/D3)", () => {
     const rs = sources.find((s) => s.file === "release_safety.sql")!;
-    const body = rs.code.slice(rs.code.indexOf("function public.release_estate"));
+    const body = rs.code.slice(rs.code.indexOf("function public.authorize_release"));
     const fn = body.slice(0, body.indexOf("$function$;"));
     // ★ STRICT `>`, NOT `>=`. At the exact boundary instant release must refuse so the owner
     // challenge wins the tie (R14). `>=` is the one-character edit that loses it.
@@ -385,18 +428,49 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
       .not.toMatch(/now\(\)\s*>=\s*v_row\.owner_notified_at/);
     // The three-valued-logic discipline: a NULL comparison must refuse, not pass.
     expect(fn).toContain("coalesce(now() > v_row.owner_notified_at + v_duration, false)");
-    // Guards: state, committed notice, verified case, configured duration.
-    for (const guard of ["invalid_release_state", "owner_not_notified", "no_verified_case",
-                         "release_window_not_configured", "release_window_not_elapsed"]) {
+    // Guards: state, committed notice, reachable channel, verified case, duration, two-person, reason.
+    for (const guard of ["invalid_release_state", "owner_not_notified", "owner_channel_unreachable",
+                         "no_verified_case", "release_window_not_configured",
+                         "release_window_not_elapsed", "two_person_rule_violated",
+                         "audit_reason_required"]) {
       expect(fn, `release lost its ${guard} guard`).toContain(guard);
     }
-    // And no client role may pull the lever — the actor is a deferred product decision.
-    expect(rs.code).toMatch(
-      /revoke execute on function public\.release_estate\(uuid\)\s+from public, anon, authenticated/
-    );
-    expect(rs.code, "release_estate was granted to a client role").not.toMatch(
-      /grant\s+execute on function public\.release_estate/
-    );
+    /**
+     * ★ D1 — reviewer_a IS DERIVED, NEVER SUPPLIED. A parameter would let the caller nominate a
+     * "first reviewer" who never reviewed anything and satisfy the rule against a stranger. It is
+     * read from the verified case's decider, and the caller is compared against THAT.
+     */
+    expect(fn).toMatch(/select c\.id, c\.decided_by, c\.decided_at into v_case, v_reviewer_a/);
+    expect(fn).toMatch(/if v_uid = v_reviewer_a then/);
+    expect(
+      /function public\.authorize_release\(p_estate uuid, p_reason text\)/.test(rs.code),
+      "authorize_release accepts a reviewer parameter — reviewer_a must be derived, not supplied"
+    ).toBe(true);
+    // The admin gate is the door; the table CHECK is the wall behind it.
+    expect(fn).toContain("public.admin_require_gate()");
+    // ★ THE ONE-PERSON LEVER IS GONE FROM SOURCE. Source deletion and the 0055 drop are BOTH
+    // required: deleting only the source leaves it alive in every database that applied 11-E,
+    // and dropping only in the migration lets the next paste recreate it.
+    expect(
+      /create or replace function public\.release_estate/.test(rs.code),
+      "release_estate is still defined — a one-person release path beside the two-person door"
+    ).toBe(false);
+    const m55 = migrations.find((m) => m.file.startsWith("0055"));
+    expect(m55, "migration 0055 is missing").toBeDefined();
+    expect(m55!.code).toContain("drop function if exists public.release_estate(uuid);");
+  });
+
+  it("the two-person rule is a TABLE CONSTRAINT, not only routine logic (D1)", () => {
+    const m55 = migrations.find((m) => m.file.startsWith("0055"))!;
+    expect(m55.code).toContain("constraint release_authorizations_two_person check (reviewer_a <> reviewer_b)");
+    // The record is its own model — never overloaded onto claims, memberships or designations.
+    expect(m55.code).toContain("create table if not exists public.release_authorizations");
+    for (const field of ["estate_id", "reviewer_a", "reviewer_b", "verified_at", "authorized_at",
+                         "released_at", "audit_reason"]) {
+      expect(m55.code, `the release authorization record is missing ${field}`).toContain(field);
+    }
+    // And no client role may read it.
+    expect(m55.code).not.toMatch(/grant\s+(select|insert|update|delete|all)[\s\S]{0,120}release_authorizations/i);
   });
 
   it("the owner safety notice is REQUIRED before a window may open", () => {
@@ -407,13 +481,30 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
      * chance to object — so a null return must roll the transition back.
      */
     const rs = sources.find((s) => s.file === "release_safety.sql")!;
-    const body = rs.code.slice(rs.code.indexOf("function public.begin_challenge_window"));
+    const body = rs.code.slice(rs.code.indexOf("function public.dispatch_owner_safety_notice"));
     const fn = body.slice(0, body.indexOf("$function$;"));
     expect(fn).toContain("'death_process.window_opened'");
     expect(fn).toMatch(/if v_notice is null then\s*\n\s*raise exception 'owner_notification_failed'/);
-    // The notice is emitted BEFORE the transition, so a failure cannot leave a window open.
+    /**
+     * ★ D4 — EMAIL IS THE MINIMUM, AND AN UNRESOLVABLE ADDRESS IS A HARD FAILURE. An in-app row
+     * alone is insufficient: the person a false death process targets successfully is exactly the
+     * person who has stopped opening the app. The address comes from `auth.users` — the one a
+     * claimant cannot repoint — and a missing one refuses the whole transition rather than queueing
+     * a row nobody can deliver.
+     */
+    expect(fn).toContain("public.owner_notice_outbox");
+    expect(fn).toMatch(/select u\.email into v_recipient from auth\.users u/);
+    expect(fn).toContain("owner_channel_unreachable");
+    // Both channels are committed BEFORE the transition, so a failure cannot leave a clock running.
+    expect(fn.indexOf("insert into public.owner_notice_outbox")).toBeLessThan(fn.indexOf("apply_estate_lifecycle_transition"));
     expect(fn.indexOf("emit_lifecycle_notification")).toBeLessThan(fn.indexOf("apply_estate_lifecycle_transition"));
+    // D2: the clock is stamped here — at dispatch — not at verification.
+    expect(fn).toMatch(/set owner_notified_at = now\(\)/);
     expect(fn).toContain("public.admin_require_gate()");
+    // ★ THE AUDIT RECORDS THE CHANNEL CLASS, NEVER THE ADDRESS (§17 discipline, applied to email).
+    const audit = fn.slice(fn.indexOf("insert into public.audit_logs"));
+    expect(audit).toContain("'channel', 'email'");
+    expect(audit, "the dispatch audit carries the owner's address").not.toContain("v_recipient");
   });
 
   /**
@@ -431,18 +522,45 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
    * through the outbox would be a silent downgrade from "committed before the window opens" to
    * "queued, probably delivered", which is exactly the substitution §10 forbids.
    */
-  it("the safety notice is committed in-transaction and never queued to the email outbox (§10)", () => {
+  /**
+   * ★ REWRITTEN IN 11-F, AND THE DISTINCTION SHARPENED RATHER THAN DROPPED. 11-E's rule was "the
+   * safety notice never touches an outbox", because the only outbox was the invitation one: an
+   * at-least-once queue drained by a daily cron whose claim predicate has NO age bound. D4 requires
+   * an independently reachable channel, so 11-F gives the notice its OWN outbox with its own age
+   * gate — and the thing that must stay true is the one that always mattered: the safety notice
+   * must never inherit the INVITATION queue's delivery class.
+   */
+  it("the safety notice uses its OWN outbox, never the invitation delivery queue (§10)", () => {
     const rs = sources.find((s) => s.file === "release_safety.sql")!;
     for (const term of ["invitation_delivery_outbox", "claim_invitation_delivery_batch",
-                        "issue_invitation_delivery_notice", "purge_outbox", "outbox"]) {
+                        "issue_invitation_delivery_notice"]) {
       expect(rs.code, `release_safety.sql routes the safety notice through ${term}`).not.toContain(term);
     }
-    // It uses the in-app emitter, and the emitter's own transactional contract is what makes the
-    // "required to commit" guarantee meaningful.
+    expect(rs.code).toContain("public.owner_notice_outbox");
     expect(rs.code).toContain("public.emit_lifecycle_notification");
     const rpcs = sources.find((s) => s.file === "lifecycle_notification_rpcs.sql")!;
     const emitter = rpcs.code.slice(rpcs.code.indexOf("function public.emit_lifecycle_notification"));
     expect(emitter.slice(0, emitter.indexOf("$function$;"))).not.toContain("outbox");
+  });
+
+  it("the owner-notice queue has an age gate, and it is DERIVED from the window (Stage 3)", () => {
+    const ob = sources.find((s) => s.file === "outbox_safety.sql");
+    expect(ob, "outbox_safety.sql is missing — the age gate has no source").toBeDefined();
+    // Derived, not separately configured: two tunable numbers drift, and the failure mode of that
+    // drift is a notice sent after its own window closed.
+    expect(ob!.code).toMatch(/public\.challenge_window_duration\(\)\s*\+\s*interval '1 day'/);
+    // Stale rows settle explicitly; they are never sent and never deleted.
+    expect(ob!.code).toContain("'stale_beyond_age_gate'");
+    expect(ob!.code).toContain("owner_notice_age_gate_unconfigured");
+    // ★ THE PURGE AUDIT IS WRITTEN BEFORE THE DELETE. Afterwards is an audit a failure can skip,
+    // leaving rows gone and no record of who removed them.
+    const purge = ob!.code.slice(ob!.code.indexOf("function public.purge_outbox_rows"));
+    const fn = purge.slice(0, purge.indexOf("$function$;"));
+    expect(fn.indexOf("insert into public.outbox_purge_audit")).toBeLessThan(fn.indexOf("delete from public.owner_notice_outbox"));
+    expect(fn).toContain("purge_reason_required");
+    expect(fn).toContain("unknown_outbox");
+    // In-flight safety messages are not purgeable.
+    expect(fn).toContain("status in ('dispatched', 'failedPermanent', 'cancelled')");
   });
 
   it("the safety notice copy asserts no death and names no claimant (§18)", () => {

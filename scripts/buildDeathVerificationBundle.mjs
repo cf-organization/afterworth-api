@@ -52,6 +52,7 @@ buildBundle(
       // ★ PHASE 11-E: the seam vocabulary and the EMPTY duration table must exist before
       // `challenge_window_duration` (language sql) resolves its body at CREATE time below.
       'db/migrations/0054_20260812_challenge_window_release_seam.sql',
+      'db/migrations/0055_20260812_release_authorization.sql',
       'db/functions/estate_lifecycle_state.sql',
       'db/functions/death_verification.sql',
       // ★ LAST: the safety routines (plpgsql; they call the transition map and the emitter at
@@ -59,6 +60,9 @@ buildBundle(
       // makes release REACHABLE by nothing — release_estate is client-revoked, has no caller, and
       // refuses until an operator explicitly configures the window duration.
       'db/functions/release_safety.sql',
+      // ★ PHASE 11-F: the outbox age gate, stale protection and audited purge. Loaded after
+      // the safety routines because `owner_notice_age_gate` derives from the window duration.
+      'db/functions/outbox_safety.sql',
     ],
     controls: [
       ['db/migrations/0052_20260812_death_verification_foundation.sql', 'create table if not exists public.estate_lifecycle'],
@@ -110,7 +114,14 @@ buildBundle(
       ['db/functions/death_verification.sql', "(v_from = 'challenge_window'           and p_to = 'released')"],
       ['db/functions/release_safety.sql', 'create or replace function public.begin_challenge_window'],
       ['db/functions/release_safety.sql', 'create or replace function public.challenge_death_process'],
-      ['db/functions/release_safety.sql', 'create or replace function public.release_estate'],
+      ['db/functions/release_safety.sql', 'create or replace function public.authorize_release'],
+      ['db/functions/release_safety.sql', 'create or replace function public.dispatch_owner_safety_notice'],
+      ['db/functions/outbox_safety.sql', 'create or replace function public.claim_owner_notices'],
+      ['db/functions/outbox_safety.sql', 'create or replace function public.purge_outbox_rows'],
+      ['db/migrations/0055_20260812_release_authorization.sql',
+        'create table if not exists public.owner_notice_outbox'],
+      ['db/migrations/0055_20260812_release_authorization.sql',
+        'create table if not exists public.release_authorizations'],
       ['db/functions/release_safety.sql', 'create or replace function public.get_owner_safety_status'],
       ['db/functions/release_safety.sql', 'create or replace function public.challenge_window_duration'],
     ],

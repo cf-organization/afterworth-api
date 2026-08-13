@@ -209,6 +209,7 @@ returns boolean language sql immutable as $$
   select case
     when p_lifecycle is null
       or p_lifecycle not in ('active','death_verification_pending','death_verified',
+                             'owner_notification_dispatched',
                              'challenge_window','challenge_halted','released') then false
     when p_policy = 'standard' and p_cond = 'immediately' then true
     when p_policy = 'standard' and p_cond in ('after_owner_approval','after_access_request_approval')
@@ -267,18 +268,19 @@ begin
     lateral regexp_matches(pg_get_constraintdef(con.oid), '''([a-z_]+)''', 'g') m
    where nsp.nspname = 'public' and rel.relname = 'estate_lifecycle' and con.contype = 'c';
 
-  if v_lifecycles is null or array_length(v_lifecycles, 1) <> 6
+  if v_lifecycles is null or array_length(v_lifecycles, 1) <> 7
      or not ('active' = any(v_lifecycles))
      or not ('death_verification_pending' = any(v_lifecycles))
      or not ('death_verified' = any(v_lifecycles))
+     or not ('owner_notification_dispatched' = any(v_lifecycles))
      or not ('challenge_window' = any(v_lifecycles))
      or not ('challenge_halted' = any(v_lifecycles))
      or not ('released' = any(v_lifecycles)) then
-    raise exception 'FAIL: the estate_lifecycle CHECK does not hold exactly the six known states '
+    raise exception 'FAIL: the estate_lifecycle CHECK does not hold exactly the seven known states '
       '(got %) — the predicate''s inline lifecycle vocabulary would be measuring a different table',
       coalesce(v_lifecycles::text, 'NULL');
   end if;
-  raise notice '  ok   6 lifecycle states enumerated FROM the deployed CHECK (predicate vocabulary anchored)';
+  raise notice '  ok   7 lifecycle states enumerated FROM the deployed CHECK (predicate vocabulary anchored)';
 
   -- ★ UNKNOWN CONDITION, UNKNOWN POLICY AND UNKNOWN LIFECYCLE ARE PUT THROUGH THE SAME MATRIX. The
   -- vocabularies are closed; the function must be closed the same way, on every axis at once.
@@ -339,6 +341,7 @@ begin
   ] loop
     foreach v_pol in array array['standard', 'legacy_immediate_only'] loop
       foreach v_lc in array array['active', 'death_verification_pending', 'death_verified',
+                                  'owner_notification_dispatched',
                                   'challenge_window', 'challenge_halted', 'released'] loop
         -- Approved or not, timestamped or not, at EVERY lifecycle: nothing makes these true.
         if public.release_condition_satisfied(v_cond, now(), v_pol, v_lc)
@@ -354,6 +357,7 @@ begin
   raise notice '2b · after_verified_death: one satisfying region, enumerated exactly (11-E: released)';
   foreach v_pol in array array['standard', 'legacy_immediate_only'] loop
     foreach v_lc in array array['active', 'death_verification_pending', 'death_verified',
+                                'owner_notification_dispatched',
                                 'challenge_window', 'challenge_halted', 'released'] loop
       if public.release_condition_satisfied('after_verified_death', now(), v_pol, v_lc)
          is distinct from (v_pol = 'standard' and v_lc = 'released') then
@@ -1017,6 +1021,19 @@ begin
     raise exception 'FAIL: tier % resolved at death_verified', coalesce(v_tier, 'NULL');
   end if;
 
+  -- STAGE C2 — owner_notification_dispatched (11-F). The owner has been TOLD, on an independently
+  -- reachable channel, and the seven-day clock has started. Telling someone is not disclosing to
+  -- anyone else: the payload must not move here either.
+  perform public.apply_estate_lifecycle_transition(D, 'owner_notification_dispatched', null, 'rc-harness');
+  if harness_rc.composed(BEN2, D)::text is distinct from d_before::text then
+    raise exception 'FAIL: owner_notification_dispatched moved the death-conditioned viewer payload';
+  end if;
+  perform set_config('request.jwt.claim.sub', BEN2::text, true);
+  select public.inventory_disclosure_tier(D, BEN2) into v_tier;
+  if v_tier is distinct from 'hidden' then
+    raise exception 'FAIL: tier % resolved at owner_notification_dispatched', coalesce(v_tier, 'NULL');
+  end if;
+
   -- STAGE D — challenge_window. The owner has been notified and still has time to object.
   perform public.apply_estate_lifecycle_transition(D, 'challenge_window', null, 'rc-harness');
   if harness_rc.composed(BEN2, D)::text is distinct from d_before::text then
@@ -1028,8 +1045,8 @@ begin
   if v_tier is distinct from 'hidden' then
     raise exception 'FAIL: tier % resolved inside the challenge window', coalesce(v_tier, 'NULL');
   end if;
-  raise notice '  ok   pending, death_verified and challenge_window each disclose NOTHING '
-    '(payload byte-identical, tier hidden at every stage)';
+  raise notice '  ok   pending, death_verified, owner_notification_dispatched and challenge_window '
+    'each disclose NOTHING (payload byte-identical, tier hidden at every stage)';
 
   -- ── RELEASED: the one lifecycle that may move exactly the authorized surfaces ──────────────────
   perform public.apply_estate_lifecycle_transition(D, 'released', null, 'rc-harness');

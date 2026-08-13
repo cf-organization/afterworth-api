@@ -68,6 +68,19 @@ begin
   end;
 end $$;
 
+/** Admin call returning a jsonb payload (the census). Same claim discipline as `as_admin`. */
+create or replace function harness_rs.as_admin_json(p_uid uuid, p_sql text)
+returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+  perform set_config('request.jwt.claim.sub', p_uid::text, true);
+  perform set_config('request.jwt.claims',
+    jsonb_build_object('sub', p_uid, 'aal', 'aal2',
+                       'iat', extract(epoch from now())::bigint)::text, true);
+  execute p_sql into v;
+  return v;
+end $$;
+
 /** The composed view — every surface one viewer can reach, as one value (the 10-F instrument). */
 create or replace function harness_rs.composed(p_uid uuid, p_estate uuid)
 returns jsonb language plpgsql as $$
@@ -123,19 +136,30 @@ begin
   -- by crashing, which is not withholding.
   if to_regprocedure('public.begin_challenge_window(uuid)') is null
      or to_regprocedure('public.challenge_death_process(uuid)') is null
-     or to_regprocedure('public.release_estate(uuid)') is null
+     or to_regprocedure('public.dispatch_owner_safety_notice(uuid)') is null
+     or to_regprocedure('public.authorize_release(uuid, text)') is null
      or to_regprocedure('public.get_owner_safety_status(uuid)') is null
-     or to_regprocedure('public.challenge_window_duration()') is null then
-    raise exception 'FAIL: a Phase 11-E safety routine is not installed — the bundle did not land';
+     or to_regprocedure('public.challenge_window_duration()') is null
+     or to_regprocedure('public.claim_owner_notices(int)') is null
+     or to_regprocedure('public.purge_outbox_rows(text, timestamptz, text)') is null then
+    raise exception 'FAIL: a Phase 11-E/F safety routine is not installed — the bundle did not land';
   end if;
-  raise notice '  ok   all five safety routines resolved (called, not assumed)';
+  -- ★ THE ONE-PERSON LEVER IS GONE (D1). Leaving `release_estate` beside the two-person door would
+  -- be the decision undone by any un-rewired caller — 0055 drops it, and this is what proves it.
+  if to_regprocedure('public.release_estate(uuid)') is not null then
+    raise exception 'FAIL: the one-person release lever still exists — D1 is bypassable';
+  end if;
+  raise notice '  ok   all eight safety routines resolved; the one-person lever is GONE';
 
   -- (b) THE RELEASE LEVER IS UNREACHABLE BY CLIENTS, and the challenge IS reachable. If these were
   -- reversed, every assertion below would describe a system nobody can operate safely.
-  if has_function_privilege('authenticated', 'public.release_estate(uuid)', 'EXECUTE')
-     or has_function_privilege('anon', 'public.release_estate(uuid)', 'EXECUTE') then
-    raise exception 'FAIL: release_estate is client-executable — the release actor is an explicitly '
-      'deferred product decision and no client may pull that lever';
+  -- The release door is admin-gated INSIDE (D1); `anon` may not reach it at all.
+  if has_function_privilege('anon', 'public.authorize_release(uuid, text)', 'EXECUTE') then
+    raise exception 'FAIL: authorize_release is anon-executable';
+  end if;
+  if has_function_privilege('authenticated', 'public.claim_owner_notices(int)', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.owner_notice_age_gate()', 'EXECUTE') then
+    raise exception 'FAIL: an internal outbox routine is client-executable';
   end if;
   if has_function_privilege('authenticated', 'public.challenge_window_duration()', 'EXECUTE') then
     raise exception 'FAIL: the safety clock is client-readable';
@@ -145,19 +169,47 @@ begin
     raise exception 'FAIL: the owner challenge or its status read is NOT client-executable — the '
       'owner cannot reach the one action that protects them';
   end if;
-  raise notice '  ok   release lever revoked from clients; owner challenge + status reachable';
+  raise notice '  ok   release door admin-gated and anon-refused; owner challenge + status reachable';
 
-  -- (c) THE WINDOW DURATION SHIPS UNCONFIGURED. A seeded default would be a product decision taken
-  -- by a migration, and it would make the "not configured" refusal below untestable.
+  -- (b2) THE TWO-PERSON RULE IS A TABLE CONSTRAINT, not merely routine logic (D1). A routine-only
+  -- check is bypassable by any other writer; this proves the wall exists behind the door.
+  if not exists (select 1 from pg_constraint where conname = 'release_authorizations_two_person') then
+    raise exception 'FAIL: the two-person rule is not a table constraint';
+  end if;
+  -- …and the CHECK actually refuses, proven by attempting it.
+  begin
+    insert into public.release_authorizations
+      (estate_id, case_id, reviewer_a, reviewer_b, verified_at, audit_reason)
+    values (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), now(), 'probe');
+    raise exception 'FAIL: a release authorization with invented FKs was insertable';
+  exception
+    when check_violation then
+      raise exception 'FAIL: the two-person CHECK refused two DISTINCT reviewers';
+    when foreign_key_violation then null;  -- refused by FK, as expected; the CHECK is tested below
+  end;
+
+  -- (c) THE WINDOW DURATION IS THE APPROVED 7 x 24h (D2).
+  --
+  -- ★ THIS ASSERTION WAS INVERTED IN 11-F, AND THE INVERSION IS THE DECISION. In 11-E the duration
+  -- was undecided, so the correct posture was "seeded by nothing, so no window can ever elapse" and
+  -- this block refused any row. D2 decides it, so the value is now recorded in a migration —
+  -- reviewably, once — and what must be pinned is that production carries the APPROVED number
+  -- rather than whatever a console session last set.
   select count(*) into v_n from public.release_safety_policy;
-  if v_n <> 0 then
-    raise exception 'FAIL: release_safety_policy is seeded (% row(s)) — the window duration must '
-      'arrive by explicit operator action', v_n;
+  if v_n <> 1 then
+    raise exception 'FAIL: release_safety_policy holds % row(s); expected exactly the one approved '
+      'configuration', v_n;
   end if;
-  if public.challenge_window_duration() is not null then
-    raise exception 'FAIL: an unconfigured window answered a duration';
+  if public.challenge_window_duration() is distinct from interval '7 days' then
+    raise exception 'FAIL: the challenge window is % — D2 approved 7 x 24 hours',
+      coalesce(public.challenge_window_duration()::text, 'NULL');
   end if;
-  raise notice '  ok   the window duration is UNCONFIGURED (fail-closed: no window can elapse)';
+  -- The age gate is DERIVED from it, so the two can never drift apart.
+  if public.owner_notice_age_gate() is distinct from interval '8 days' then
+    raise exception 'FAIL: the owner-notice age gate is % (expected window + 1 day)',
+      coalesce(public.owner_notice_age_gate()::text, 'NULL');
+  end if;
+  raise notice '  ok   the challenge window is the approved 7 days; the age gate derives to 8 days';
 
   -- (d) The lifecycle vocabulary is exactly the six states, and the predicate agrees with it.
   if (select count(*) from regexp_matches(
@@ -167,8 +219,8 @@ begin
            join pg_namespace nsp on nsp.oid = rel.relnamespace
           where nsp.nspname = 'public' and rel.relname = 'estate_lifecycle' and con.contype = 'c'
             and pg_get_constraintdef(con.oid) ilike '%state%'),
-        '''[a-z_]+''', 'g')) <> 6 then
-    raise exception 'FAIL: the lifecycle CHECK is not exactly six states';
+        '''[a-z_]+''', 'g')) <> 7 then
+    raise exception 'FAIL: the lifecycle CHECK is not exactly seven states';
   end if;
   if not public.release_condition_satisfied('after_verified_death', null, 'standard', 'released')
      or public.release_condition_satisfied('after_verified_death', null, 'standard', 'death_verified')
@@ -185,7 +237,7 @@ end $$;
 -- =================================================================================================
 do $rs$
 declare
-  OWNER_S uuid; EXEC_S uuid; DELE_S uuid; STRG_S uuid; ADMIN_S uuid; OWNER_F uuid;
+  OWNER_S uuid; EXEC_S uuid; DELE_S uuid; STRG_S uuid; ADMIN_S uuid; ADMIN2_S uuid; OWNER_F uuid;
   S uuid; F uuid; ASSET_S uuid;
   v_case uuid; v_res text; v_status text; v_notice uuid; n int;
   auth_before jsonb; auth_after jsonb;
@@ -201,7 +253,11 @@ begin
   insert into auth.users default values returning id into DELE_S;
   insert into auth.users default values returning id into STRG_S;
   insert into auth.users default values returning id into ADMIN_S;
+  insert into auth.users default values returning id into ADMIN2_S;
   insert into auth.users default values returning id into OWNER_F;
+  -- ★ D4: the owner must be INDEPENDENTLY REACHABLE. `auth.users.email` is the address the account
+  -- authenticates with — the one a claimant cannot repoint — and dispatch REFUSES without it.
+  update auth.users set email = 'rs-owner-s@example.invalid' where id = OWNER_S;
   insert into public.estates (owner_id, name) values (OWNER_S, 'RS Estate S') returning id into S;
   insert into public.estates (owner_id, name) values (OWNER_F, 'RS Estate F') returning id into F;
   insert into public.estate_memberships (estate_id, user_id, role, status) values
@@ -210,7 +266,7 @@ begin
     (F, OWNER_F, 'primary_user', 'approved');
   insert into public.estate_designations (estate_id, user_id, designation_type, status)
   values (S, EXEC_S, 'executor', 'active');
-  insert into public.admins (user_id) values (ADMIN_S);
+  insert into public.admins (user_id) values (ADMIN_S), (ADMIN2_S);
 
   -- ONE asset in ONE category with a distinctive exact value: the single-asset oracle fixture.
   perform set_config('request.jwt.claim.sub', OWNER_S::text, true);
@@ -265,19 +321,48 @@ begin
   raise notice '  ok   STAGE C (death_verified): payload byte-identical — verification is not release';
 
   -- ── RELEASE IS REFUSED FROM death_verified (the window has not even opened) ────────────────────
-  begin
-    perform public.release_estate(S);
-    raise exception 'FAIL: release_estate succeeded from death_verified — the window was skipped';
-  exception when others then
-    if position('invalid_release_state' in SQLERRM) = 0 then
-      raise exception 'FAIL: release from death_verified raised the wrong error: %', SQLERRM;
-    end if;
-  end;
+  v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, 'post-window release'));
+  if position('invalid_release_state' in v_res) = 0 then
+    raise exception 'FAIL: release from death_verified got %', v_res;
+  end if;
   raise notice '  ok   release refuses from death_verified (invalid_release_state)';
+
+  -- ── THE WINDOW CANNOT OPEN WITHOUT A DISPATCH (11-F). The death_verified -> challenge_window edge
+  -- was DELETED, so the routine that used to notify-and-open now has no legal input here.
+  v_res := harness_rs.as_admin(ADMIN_S, format('select public.begin_challenge_window(%L)', S));
+  if position('invalid_window_state' in v_res) = 0 then
+    raise exception 'FAIL: a window opened directly from death_verified (got %) — the owner would '
+      'never have been told', v_res;
+  end if;
+  raise notice '  ok   no window can open from death_verified — dispatch is now on the only path';
 
   -- ── STAGE D · challenge_window (real door: admin opens; the owner notice must COMMIT) ─────────
   select count(*) into n from public.notifications where user_id = OWNER_S and estate_id = S;
   if n <> 0 then raise exception 'FAIL[D precondition]: the owner already had notifications'; end if;
+
+  -- ★ D4 — DISPATCH FIRST, and it commits BOTH channels or the transition rolls back.
+  v_res := harness_rs.as_admin(ADMIN_S, format('select public.dispatch_owner_safety_notice(%L)', S));
+  if v_res <> 'OK' then raise exception 'FAIL[D]: dispatch refused: %', v_res; end if;
+  if public.estate_lifecycle_state(S) <> 'owner_notification_dispatched' then
+    raise exception 'FAIL[D]: dispatch did not reach owner_notification_dispatched';
+  end if;
+  -- The EMAIL row is the independently reachable channel, addressed and committed.
+  select count(*) into n from public.owner_notice_outbox
+   where estate_id = S and channel = 'email' and status = 'queued'
+     and recipient = 'rs-owner-s@example.invalid';
+  if n <> 1 then
+    raise exception 'FAIL[D]: expected exactly 1 addressed email notice, found %', n;
+  end if;
+  -- D2: the clock started AT DISPATCH, not at verification.
+  if (select owner_notified_at from public.estate_lifecycle where estate_id = S) is null then
+    raise exception 'FAIL[D]: the challenge clock did not start at dispatch';
+  end if;
+  -- Idempotent replay dispatches nothing further.
+  v_res := harness_rs.as_admin(ADMIN_S, format('select public.dispatch_owner_safety_notice(%L)', S));
+  select count(*) into n from public.owner_notice_outbox where estate_id = S;
+  if v_res <> 'OK' or n <> 1 then
+    raise exception 'FAIL[D]: dispatch replay was not idempotent (% / % rows)', v_res, n;
+  end if;
 
   v_res := harness_rs.as_admin(ADMIN_S, format('select public.begin_challenge_window(%L)', S));
   if v_res <> 'OK' then raise exception 'FAIL[D]: opening the window refused: %', v_res; end if;
@@ -309,31 +394,12 @@ begin
   end if;
   raise notice '  ok   STAGE D (challenge_window): owner notified (committed, honest copy); payload byte-identical';
 
-  -- ── RELEASE IS REFUSED: unconfigured window (fail-closed) ─────────────────────────────────────
-  begin
-    perform public.release_estate(S);
-    raise exception 'FAIL: release succeeded with NO configured window duration';
-  exception when others then
-    if position('release_window_not_configured' in SQLERRM) = 0 then
-      raise exception 'FAIL: unconfigured release raised the wrong error: %', SQLERRM;
-    end if;
-  end;
-  raise notice '  ok   release refuses while the window duration is unconfigured';
-
-  -- Configure a window (the operator act, simulated here).
-  insert into public.release_safety_policy (id, challenge_window) values (true, interval '7 days')
-  on conflict (id) do update set challenge_window = excluded.challenge_window;
-
   -- ── RELEASE IS REFUSED: window not elapsed ────────────────────────────────────────────────────
-  begin
-    perform public.release_estate(S);
-    raise exception 'FAIL: release succeeded before the window elapsed';
-  exception when others then
-    if position('release_window_not_elapsed' in SQLERRM) = 0 then
-      raise exception 'FAIL: premature release raised the wrong error: %', SQLERRM;
-    end if;
-  end;
-  raise notice '  ok   release refuses before the window elapses';
+  v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, 'premature'));
+  if position('release_window_not_elapsed' in v_res) = 0 then
+    raise exception 'FAIL: premature release got %', v_res;
+  end if;
+  raise notice '  ok   release refuses before the 7-day window elapses';
 
   -- ── AUTHORITY BRACKET so far: nothing manufactured through B, C, D ────────────────────────────
   auth_after := harness_rs.authority_snapshot(S);
@@ -349,9 +415,33 @@ begin
      set owner_notified_at = now() - interval '8 days'
    where estate_id = S;
 
-  perform public.release_estate(S);
+  -- ★ D1 — THE VERIFIER MAY NOT RELEASE. ADMIN_S decided the death case; their release attempt must
+  -- be refused BY THE DATABASE, and only a second operator can proceed.
+  v_res := harness_rs.as_admin(ADMIN_S, format('select public.authorize_release(%L, %L)', S, 'verifier self-release'));
+  if position('two_person_rule_violated' in v_res) = 0 then
+    raise exception 'FAIL[D1]: the death verifier was allowed to authorize release (got %)', v_res;
+  end if;
+  if public.estate_lifecycle_state(S) <> 'challenge_window' then
+    raise exception 'FAIL[D1]: the refused release still moved the lifecycle';
+  end if;
+  -- An empty audit reason is refused: "cleaning up" is not a reason a year from now.
+  v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, '   '));
+  if position('audit_reason_required' in v_res) = 0 then
+    raise exception 'FAIL: a blank audit reason was accepted (got %)', v_res;
+  end if;
+
+  v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, 'window elapsed, no challenge'));
+  if v_res <> 'OK' then raise exception 'FAIL[F]: the second reviewer could not release: %', v_res; end if;
   if public.estate_lifecycle_state(S) <> 'released' then
     raise exception 'FAIL[F]: release did not reach the released lifecycle';
+  end if;
+  -- The authorization record carries both reviewers and the full audit shape (Stage 5).
+  select count(*) into n from public.release_authorizations
+   where estate_id = S and reviewer_a = ADMIN_S and reviewer_b = ADMIN2_S
+     and verified_at is not null and authorized_at is not null and released_at is not null
+     and btrim(audit_reason) <> '';
+  if n <> 1 then
+    raise exception 'FAIL[F]: expected 1 complete release authorization record, found %', n;
   end if;
 
   dele_f := harness_rs.composed(DELE_S, S);
@@ -430,8 +520,10 @@ begin
   raise notice '  ok   release created no grant, tier, membership or designation (byte-identical)';
 
   -- ★ IDEMPOTENT RELEASE, and the owner is told the honest thing about being too late (R15).
-  if public.release_estate(S) <> 'released' then
-    raise exception 'FAIL: idempotent release replay did not return released';
+  v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, 'idempotent replay'));
+  select count(*) into n from public.release_authorizations where estate_id = S;
+  if v_res <> 'OK' or n <> 1 then
+    raise exception 'FAIL: release replay was not idempotent (% / % authorization rows)', v_res, n;
   end if;
   v_res := harness_rs.attempt(OWNER_S, format('select public.challenge_death_process(%L)', S));
   if position('already_released' in v_res) = 0 then
@@ -663,17 +755,13 @@ begin
   end if;
 
   -- Release can NEVER proceed from a halted process.
-  begin
-    perform public.release_estate(C);
-    raise exception 'FAIL: release succeeded from challenge_halted';
-  exception when others then
-    if position('invalid_release_state' in SQLERRM) = 0 then
-      raise exception 'FAIL: release from challenge_halted raised the wrong error: %', SQLERRM;
-    end if;
-  end;
+  v_res := harness_rs.as_admin(ADMIN_C, format('select public.authorize_release(%L, %L)', C, 'post-halt probe'));
+  if position('invalid_release_state' in v_res) = 0 then
+    raise exception 'FAIL: release from challenge_halted got %', v_res;
+  end if;
   -- No existing routine reopens it: every outbound transition is refused by the closed map.
   for v_res in select unnest(array['active', 'death_verification_pending', 'death_verified',
-                                   'challenge_window', 'released']) loop
+                                   'owner_notification_dispatched', 'challenge_window', 'released']) loop
     begin
       perform public.apply_estate_lifecycle_transition(C, v_res, null, 'rs-harness-probe');
       raise exception 'FAIL: challenge_halted -> % was accepted — a halted process can be reopened', v_res;
@@ -732,7 +820,7 @@ end $rs2$;
 -- consult the clock at all, so it succeeds. Both orderings are exercised.
 do $rs3$
 declare
-  OWNER_T uuid; EXEC_T uuid; ADMIN_T uuid; T1 uuid; T2 uuid;
+  OWNER_T uuid; EXEC_T uuid; ADMIN_T uuid; ADMIN2_T uuid; T1 uuid; T2 uuid;
   v_case uuid; v_res text; v_notified timestamptz; v_dur interval;
 begin
   raise notice '3 · the exact-boundary tiebreak (challenge wins ties)';
@@ -745,7 +833,9 @@ begin
   insert into auth.users default values returning id into OWNER_T;
   insert into auth.users default values returning id into EXEC_T;
   insert into auth.users default values returning id into ADMIN_T;
-  insert into public.admins (user_id) values (ADMIN_T) on conflict do nothing;
+  insert into auth.users default values returning id into ADMIN2_T;
+  insert into public.admins (user_id) values (ADMIN_T), (ADMIN2_T) on conflict do nothing;
+  update auth.users set email = 'rs-owner-t@example.invalid' where id = OWNER_T;
 
   -- Two identical estates at the identical boundary instant: one tests release-then-challenge,
   -- the other challenge-then-release.
@@ -762,6 +852,7 @@ begin
       select id into v_case from public.death_verification_cases where estate_id = E and status = 'open';
       perform harness_rs.as_admin(ADMIN_T, format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case));
       perform harness_rs.as_admin(ADMIN_T, format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case));
+      perform harness_rs.as_admin(ADMIN_T, format('select public.dispatch_owner_safety_notice(%L)', E));
       perform harness_rs.as_admin(ADMIN_T, format('select public.begin_challenge_window(%L)', E));
 
       -- ★ THE BOUNDARY, EXACTLY: notified_at + duration = now().
@@ -776,15 +867,11 @@ begin
 
       if v_res = 'release_first' then
         -- Release attempts FIRST at the boundary and must refuse…
-        begin
-          perform public.release_estate(E);
-          raise exception 'FAIL[TIE]: release SUCCEEDED at the exact boundary instant — the window '
-            'must be STRICTLY elapsed, and a tie belongs to the owner';
-        exception when others then
-          if position('release_window_not_elapsed' in SQLERRM) = 0 then
-            raise exception 'FAIL[TIE]: boundary release raised the wrong error: %', SQLERRM;
-          end if;
-        end;
+        if position('release_window_not_elapsed' in
+             harness_rs.as_admin(ADMIN2_T, format('select public.authorize_release(%L, %L)', E, 'boundary'))) = 0 then
+          raise exception 'FAIL[TIE]: release did not refuse at the exact boundary instant — the '
+            'window must be STRICTLY elapsed, and a tie belongs to the owner';
+        end if;
         -- …and the owner challenge then succeeds at the same instant.
         if harness_rs.attempt(OWNER_T, format('select public.challenge_death_process(%L)', E)) <> 'OK' then
           raise exception 'FAIL[TIE]: the owner could not challenge at the boundary instant';
@@ -795,14 +882,10 @@ begin
           raise exception 'FAIL[TIE]: the owner could not challenge at the boundary instant';
         end if;
         -- …and release is then impossible, for the stronger reason (the state, not the clock).
-        begin
-          perform public.release_estate(E);
-          raise exception 'FAIL[TIE]: release SUCCEEDED after an owner challenge';
-        exception when others then
-          if position('invalid_release_state' in SQLERRM) = 0 then
-            raise exception 'FAIL[TIE]: post-challenge release raised the wrong error: %', SQLERRM;
-          end if;
-        end;
+        if position('invalid_release_state' in
+             harness_rs.as_admin(ADMIN2_T, format('select public.authorize_release(%L, %L)', E, 'post-challenge'))) = 0 then
+          raise exception 'FAIL[TIE]: release did not refuse after an owner challenge';
+        end if;
       end if;
 
       if public.estate_lifecycle_state(E) <> 'challenge_halted' then
@@ -825,11 +908,12 @@ begin
     select id into v_case from public.death_verification_cases where estate_id = E2 and status = 'open';
     perform harness_rs.as_admin(ADMIN_T, format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case));
     perform harness_rs.as_admin(ADMIN_T, format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case));
+    perform harness_rs.as_admin(ADMIN_T, format('select public.dispatch_owner_safety_notice(%L)', E2));
     perform harness_rs.as_admin(ADMIN_T, format('select public.begin_challenge_window(%L)', E2));
     update public.estate_lifecycle
        set owner_notified_at = now() - v_dur - interval '1 second'
      where estate_id = E2;
-    perform public.release_estate(E2);
+    perform harness_rs.as_admin(ADMIN2_T, format('select public.authorize_release(%L, %L)', E2, 'control'));
     if public.estate_lifecycle_state(E2) <> 'released' then
       raise exception 'FAIL[TIE CONTROL]: release one second past the boundary did not succeed — '
         'the boundary refusals above prove nothing';
@@ -843,7 +927,7 @@ end $rs3$;
 -- =================================================================================================
 do $rs4$
 declare
-  OWNER_R uuid; EXEC_R uuid; ADMIN_R uuid; R1 uuid;
+  OWNER_R uuid; EXEC_R uuid; ADMIN_R uuid; ADMIN2_R uuid; R1 uuid;
   v_case uuid; v_res text;
 begin
   raise notice '4 · release guards';
@@ -851,7 +935,9 @@ begin
   insert into auth.users default values returning id into OWNER_R;
   insert into auth.users default values returning id into EXEC_R;
   insert into auth.users default values returning id into ADMIN_R;
-  insert into public.admins (user_id) values (ADMIN_R) on conflict do nothing;
+  insert into auth.users default values returning id into ADMIN2_R;
+  insert into public.admins (user_id) values (ADMIN_R), (ADMIN2_R) on conflict do nothing;
+  update auth.users set email = 'rs-owner-r@example.invalid' where id = OWNER_R;
   insert into public.estates (owner_id, name) values (OWNER_R, 'RS Estate R') returning id into R1;
   insert into public.estate_memberships (estate_id, user_id, role, status)
   values (R1, OWNER_R, 'primary_user', 'approved');
@@ -859,14 +945,10 @@ begin
   values (R1, EXEC_R, 'executor', 'active');
 
   -- Release from `active` (no lifecycle row at all) refuses.
-  begin
-    perform public.release_estate(R1);
-    raise exception 'FAIL: release succeeded on an estate with no death process';
-  exception when others then
-    if position('invalid_release_state' in SQLERRM) = 0 then
-      raise exception 'FAIL: release from active raised the wrong error: %', SQLERRM;
-    end if;
-  end;
+  if position('invalid_release_state' in
+       harness_rs.as_admin(ADMIN_R, format('select public.authorize_release(%L, %L)', R1, 'probe'))) = 0 then
+    raise exception 'FAIL: release did not refuse on an estate with no death process';
+  end if;
 
   -- A window cannot be opened without a verified case (the workflow precondition).
   perform harness_rs.attempt(EXEC_R, format('select public.initiate_death_verification_case(%L)', R1));
@@ -890,19 +972,17 @@ begin
   raise notice '  ok   the window door is admin-gated; release refuses from active and from pending';
 
   -- Open the window, then strip the committed notice: release must refuse (owner_not_notified).
+  v_res := harness_rs.as_admin(ADMIN_R, format('select public.dispatch_owner_safety_notice(%L)', R1));
+  if v_res <> 'OK' then raise exception 'FAIL: dispatch refused: %', v_res; end if;
   v_res := harness_rs.as_admin(ADMIN_R, format('select public.begin_challenge_window(%L)', R1));
   if v_res <> 'OK' then raise exception 'FAIL: window open refused: %', v_res; end if;
   update public.estate_lifecycle
      set owner_notified_at = null, safety_notification_id = null
    where estate_id = R1;
-  begin
-    perform public.release_estate(R1);
-    raise exception 'FAIL: release succeeded with NO committed owner notice';
-  exception when others then
-    if position('owner_not_notified' in SQLERRM) = 0 then
-      raise exception 'FAIL: un-notified release raised the wrong error: %', SQLERRM;
-    end if;
-  end;
+  if position('owner_not_notified' in
+       harness_rs.as_admin(ADMIN2_R, format('select public.authorize_release(%L, %L)', R1, 'probe'))) = 0 then
+    raise exception 'FAIL: release did not refuse with NO committed owner notice';
+  end if;
   raise notice '  ok   release refuses without a committed owner safety notice';
 
   -- Restore the notice and elapse it, then delete the verified case: release must still refuse.
@@ -910,15 +990,23 @@ begin
      set owner_notified_at = now() - interval '30 days',
          safety_notification_id = gen_random_uuid()
    where estate_id = R1;
+  -- ★ THE EMAIL-CHANNEL PRECONDITION AT THE RELEASE DOOR, exercised on its own. Every other path
+  -- leaves a live notice row behind, so this guard had never fired: cancelling the notice while the
+  -- lifecycle facts stay intact is the only state that isolates it.
+  update public.owner_notice_outbox set status = 'cancelled' where estate_id = R1;
+  if position('owner_channel_unreachable' in
+       harness_rs.as_admin(ADMIN2_R, format('select public.authorize_release(%L, %L)', R1, 'probe'))) = 0 then
+    raise exception 'FAIL: release did not refuse with the owner notice CANCELLED — the email '
+      'channel precondition is not enforced at the release door';
+  end if;
+  update public.owner_notice_outbox set status = 'queued' where estate_id = R1;
+  raise notice '  ok   release refuses when the owner email notice is cancelled (D4 at the door)';
+
   update public.death_verification_cases set status = 'rejected' where estate_id = R1;
-  begin
-    perform public.release_estate(R1);
-    raise exception 'FAIL: release succeeded with no VERIFIED case';
-  exception when others then
-    if position('no_verified_case' in SQLERRM) = 0 then
-      raise exception 'FAIL: no-verified-case release raised the wrong error: %', SQLERRM;
-    end if;
-  end;
+  if position('no_verified_case' in
+       harness_rs.as_admin(ADMIN2_R, format('select public.authorize_release(%L, %L)', R1, 'probe'))) = 0 then
+    raise exception 'FAIL: release did not refuse with no VERIFIED case';
+  end if;
   raise notice '  ok   release refuses without a verified death-verification case';
 end $rs4$;
 
@@ -998,18 +1086,168 @@ begin
   end if;
 
   -- And release is impossible from every one of those states.
-  begin
-    perform public.release_estate(W);
-    raise exception 'FAIL: release succeeded from a merely-pending, evidenced, attained estate';
-  exception when others then
-    if position('invalid_release_state' in SQLERRM) = 0 then
-      raise exception 'FAIL: firewall release raised the wrong error: %', SQLERRM;
-    end if;
-  end;
+  if position('invalid_release_state' in
+       harness_rs.as_admin(ADMIN_W, format('select public.authorize_release(%L, %L)', W, 'firewall probe'))) = 0 then
+    raise exception 'FAIL: release did not refuse from a merely-pending, evidenced, attained estate';
+  end if;
   raise notice '  ok   claim approval, accepted evidence and sufficient attainment each release NOTHING';
 
   delete from public.claim_packets where estate_id = W;
 end $rs5$;
+
+-- =================================================================================================
+-- 6 · DISPATCH FAILURE, ROLLBACK, AND OUTBOX SAFETY (Phase 11-F, Stages 2 and 3)
+-- =================================================================================================
+do $rs6$
+declare
+  OWNER_U uuid; EXEC_U uuid; ADMIN_U uuid; U uuid;
+  v_case uuid; v_res text; n int; v_census jsonb; v_audit int; v_purged int;
+begin
+  raise notice '6 · dispatch failure, rollback, and outbox safety';
+
+  insert into auth.users default values returning id into OWNER_U;
+  insert into auth.users default values returning id into EXEC_U;
+  insert into auth.users default values returning id into ADMIN_U;
+  insert into public.admins (user_id) values (ADMIN_U) on conflict do nothing;
+  insert into public.estates (owner_id, name) values (OWNER_U, 'RS Estate U') returning id into U;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (U, OWNER_U, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (U, EXEC_U, 'executor', 'active');
+  -- ★ NO EMAIL ON THIS OWNER, deliberately: this estate exercises the unreachable-channel path.
+
+  perform harness_rs.attempt(EXEC_U, format('select public.initiate_death_verification_case(%L)', U));
+  select id into v_case from public.death_verification_cases where estate_id = U and status = 'open';
+  perform harness_rs.as_admin(ADMIN_U, format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case));
+  perform harness_rs.as_admin(ADMIN_U, format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case));
+
+  -- ★ D4 — AN UNREACHABLE OWNER STOPS THE WHOLE PROCESS. Not a warning, not a queued row nobody can
+  -- deliver: the transition refuses and the estate stays at death_verified, where nothing releases.
+  v_res := harness_rs.as_admin(ADMIN_U, format('select public.dispatch_owner_safety_notice(%L)', U));
+  if position('owner_channel_unreachable' in v_res) = 0 then
+    raise exception 'FAIL: dispatch to an owner with NO email address got %', v_res;
+  end if;
+
+  -- ★ AND THE FAILURE ROLLED BACK EVERYTHING. No outbox row, no in-app notice, no state change —
+  -- a half-dispatch that moved the lifecycle would start a clock on an owner who was never told.
+  select count(*) into n from public.owner_notice_outbox where estate_id = U;
+  if n <> 0 then
+    raise exception 'FAIL: a failed dispatch left % outbox row(s) behind', n;
+  end if;
+  select count(*) into n from public.notifications where estate_id = U;
+  if n <> 0 then
+    raise exception 'FAIL: a failed dispatch left % in-app notification(s) behind', n;
+  end if;
+  if public.estate_lifecycle_state(U) <> 'death_verified' then
+    raise exception 'FAIL: a failed dispatch moved the lifecycle to %', public.estate_lifecycle_state(U);
+  end if;
+  raise notice '  ok   an unreachable owner refuses dispatch and rolls back BOTH channels and the state';
+
+  -- Give the owner a channel; the same call now succeeds, proving the refusal was the address.
+  update auth.users set email = 'rs-owner-u@example.invalid' where id = OWNER_U;
+  v_res := harness_rs.as_admin(ADMIN_U, format('select public.dispatch_owner_safety_notice(%L)', U));
+  if v_res <> 'OK' then
+    raise exception 'FAIL[control]: dispatch still refused after the owner became reachable: %', v_res;
+  end if;
+  raise notice '  ok   CONTROL: the same dispatch succeeds once the owner is reachable';
+
+  -- ── THE AGE GATE (Stage 3) ────────────────────────────────────────────────────────────────────
+  -- A notice older than the gate is never sent and never deleted: it settles as failedPermanent
+  -- with an explicit class, leaving the evidence that the owner was not reached in time.
+  update public.owner_notice_outbox
+     set requested_at = now() - interval '30 days'
+   where estate_id = U;
+  perform public.claim_owner_notices(25);
+  select count(*) into n from public.owner_notice_outbox
+   where estate_id = U and status = 'failedPermanent' and failure_class = 'stale_beyond_age_gate';
+  if n <> 1 then
+    raise exception 'FAIL: the age gate did not settle the stale notice (% row(s))', n;
+  end if;
+  raise notice '  ok   AGE GATE: a stale notice is marked failedPermanent, never sent, never deleted';
+
+  -- A FRESH notice IS claimable — the control that proves the gate is not simply refusing everything.
+  update public.owner_notice_outbox
+     set requested_at = now(), status = 'queued', failure_class = null
+   where estate_id = U;
+  select count(*) into n from public.claim_owner_notices(25);
+  if n <> 1 then
+    raise exception 'FAIL[control]: a FRESH notice was not claimable (% claimed) — the age gate is '
+      'refusing everything and the stale assertion above proves nothing', n;
+  end if;
+  raise notice '  ok   CONTROL: a fresh notice IS claimed (the gate discriminates)';
+
+  -- ── THE PURGE IS NEVER SILENT, AND NEVER TAKES A LIVE MESSAGE (Stage 3) ──────────────────────
+  --
+  -- ★ THE FIXTURE MIXES SETTLED AND IN-FLIGHT ROWS, DELIBERATELY. With only in-flight rows the
+  -- (correct) COUNT returns 0 and the routine short-circuits before the DELETE ever runs — so a
+  -- widened DELETE would be invisible, one layer masked by another. A mix makes the count non-zero,
+  -- the delete execute, and the survival of the in-flight row an actual observation.
+  select count(*) into v_audit from public.outbox_purge_audit;
+  update public.owner_notice_outbox set status = 'dispatched', dispatched_at = now() where estate_id = U;
+  insert into public.owner_notice_outbox
+    (estate_id, user_id, channel, recipient, notice_kind, status)
+  values (U, OWNER_U, 'email', 'rs-owner-u@example.invalid', 'death_process.window_opened', 'processing');
+
+  select public.purge_outbox_rows('owner_notice_outbox', now() + interval '1 day', 'harness sweep')
+    into v_purged;
+  if v_purged <> 1 then
+    raise exception 'FAIL: the purge removed % row(s), expected exactly the 1 SETTLED row', v_purged;
+  end if;
+  -- The in-flight message survived: it is still on its way to a living owner.
+  select count(*) into n from public.owner_notice_outbox where estate_id = U and status = 'processing';
+  if n <> 1 then
+    raise exception 'FAIL: the purge deleted an IN-FLIGHT safety notice — a live warning to an owner';
+  end if;
+  delete from public.owner_notice_outbox where estate_id = U;
+  if (select count(*) from public.outbox_purge_audit) <> v_audit + 1 then
+    raise exception 'FAIL: the purge wrote no audit row — a silent purge is impossible by design';
+  end if;
+  if not exists (select 1 from public.outbox_purge_audit
+                  where outbox_name = 'owner_notice_outbox' and row_count = 1
+                    and btrim(reason) <> '' and actor_id is not null) then
+    raise exception 'FAIL: the purge audit row is missing its count, reason or actor';
+  end if;
+  raise notice '  ok   PURGE: in-flight rows refused; settled rows removed WITH an attributed audit row';
+
+  -- A blank reason and an unknown outbox are both refused.
+  v_res := harness_rs.as_admin(ADMIN_U,
+    format('select public.purge_outbox_rows(%L, %L, %L)', 'owner_notice_outbox', now(), '  '));
+  if position('purge_reason_required' in v_res) = 0 then
+    raise exception 'FAIL: a blank purge reason was accepted (got %)', v_res;
+  end if;
+  v_res := harness_rs.as_admin(ADMIN_U,
+    format('select public.purge_outbox_rows(%L, %L, %L)', 'invitation_delivery_outbox', now(), 'probe'));
+  if position('unknown_outbox' in v_res) = 0 then
+    raise exception 'FAIL: the purge accepted an outbox outside its closed vocabulary (got %)', v_res;
+  end if;
+  raise notice '  ok   PURGE: blank reason and unknown outbox both refused';
+
+  -- ── THE CENSUS (Stage 3 classification) ───────────────────────────────────────────────────────
+  -- ★ THE TOTAL IS COMPARED AGAINST THE REAL ROW COUNT, not merely present. A census whose total
+  -- is wrong is worse than no census: it is the number an operator quotes when deciding to purge.
+  -- (The first implementation joined a per-status aggregate laterally and tripled its own total,
+  -- which a presence-only assertion would have passed.)
+  select count(*) into n from public.owner_notice_outbox;
+  v_census := harness_rs.as_admin_json(ADMIN_U, 'select public.owner_notice_census()');
+  if v_census is null or not (v_census ? 'total') or not (v_census ? 'age_gate')
+     or not (v_census ? 'by_status') then
+    raise exception 'FAIL: the outbox census does not report totals, status map and the age gate: %', v_census;
+  end if;
+  if (v_census ->> 'total')::int is distinct from n then
+    raise exception 'FAIL: the census reports total=% against % real row(s)',
+      v_census ->> 'total', n;
+  end if;
+  -- The per-status counts must sum to the same total, or the two halves disagree.
+  if (select coalesce(sum(value::int), 0) from jsonb_each_text(v_census -> 'by_status')) is distinct from n then
+    raise exception 'FAIL: the census status map sums to % against % real row(s): %',
+      (select coalesce(sum(value::int), 0) from jsonb_each_text(v_census -> 'by_status')), n, v_census;
+  end if;
+  -- Counts only: no recipient address may appear anywhere in the census payload.
+  if v_census::text ilike '%@example.invalid%' then
+    raise exception 'FAIL: the census leaked a recipient address';
+  end if;
+  raise notice '  ok   CENSUS: totals, status/age distribution and the age gate; no address disclosed';
+end $rs6$;
 
 do $$
 begin

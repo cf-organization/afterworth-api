@@ -53,6 +53,10 @@ buildBundle(
       // can write that state — the transition routines arrive with the LAST bundle, the release
       // routine is client-revoked with no caller, and the window duration table ships EMPTY.
       'db/migrations/0054_20260812_challenge_window_release_seam.sql',
+      // ★ PHASE 11-F: the seventh state rides with the predicate whose validity gate names it.
+      // A gate missing a STORABLE state refuses every condition for estates in it — including
+      // `immediately` — so vocabulary and predicate must land in the same paste.
+      'db/migrations/0055_20260812_release_authorization.sql',
       'db/functions/release_conditions.sql',
       'db/functions/estate_lifecycle_state.sql',
       'db/functions/document_grantable.sql',
@@ -94,6 +98,15 @@ buildBundle(
       ['db/migrations/0054_20260812_challenge_window_release_seam.sql', "'challenge_window',"],
       ['db/migrations/0054_20260812_challenge_window_release_seam.sql',
         'create table if not exists public.release_safety_policy'],
+      ['db/migrations/0055_20260812_release_authorization.sql', "'owner_notification_dispatched',"],
+      // ★ THE TABLE, NOT THE CONSTRAINT TEXT. A needle quoting the two-person CHECK would make the
+      // BUILD refuse a mutation of it — so the bundler would testify instead of the structural
+      // audit and the SQL suite, and nothing would ever prove those layers fire. Third occurrence
+      // of that masking shape in this programme; same resolution.
+      ['db/migrations/0055_20260812_release_authorization.sql',
+        'create table if not exists public.release_authorizations'],
+      ['db/migrations/0055_20260812_release_authorization.sql',
+        'drop function if exists public.release_estate(uuid);'],
       ['db/functions/release_conditions.sql', 'create or replace function public.release_condition_satisfied'],
       // ★ THE PREDICATE IS THE 11-D SHAPE: it takes the lifecycle argument. A bundle built from a
       // pre-11-D source must refuse to build. The death-arm CONJUNCTION is deliberately NOT a build
