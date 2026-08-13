@@ -81,6 +81,7 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // everything above: six lifecycle states change nothing, `released` changes exactly what the
   // owner authored, and relationship never becomes a tier.
   'db/tests/survivor_mode_authorization.sql',
+  'db/tests/fiduciary_capacity_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.
