@@ -1,0 +1,296 @@
+{
+  "refused_owner": {
+    "authorized": false
+  },
+  "refused_stranger": {
+    "authorized": false
+  },
+  "executor_released": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": true,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "none",
+      "decided_at": null,
+      "initiated_at": null,
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": null
+    }
+  },
+  "trustee_not_started": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "initiate_verification",
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "trustee",
+    "authorized": true,
+    "verification": {
+      "state": "none",
+      "decided_at": null,
+      "initiated_at": null,
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": null
+    }
+  },
+  "executor_not_started": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "initiate_verification",
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "none",
+      "decided_at": null,
+      "initiated_at": null,
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": null
+    }
+  },
+  "executor_claim_submitted": {
+    "claim": {
+      "state": "submitted",
+      "decided_at": null,
+      "submitted_at": "2026-08-13T17:18:35.567049+00:00"
+    },
+    "actions": [
+      "initiate_verification"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "none",
+      "decided_at": null,
+      "initiated_at": null,
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": null
+    }
+  },
+  "executor_challenge_halted": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": true,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "verified",
+      "decided_at": "2026-08-13T17:18:35.567049+00:00",
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": "enhanced_kyc",
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  },
+  "executor_challenge_window": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": true
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "verified",
+      "decided_at": "2026-08-13T17:18:35.567049+00:00",
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": "enhanced_kyc",
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  },
+  "refused_revoked_fiduciary": {
+    "authorized": false
+  },
+  "executor_no_current_action": {
+    "claim": {
+      "state": "submitted",
+      "decided_at": null,
+      "submitted_at": "2026-08-13T17:18:35.567049+00:00"
+    },
+    "actions": [],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": true,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "verified",
+      "decided_at": "2026-08-13T17:18:35.567049+00:00",
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": "enhanced_kyc",
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  },
+  "executor_verification_open": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "attach_evidence",
+      "cancel_verification",
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "open",
+      "decided_at": null,
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  },
+  "refused_nonexistent_estate": {
+    "authorized": false
+  },
+  "refused_professional_delegate": {
+    "authorized": false
+  },
+  "executor_verification_rejected": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "initiate_verification",
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "rejected",
+      "decided_at": "2026-08-13T17:18:35.567049+00:00",
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  },
+  "executor_verification_verified": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "verified",
+      "decided_at": "2026-08-13T17:18:35.567049+00:00",
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": "enhanced_kyc",
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  },
+  "executor_verification_cancelled": {
+    "claim": {
+      "state": "none",
+      "decided_at": null,
+      "submitted_at": null
+    },
+    "actions": [
+      "initiate_verification",
+      "submit_claim"
+    ],
+    "process": {
+      "challenge_halted": false,
+      "release_completed": false,
+      "challenge_window_open": false
+    },
+    "capacity": "executor",
+    "authorized": true,
+    "verification": {
+      "state": "cancelled",
+      "decided_at": null,
+      "initiated_at": "2026-08-13T17:18:35.567049+00:00",
+      "attained_level": null,
+      "required_level": "enhanced_kyc",
+      "level_at_initiation": "enhanced_kyc"
+    }
+  }
+}
