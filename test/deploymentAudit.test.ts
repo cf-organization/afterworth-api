@@ -151,6 +151,43 @@ describe("★ the cron is CRON_SECRET-gated and fails closed", () => {
     // Hobby permits two cron jobs; going over would silently drop one.
     expect(paths.length).toBeLessThanOrEqual(2);
   });
+
+  /**
+   * ★ PHASE 11-K. The owner-safety notice drain has NO CRON OF ITS OWN — the two-job cap is spent,
+   * and a third entry would have been silently dropped (this audit caught exactly that when the
+   * drain was first written with its own entry). It therefore shares the claims-domain slot, and
+   * that arrangement needs pinning from BOTH ends: the cron path must be the one that runs it, and
+   * the route must actually run it. Either half alone passes while the owner goes un-notified.
+   */
+  it("the owner-notice drain is reachable from a registered cron path", () => {
+    const vercel = JSON.parse(fs.readFileSync(path.join(ROOT, "vercel.json"), "utf8"));
+    const paths: string[] = (vercel.crons ?? []).map((c: { path: string }) => c.path);
+    expect(paths).toContain("/api/claims/drain_outboxes");
+
+    const route = fs.readFileSync(path.join(ROOT, "api", "claims", "[action].ts"), "utf8");
+    // The path resolves to the combined action…
+    expect(route).toContain('const withOwnerNotices = action === "drain_outboxes"');
+    // …and the combined action actually calls the drain.
+    expect(route).toContain("claimAndDeliverOwnerNotices");
+    expect(route).toMatch(/withOwnerNotices\s*\n?\s*\?\s*jsonResponse\(200, \{ purge, ownerNotices:/);
+  });
+
+  it("the owner-notice drain is CRON_SECRET-gated and fails closed", () => {
+    const route = fs.readFileSync(path.join(ROOT, "api", "claims", "[action].ts"), "utf8");
+    expect(route).toContain("process.env.CRON_SECRET");
+    expect(route).toContain("!cronSecret || auth !== `Bearer ${cronSecret}`");
+  });
+
+  it("the owner-notice drain response is counters only", () => {
+    const src = fs.readFileSync(path.join(ROOT, "lib", "ownerNotices", "drain.ts"), "utf8");
+    expect(src.length).toBeGreaterThan(0); // positive control: the file was actually read
+    expect(src).toContain("OwnerNoticeCounters");
+    // The recipient reaches the provider and nothing else. No id, address or provider handle may
+    // appear in a response or a log line.
+    expect(src).not.toMatch(/console\.(error|log)\([^)]*recipient/);
+    expect(src).not.toMatch(/console\.(error|log)\([^)]*estateId/);
+    expect(src).not.toContain("providerMessageId");
+  });
 });
 
 describe("★ the rate-limit registry has a row for the new action", () => {

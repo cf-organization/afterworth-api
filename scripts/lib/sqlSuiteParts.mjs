@@ -50,6 +50,10 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // the other three (plpgsql throughout, except a `language sql` reader of a table it creates
   // itself), but it is the newest artifact and applies onto a database the others have shaped.
   'db/bundles/death_verification_bundle.sql',
+  // ★ PHASE 11-K, AFTER the death bundle whose vocabulary it extends. It widens the
+  // owner_notice_outbox status CHECK and adds the delivery recorder plus the two operator
+  // projections — all of which read objects the death bundle creates above.
+  'db/bundles/operator_console_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
@@ -85,6 +89,10 @@ export const SQL_SUITE_PARTS = Object.freeze([
   'db/tests/survivor_mode_authorization.sql',
   'db/tests/fiduciary_capacity_authorization.sql',
   'db/tests/executor_workspace_authorization.sql',
+  // ★ PHASE 11-K, AFTER the safety suite (it drives a case to `owner_notification_dispatched`
+  // through the real doors) and BEFORE the exit matrix. It proves the operator READ doors refuse
+  // every wrong actor and disclose the workflow without the estate.
+  'db/tests/operator_console_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.
@@ -99,6 +107,7 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildDeathVerificationBundle.mjs', 'db/bundles/death_verification_bundle.sql'],
   ['scripts/buildExecutorWorkspaceBundle.mjs', 'db/bundles/executor_workspace_bundle.sql'],
   ['scripts/buildReleaseStateLockdownBundle.mjs', 'db/bundles/estate_release_state_lockdown_bundle.sql'],
+  ['scripts/buildOperatorConsoleBundle.mjs', 'db/bundles/operator_console_bundle.sql'],
 ]);
 
 /**

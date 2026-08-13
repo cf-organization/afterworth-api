@@ -113,7 +113,22 @@ create table if not exists public.documents (
   -- this stub omitted it — `column d.title does not exist`. A harness that is missing a column the
   -- code under test reads is not a smaller version of the schema, it is a different one.
   title       text not null default 'Fixture document',
-  sensitivity text not null default 'sealed' references public.document_sensitivity(value)
+  sensitivity text not null default 'sealed' references public.document_sensitivity(value),
+  -- ★ THE SAME LESSON AGAIN, IN PHASE 11-K. The operator case file joins `documents` for evidence
+  -- METADATA and reads `d.doc_type` and `d.created_at`; without these columns the projection cannot
+  -- execute at all, and the suite would have reported a missing column rather than a disclosure
+  -- result. Added NULLABLE / DEFAULTED so no existing fixture insert changes behaviour.
+  --
+  -- `storage_path` is here for the opposite reason: it is the column the operator projection must
+  -- NEVER select. A harness that cannot STORE a storage path cannot prove one was withheld — the
+  -- absence assertion would pass against a column that does not exist. It is deliberately present
+  -- so that `operator_console_authorization.sql` §3 is a real withholding test.
+  --
+  -- No FK to `document_type` here: the preamble does not model the taxonomy catalog, and the
+  -- catalog's integrity is proven by its own suite. This stub models what the code under test READS.
+  doc_type     text,
+  storage_path text,
+  created_at   timestamptz not null default now()
 );
 alter table public.documents enable row level security;
 drop policy if exists documents_read on public.documents;
@@ -484,7 +499,12 @@ grant select, update on public.notifications to authenticated;
 create table if not exists public.profiles (
   id    uuid primary key references auth.users(id),
   email text,
-  phone text
+  phone text,
+  -- ★ PHASE 11-K. The operator case file reads `p.full_name` to name the fiduciary whose claim an
+  -- operator is adjudicating (production carries it; `admin_list_claim_packets_enriched` has read it
+  -- since C1.5). Nullable, exactly as in production — the UI falls back to email when it is null,
+  -- and a harness that could not represent NULL could not exercise that fallback.
+  full_name text
 );
 alter table public.profiles enable row level security;
 

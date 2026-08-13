@@ -30,9 +30,10 @@
  *   413 object too large, 429 rate, 502 config/storage.
  */
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { enforce } from "../../lib/rateLimit.js";
 import { verifyJwt, getAuthedSupabaseClient, AuthError } from "../../lib/auth.js";
+import { claimAndDeliverOwnerNotices, OWNER_NOTICE_BATCH } from "../../lib/ownerNotices/drain.js";
 
 const ACTIONS = new Set(["view_evidence", "sweep_orphans", "purge_document"]);
 const SLOTS = new Set(["death_cert", "executor_id"]);
@@ -190,14 +191,53 @@ async function handlePurgeDocument(req: Request, jwt: string, o: Record<string, 
 }
 
 /**
- * GET /api/claims/drain_purge_outbox — the SCHEDULED reliability backstop (Vercel Cron), CRON_SECRET-gated.
- * Drains pending/failed purge-outbox rows via the service role (the born-clean table grants select+update to
- * service_role). On Hobby, cron frequency is plan-limited (daily); the CLIENT-immediate purge is the primary
- * "not retained" path, and the 72h orphan sweeper is the FINAL catch-all. Tighten the schedule on Pro.
+ * Phase 11-K. The owner-safety notice drain — sends the message that tells a living owner a process
+ * is running to release their estate.
+ *
+ * ★ IT SHARES A CRON SLOT RATHER THAN TAKING ONE, and that is a hard platform constraint rather
+ * than a preference. Vercel HOBBY PERMITS EXACTLY TWO CRON JOBS, and this project already has two;
+ * a third would have been silently dropped — plausibly dropping the invitation drain or the storage
+ * purge instead of this one, with no error anywhere. `deploymentAudit.test.ts` caught precisely that
+ * when it was first written as its own entry. So `drain_outboxes` runs both claims-domain drains in
+ * one invocation, and the two are independently error-isolated below: neither can prevent the other
+ * from running.
+ *
+ * ★ IT ALSO RIDES THIS DISPATCHER RATHER THAN TAKING A FILE — the project is at 12/12 Hobby
+ * functions, and this file's own header already named itself the landing place: "any future
+ * claims-domain service-role op rides it rather than taking a slot that no longer exists."
+ *
+ * ★ THE AGE GATE IS THE SERVER'S. `claim_owner_notices` settles stale rows before handing anything
+ * over, so this route cannot send a stale notice — see `lib/ownerNotices/drain.ts`.
+ *
+ * Response is COUNTERS ONLY. No outbox id, no estate id, no recipient address, no provider handle.
+ */
+async function drainOwnerNotices(admin: SupabaseClient): Promise<unknown> {
+  try {
+    return await claimAndDeliverOwnerNotices(admin, { max: OWNER_NOTICE_BATCH });
+  } catch (err) {
+    // Never surface the cause: a provider error path can carry a recipient address. Returning an
+    // error SHAPE rather than throwing keeps the purge drain running in the same invocation.
+    console.error("drain_owner_notices: unexpected error", err instanceof Error ? err.name : "unknown");
+    return { error: "upstream_error" };
+  }
+}
+
+/**
+ * GET /api/claims/drain_outboxes — the SCHEDULED reliability backstop (Vercel Cron), CRON_SECRET-gated.
+ *
+ * Runs BOTH claims-domain drains in one invocation (see the two-cron constraint above):
+ *   · the storage purge outbox — pending/failed rows, service-role. The CLIENT-immediate purge is
+ *     the primary "not retained" path and the 72h orphan sweeper is the FINAL catch-all.
+ *   · the owner-safety notice outbox (Phase 11-K).
+ *
+ * `drain_purge_outbox` is retained as an alias that runs the purge half ONLY, so a manually
+ * triggered call or a stale scheduler entry keeps its original meaning rather than silently
+ * acquiring the power to send mail.
  */
 export async function GET(req: Request): Promise<Response> {
   const action = actionFromUrl(req.url);
-  if (action !== "drain_purge_outbox") return errorResponse(404, "not_found");
+  const withOwnerNotices = action === "drain_outboxes";
+  if (!withOwnerNotices && action !== "drain_purge_outbox") return errorResponse(404, "not_found");
 
   // Vercel Cron sends `Authorization: Bearer $CRON_SECRET` automatically when CRON_SECRET is configured.
   const cronSecret = process.env.CRON_SECRET;
@@ -222,7 +262,15 @@ export async function GET(req: Request): Promise<Response> {
     .limit(BATCH);
   if (error) {
     console.error("drain_purge_outbox: select error:", error.message);
-    return errorResponse(502, "upstream_error");
+    // ★ THE PURGE HALF FAILING MUST NOT SILENCE THE SAFETY HALF. These two drains share a cron slot
+    // for a platform reason, not because they are related — and a storage-outbox query error is no
+    // reason to leave an owner un-notified that a process is running to release their estate. When
+    // owner notices are in scope this invocation still runs them and reports both outcomes.
+    if (!withOwnerNotices) return errorResponse(502, "upstream_error");
+    return jsonResponse(200, {
+      purge: { error: "upstream_error" },
+      ownerNotices: await drainOwnerNotices(admin),
+    });
   }
 
   let purged = 0;
@@ -243,7 +291,13 @@ export async function GET(req: Request): Promise<Response> {
       purged++;
     }
   }
-  return jsonResponse(200, { drained: (rows ?? []).length, purged, failed });
+
+  const purge = { drained: (rows ?? []).length, purged, failed };
+  // The owner-notice half runs AFTER the purge half and cannot prevent it: by here the purge work
+  // is already committed, and drainOwnerNotices swallows its own failures into a counter shape.
+  return withOwnerNotices
+    ? jsonResponse(200, { purge, ownerNotices: await drainOwnerNotices(admin) })
+    : jsonResponse(200, purge);
 }
 
 export async function POST(req: Request): Promise<Response> {

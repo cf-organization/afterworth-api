@@ -384,6 +384,54 @@ const MUTATIONS = Object.freeze([
     from: '     and public.can_access_document(d.id);',
     to: "     and public.can_access_document(d.id)\n     and exists (select 1 from public.access_grants g2 where g2.estate_id = p_estate\n                   and g2.release_condition = 'immediately');",
   },
+  // ══ PHASE 11-K · the operator control plane ═════════════════════════════════════════════════
+  {
+    id: 'p11k-projection-gate-deleted',
+    why: 'THE WHOLE POINT OF STAGE 14. Deleting the admin gate from the operator QUEUE turns a '
+      + 'staff-only workflow surface into a list of every death-verification case in the product, '
+      + 'readable by any authenticated user — an owner, a beneficiary, a stranger.',
+    file: 'db/functions/operator_console.sql',
+    from: "as $function$\ndeclare v_limit int;\nbegin\n  perform public.admin_require_gate();",
+    to: "as $function$\ndeclare v_limit int;\nbegin",
+  },
+  {
+    id: 'p11k-case-file-gate-deleted',
+    why: 'The same deletion on the CASE FILE, which carries initiator identity, evidence metadata '
+      + 'and decision notes. A missing gate here discloses far more than the queue does.',
+    file: 'db/functions/operator_console.sql',
+    from: "  perform public.admin_require_gate();\n  v_uid := auth.uid();",
+    to: "  v_uid := auth.uid();",
+  },
+  {
+    id: 'p11k-owner-address-projected',
+    why: 'THE DISCLOSURE THIS PROJECTION EXISTS TO AVOID. Adding the recipient to the owner-notice '
+      + 'arm hands every operator a living owner\'s email address — the address of the person the '
+      + 'challenge window exists to protect, on the surface used by whoever is adjudicating a '
+      + 'claim that they are dead.',
+    file: 'db/functions/operator_console.sql',
+    from: "               'failure_class', o.failure_class",
+    to: "               'failure_class', o.failure_class,\n               'recipient', o.recipient",
+  },
+  {
+    id: 'p11k-reviewer-a-read-off-the-row',
+    why: 'THE TWO-PERSON RULE, MISREPRESENTED. Hardcoding viewer_is_reviewer_a to false tells the '
+      + 'first reviewer they are eligible to authorize their own release. The DOOR still refuses, '
+      + 'so nothing unsafe commits — but the console would present an action that always fails, '
+      + 'and an operator who trusts it would conclude the two-person rule is broken rather than '
+      + 'that they are the wrong person.',
+    file: 'db/functions/operator_console.sql',
+    from: "      'viewer_is_reviewer_a', v_c.decided_by is not null and v_c.decided_by = v_uid,",
+    to: "      'viewer_is_reviewer_a', false,",
+  },
+  {
+    id: 'p11k-worker-pair-client-reachable',
+    why: 'Granting the claim routine to `authenticated` lets any signed-in user move a live owner '
+      + 'safety notice into `processing`, where it is never sent and the stale sweep later burns '
+      + 'it. A silent, client-triggerable way to ensure an owner is never warned.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "grant  execute on function public.claim_owner_notices(int) to service_role;",
+    to: "grant  execute on function public.claim_owner_notices(int) to service_role, authenticated;",
+  },
   {
     id: 'p11-executor-gains-disclosure',
     target: 'npx',
