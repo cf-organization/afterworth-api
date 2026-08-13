@@ -289,8 +289,17 @@ comment on function public.owner_notice_age_gate() is
 -- Enabling a new delivery path is a deployment decision with its own operator step, and the phase
 -- brief's own instruction is to build the safety BEFORE enabling the path. The routine exists, is
 -- tested, and waits." The safety was built; 11-K enables the path. The drain is
--- `lib/ownerNotices/drain.ts`, reached by `GET /api/claims/drain_owner_notices` under CRON_SECRET,
--- and it claims through this routine as `service_role` — the grant is at the foot of this section.
+-- `lib/ownerNotices/drain.ts`, reached by `GET /api/claims/drain_outboxes` under CRON_SECRET, and it
+-- claims through this routine as `service_role` — the grant is at the foot of this section.
+--
+-- ★ THE ROUTE NAME IS NOT `drain_owner_notices`, AND THIS COMMENT USED TO SAY IT WAS. There is no
+-- such endpoint: it returns 404 in production, verified by probing it. `drain_owner_notices` is only
+-- the LOG LABEL for the owner-notice half inside the shared dispatcher. The half shares the claims
+-- cron slot because Vercel Hobby permits exactly two cron jobs, so it could never have its own path.
+-- A comment naming a 404 is not cosmetic in THIS module: §5/§7 of the deployment doc verify the
+-- channel by probing it, and an engineer who probes the name written here gets a 404 and concludes
+-- the drain was never deployed — a false negative about the only independent channel that warns a
+-- living owner their estate is being released.
 create or replace function public.claim_owner_notices(p_max int default 25)
  returns table (id uuid, estate_id uuid, recipient text, notice_kind text)
  language plpgsql
