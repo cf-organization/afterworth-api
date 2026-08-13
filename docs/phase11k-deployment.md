@@ -1,7 +1,9 @@
 # Phase 11-K — deployment
 
-**STATUS: DEPLOYMENT_REQUIRED.** Nothing in this phase is deployed. Claude does not execute
-production DDL. The console in `afterworth-admin` cannot be exercised until this bundle is applied.
+**STATUS: DEPLOYED 2026-08-13.** The bundle was applied by Christ in the Supabase SQL Editor and the
+post-deployment evidence is recorded in §11. The SQL/HTTP layer is verified; the ADMIN PRODUCT-PATH
+half is **PENDING** on an AAL2 operator credential, and §11 says so rather than rounding it into a
+pass.
 
 ---
 
@@ -20,9 +22,37 @@ inputs changed and the bundle in your clipboard is not the one that was reviewed
 shasum -a 256 db/bundles/operator_console_bundle.sql
 ```
 
-Recorded at PR head: `1838971f728b3ff112e502d5881b18b6edc59787f34278aae4e552fe5052a30d`
+| SHA256 | What it is |
+|---|---|
+| `1838971f728b3ff112e502d5881b18b6edc59787f34278aae4e552fe5052a30d` | **DEPLOYED.** Recorded at the 11-K PR head, confirmed byte-identical on disk before the paste, and applied to production. |
+| `f705541cf7972a4bc4e47a60bd38d2e90391aa53006e9a7e2f46853dbca6708f` | **What source builds now**, after the comment correction below. |
 
 **Determinism** — verified by rebuilding twice in one session and comparing digests. Identical.
+
+### The two digests differ, and the difference is a comment. Stated rather than smoothed.
+
+Post-deployment verification found `db/functions/outbox_safety.sql` documenting the drain's entry
+point as `GET /api/claims/drain_owner_notices`. **No such route exists** — it returns 404 in
+production, probed directly. The real path is `/api/claims/drain_outboxes`; `drain_owner_notices` is
+only the log label for the owner-notice half inside the shared dispatcher. Correcting it rebuilt both
+bundles that embed that module (`operator_console_bundle.sql` and `death_verification_bundle.sql`,
+now `1c7c3ec146ff3d18673254673a733ab974f86b46149b91c25762e39beadd82fd`).
+
+**NO RE-PASTE IS REQUIRED, and the reason is proven rather than asserted.** The change is
+comment-only: every changed file is byte-identical to its deployed version once SQL comments are
+stripped — verified with a stripper carrying its own positive control (it must remove comments) and
+negative control (it must not remove SQL). No statement, grant, signature or body changed.
+
+So the deployed `prosrc` of `claim_owner_notices` differs from source by exactly this comment until
+the next paste of either bundle folds it in. **That delta is recorded here deliberately.** The rule
+this repository enforces is against *silent* drift; a known, located, semantically inert delta with
+both digests written down is the opposite of the Phase 10 near-miss. Re-pasting 56KB of production
+DDL to correct a comment would be the larger risk.
+
+Why a comment mattered enough to fix: §5 and §7 verify this channel **by probing it**. An engineer
+who probes the name the source told them would get a 404 and conclude the drain was never deployed —
+a false negative about the only independent channel that warns a living owner their estate is being
+released.
 
 ## 2 · What is in it, in paste order
 
@@ -108,12 +138,26 @@ select prosrc like '%status <> ''cancelled''%' as window_gate_intact
 -- expect: t
 ```
 
-Then, from the repository:
+Then the repository verifiers. **Note which repo each lives in** — an earlier version of this section
+listed both under "from the repository", and `verifyDeployedContracts.mjs` is not in this one. Run as
+instructed there it fails with a module-not-found error, which reads like a broken verifier rather
+than a wrong path:
 
 ```
-node scripts/verifyDeployedContracts.mjs
-node scripts/verifySourceDeploymentDrift.mjs
+# in afterworth-api
+node scripts/verifySourceDeploymentDrift.mjs      # source ↔ deployment, pure functions, exit 0
+node scripts/verifyOperatorDoorRefusal.mjs        # the three 11-K doors, refuse half (no admin needed)
+
+# in afterworth-mobile
+node scripts/verifyDeployedContracts.mjs          # the contracts the APP consumes
 ```
+
+**`verifyOperatorDoorRefusal.mjs` exists because neither of the other two touches these doors.**
+`verifyDeployedContracts` probes what the app consumes and the operator console is not the app;
+`verifySourceDeploymentDrift` reconciles PURE functions and all three of these read rows. Without it
+the only evidence about the three new routines is the six catalog queries above — which prove the
+objects and grants exist, and prove nothing about how a door behaves when a real caller arrives over
+PostgREST with a real JWT.
 
 ## 6 · Read-only smoke probes
 
@@ -122,7 +166,37 @@ Signed in to the console as an AAL2 admin:
 1. `/cases` loads and lists cases (or shows the empty state — **both are correct results**; the
    product has never created a death-verification case, so an empty queue is expected).
 2. Open any case, if one exists. Confirm no email address appears anywhere on the page.
-3. `owner_notice_census()` returns `total: 0` — see §7.
+3. `owner_notice_census()` returns `total: 0` — see §7. **This one is not a click.** See below.
+
+### The census has a client binding and NO console surface
+
+`afterworth-admin/lib/cases/rpc.ts` exports `ownerNoticeCensus()` over the operator's own JWT, and it
+is the authoritative product path. But it has **zero rendered call sites** — verified against positive
+controls in the same file: `listCases`, `getCase`, `dispatchOwnerNotice` and `authorizeRelease` each
+resolve to 2 non-test call sites, `ownerNoticeCensus` to 0. It appears only in test mocks. So there is
+no page in the console that displays the census, and step 3 above cannot be performed by clicking.
+
+Until a surface exists, the census is probed through the same transport the console uses — the
+publishable key plus the operator's own bearer token, no service role:
+
+```
+POST {SUPABASE_URL}/rest/v1/rpc/owner_notice_census
+  apikey: {publishable key}
+  Authorization: Bearer {the operator's OWN aal2 access token, issued < 15 min ago}
+```
+
+Obtain that token the way the console does: password grant → `mfa.challenge` → `mfa.verify` with a
+fresh TOTP code → the returned access token carries `aal2`. The sequence is in
+`docs/claim-evidence-viewer-proof.md` § Mint tokens. Equivalently, run `ownerNoticeCensus()` from the
+devtools console of an already-signed-in `/cases` session, which exercises the identical path with no
+token handling at all.
+
+**A `service_role` call is NOT a substitute.** It would return the same JSON and prove nothing about
+operator authority, which is the only thing in question. Authority is decided by source, never by
+whether a caller could obtain the values.
+
+Whether the console *should* render a census panel is a product decision, not a deployment step, and
+is deliberately left open here rather than assumed.
 
 **Do not dispatch, decide, open a window, or authorize anything as a smoke test.** Four of the six
 actions are irreversible on a real estate.
@@ -194,3 +268,75 @@ and mostly should not be attempted:
 The bundle is idempotent. Re-pasting it is safe and is the correct response to any partial or failed
 apply. If the self-check raises, read the message — it names which property failed — and do not
 re-run until the cause is understood. `0056 FAILED: …` messages are deliberate and specific.
+
+## 11 · Post-deployment verification record — 2026-08-13
+
+Applied by Christ in the Supabase SQL Editor. Artifact digest confirmed
+`1838971f…52a30d`, byte-identical to the PR head.
+
+### The SQL-Editor `owner_notice_census()` result is an EXPECTED ADMIN-GATE REFUSAL
+
+Verifier §5 returned `42501 auth_required` via `admin_require_gate()`. **This is not a deployment
+failure, and it is stronger evidence than a pass would have been from a nonexistent routine.**
+
+Re-derived from source: `owner_notice_census()`'s first statement is
+`perform public.admin_require_gate()`; that gate's first check is
+`if auth.uid() is null then raise exception 'auth_required' using errcode = '42501'`. The SQL Editor
+executes as `postgres` with no PostgREST request context, so `auth.uid()` is NULL and the FIRST check
+fires — before `is_admin()`, before `require_aal2()`, before the 15-minute `iat` freshness test.
+
+**An undeployed function raises `42883 undefined_function`, not `42501`.** The routine was therefore
+found, entered, and refused by its own gate. §5 anticipated exactly this: *"run as an AAL2 admin;
+refuses otherwise, which is also a correct result."* The gate requires `aal2` plus a token issued
+within 15 minutes; SQL-Editor and `postgres` execution are intentionally not supported operator
+paths, and **no bypass was added.**
+
+### Deployed state
+
+| Check | Result |
+|---|---|
+| Verifiers 1, 2, 3, 4, 6 (catalog) | pass, as recorded above |
+| Verifier 5 (census) | EXPECTED ADMIN-GATE REFUSAL — see above |
+| `verifySourceDeploymentDrift.mjs` | **exit 0** — exact agreement on all 4 reconcilable contracts; 10 stateful contracts listed UNVERIFIABLE by name |
+| `afterworth-mobile verifyDeployedContracts.mjs` | **exit 0** — all required contracts deployed and behaving |
+| `verifyOperatorDoorRefusal.mjs` | **exit 0** — all three 11-K doors deployed and refusing with the correct sentinel |
+| API vitest | 349/349 |
+| `afterworth-admin` vitest | 81/81 |
+
+The refusal probe is the one that speaks to *these* doors: as an authenticated **non-admin owner**
+each answered `admin_required` — proving in one result that the routine exists at that signature, the
+`authenticated` grant is present, and the in-body gate refused. As `anon` all three answered
+`permission denied`. The worker pair (`claim_owner_notices`, `record_owner_notice_outcome`) answered
+`permission denied` to an authenticated client, confirming at runtime what verifier 2 proved
+statically. An estate relationship did not confer an operator view. Both mutations of the probe were
+killed (an undeployed name → `NOT_DEPLOYED`; an admitting door → `ADMITTED`), and the working tree was
+verified byte-identical after each.
+
+### Email drain — SCHEDULED AND RUNNABLE, verified at runtime
+
+Not inferred from source:
+
+| Signal | Evidence |
+|---|---|
+| Cron registered | `vercel crons list` → **2 jobs**, `/api/claims/drain_outboxes` at `0 4 * * *` and `/api/invitations/drain_email_outbox` at `30 4 * * *`. Neither silently dropped. |
+| Route deployed and fail-closed | unauthenticated `GET /api/claims/drain_outboxes` → **401 `unauthorized`**; the `drain_purge_outbox` alias → 401; a nonexistent action → **404**. The 404 control is what makes the 401 meaningful. |
+| Production env | `CRON_SECRET`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `RESEND_API_KEY`, `INVITATION_LINK_BASE_URL`, `INVITATION_FROM_EMAIL` all present in Production (names only were read; no value was retrieved). |
+| Deployment freshness | production deployment created 15:05:14 CDT, four seconds after the 11-K merge commit; aliased to `app.minifam.com`. The admin console deployed at 15:05:42 — **blocker B5 in the fire-drill doc is resolved.** |
+| Backlog | `total: 0` still derived from the writer set (§7). Not re-queried, because doing so needs the same AAL2 credential the census does. |
+
+**Retry cadence is coarser than the backoff, and that is survivable.** `record_owner_notice_outcome`
+schedules `retryPending` 1–3 hours out, but Hobby cron is daily — so the effective retry interval is
+~24h and three attempts span ~3 days, inside the 8-day age gate. Worth knowing before reading the
+queue; not a defect.
+
+### PENDING — the admit half, and only it
+
+| Property | State |
+|---|---|
+| Census succeeds as AAL2 admin; payload structurally valid; `uncertain` bucket present | **PENDING** — needs an AAL2 operator credential |
+| Operator queue / case file succeed as AAL2 admin | **PENDING** — same |
+| AAL1 **admin** refused with `mfa_required` | **PENDING** — the refusal probe's subject is a non-admin, refused one check earlier at `admin_required` |
+| Two independently-held AAL2 accounts (fire-drill B2) | **UNVERIFIED** — no admin credential exists in any repo (`.env.local` holds only URL + anon key), and reaching aal2 requires a live TOTP code from a human's device |
+
+No admin account was created and no credential was minted. **`SUPABASE 11-K: DEPLOYED · ADMIN
+PRODUCT-PATH VERIFICATION PENDING.`** The fire drill remains NOT STARTED.
