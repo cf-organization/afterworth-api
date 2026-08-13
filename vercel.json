@@ -5,7 +5,7 @@
   "framework": null,
   "crons": [
     {
-      "path": "/api/claims/drain_purge_outbox",
+      "path": "/api/claims/drain_outboxes",
       "schedule": "0 4 * * *"
     },
     {

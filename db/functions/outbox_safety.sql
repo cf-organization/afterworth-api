@@ -61,9 +61,12 @@ comment on function public.owner_notice_age_gate() is
 --   · FRESH  — claimed for delivery with `for update skip locked`, so two concurrent drains never
 --              hand the same notice out twice.
 --
--- ★ NO CRON IS WIRED TO THIS IN 11-F, DELIBERATELY. Enabling a new delivery path is a deployment
--- decision with its own operator step (the runbook says so), and the phase brief's own instruction
--- is to build the safety BEFORE enabling the path. The routine exists, is tested, and waits.
+-- ★ PHASE 11-K WIRED THE CRON. 11-F's note read: "NO CRON IS WIRED TO THIS IN 11-F, DELIBERATELY.
+-- Enabling a new delivery path is a deployment decision with its own operator step, and the phase
+-- brief's own instruction is to build the safety BEFORE enabling the path. The routine exists, is
+-- tested, and waits." The safety was built; 11-K enables the path. The drain is
+-- `lib/ownerNotices/drain.ts`, reached by `GET /api/claims/drain_owner_notices` under CRON_SECRET,
+-- and it claims through this routine as `service_role` — the grant is at the foot of this section.
 create or replace function public.claim_owner_notices(p_max int default 25)
  returns table (id uuid, estate_id uuid, recipient text, notice_kind text)
  language plpgsql
@@ -107,13 +110,130 @@ begin
    where o.id = c.id
   returning o.id, o.estate_id, o.recipient, o.notice_kind;
 end $function$;
+-- ★ THE WORKER GRANT (11-K), AND WHY IT IS NOT `authenticated`. Claiming is a WORKER act, not an
+-- operator act: it moves a live safety message into `processing` and hands it to a sender. An
+-- operator who could claim could also strand a notice in `processing`, where the stale sweep will
+-- eventually mark it failedPermanent — an owner silently un-notified by a console click. The 0043
+-- precedent exactly: the claim/record pair is service_role only, revoked from every client role.
 revoke execute on function public.claim_owner_notices(int) from public, anon, authenticated;
+grant  execute on function public.claim_owner_notices(int) to service_role;
 
 comment on function public.claim_owner_notices(int) is
   'Claims owner safety notices for delivery, applying the age gate FIRST (Phase 11-F, Stage 3): '
   'rows older than the gate are marked failedPermanent/stale_beyond_age_gate and are never sent and '
   'never deleted. Fresh rows are claimed with skip-locked so concurrent drains cannot double-send. '
-  'Refuses entirely when the age gate is unconfigured. INTERNAL: no client role, no cron wired yet.';
+  'Refuses entirely when the age gate is unconfigured. service_role ONLY (Phase 11-K wired the '
+  'drain); no client role may claim.';
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- record_owner_notice_outcome(p_id, p_outcome, p_failure_class) → text            [service_role]
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- ★ THE HALF 11-F LEFT OUT, AND THE REASON A DRAIN COULD NOT BE WRITTEN UNTIL NOW.
+-- `claim_owner_notices` moves a row to `processing` and returns it. Nothing wrote back what the
+-- sender then learned — so any worker built on the 11-F schema would have claimed rows and stranded
+-- every one of them in `processing`, where the stale sweep would later mark them failedPermanent.
+-- The queue would have looked drained and no owner would have been reached.
+--
+-- Modelled on `record_invitation_delivery_outcome` (0043) with three deliberate differences, each
+-- forced by what THIS channel is for:
+--
+--   · NO GENERATION GUARD, because there is no generation column and no reissue concept. A safety
+--     notice is dispatched once, by one transition, and is never re-minted. What replaces the guard
+--     is the settled-status check below: a row that has already settled is a no-op.
+--
+--   · NO PROVIDER MESSAGE ID IS STORED. The table has no column for one and gains none. A provider
+--     handle is a lookup key into a third party's log of a message addressed to a living owner; the
+--     operational fact this product needs is the outcome, and that is what is recorded.
+--
+--   · A LOWER CAP AND A SHORTER BACKOFF. Invitations retry 5 times with up to 12h between attempts,
+--     which is right for a message that is merely late. This notice is only worth sending inside
+--     the age gate (window + 1 day), so a 12h backoff would spend the whole gate on two attempts.
+--     Three attempts at ~1h/2h/3h all land comfortably inside it.
+--
+-- ★ ACCEPTED AND UNCERTAIN ARE BOTH TERMINAL, for the same reason: the message may already be in
+-- the owner's inbox, and this product will not send a second copy of a notice about their own death
+-- on the strength of a lost HTTP response. Only `retryPending` — where the provider ANSWERED and
+-- refused, proving nothing was accepted — returns a row to `queued`.
+create or replace function public.record_owner_notice_outcome(
+  p_id            uuid,
+  p_outcome       text,
+  p_failure_class text default null
+)
+ returns text
+ language plpgsql
+ security definer
+ set search_path to 'public'
+as $function$
+declare
+  v_row    public.owner_notice_outbox%rowtype;
+  v_status text;
+  v_next   timestamptz;
+  v_class  text;
+  c_max_attempts constant int := 3;
+begin
+  if p_outcome not in ('providerAccepted', 'outcomeUncertain', 'retryPending', 'failedPermanent') then
+    raise exception 'invalid_outcome' using errcode = 'P0001';
+  end if;
+
+  select * into v_row from public.owner_notice_outbox where id = p_id for update;
+  if not found then
+    raise exception 'outbox_entry_not_found' using errcode = 'P0002';
+  end if;
+
+  -- Already settled: report current state, change nothing, write no second audit row. Covers a
+  -- duplicate callback and an operator-cancelled row alike.
+  if v_row.status in ('dispatched', 'outcomeUncertain', 'failedPermanent', 'cancelled') then
+    return v_row.status;
+  end if;
+
+  v_class := case when p_outcome in ('retryPending', 'failedPermanent') then p_failure_class else null end;
+  v_next  := null;
+
+  if p_outcome = 'providerAccepted' then
+    v_status := 'dispatched';
+  elsif p_outcome = 'outcomeUncertain' then
+    v_status := 'outcomeUncertain';
+  elsif p_outcome = 'failedPermanent' then
+    v_status := 'failedPermanent';
+  else
+    if v_row.attempts >= c_max_attempts then
+      v_status := 'failedPermanent';
+      v_class  := coalesce(v_class, 'retry_cap_exhausted');
+    else
+      v_status := 'queued';
+      v_next   := now() + make_interval(hours => least(greatest(v_row.attempts, 1), 3));
+    end if;
+  end if;
+
+  update public.owner_notice_outbox
+     set status          = v_status,
+         failure_class   = v_class,
+         next_attempt_at = v_next,
+         dispatched_at   = case when v_status = 'dispatched' then now() else dispatched_at end
+   where id = p_id;
+
+  -- ★ THE AUDIT NAMES THE OUTCOME AND THE CHANNEL CLASS, NEVER THE ADDRESS — the same discipline as
+  -- the dispatch audit it follows. An audit row outlives every reason anyone had to read it.
+  -- actor_id is NULL because the actor is a scheduled worker, not a person; `source = 'worker'`
+  -- says so without inventing a synthetic operator identity.
+  insert into public.audit_logs (actor_id, estate_id, action, target_table, target_id, metadata, source)
+  values (null, v_row.estate_id, 'death_process.owner_notice_outcome', 'owner_notice_outbox', p_id,
+          jsonb_build_object('severity', 'high', 'outcome', v_status,
+                            'failure_class', v_class, 'attempts', v_row.attempts,
+                            'channel', v_row.channel, 'notice_kind', v_row.notice_kind),
+          'worker');
+  return v_status;
+end $function$;
+revoke execute on function public.record_owner_notice_outcome(uuid, text, text)
+  from public, anon, authenticated;
+grant  execute on function public.record_owner_notice_outcome(uuid, text, text) to service_role;
+
+comment on function public.record_owner_notice_outcome(uuid, text, text) is
+  'Write-back half of the owner-safety notice drain (Phase 11-K). providerAccepted -> dispatched; '
+  'retryPending -> queued with backoff until a 3-attempt cap, then failedPermanent; '
+  'outcomeUncertain and failedPermanent are terminal. An already-settled row is a no-op, so a '
+  'duplicate callback can never produce a second send. Records no recipient address. service_role only.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- purge_outbox_rows(p_outbox, p_before, p_reason) → int                       [admin, AAL2+fresh]
@@ -250,6 +370,12 @@ begin
     'stale', (select count(*) from rows r
                where r.status in ('queued', 'processing')
                  and v_gate is not null and r.requested_at < now() - v_gate),
+    -- ★ 11-K: without this key an `outcomeUncertain` row would appear in `total` and `by_status`
+    -- and in NONE of the three splits, so an operator reconciling actionable+stale+purgeable
+    -- against the total would find a gap with no name — and a nameless gap in a safety queue is
+    -- the number someone eventually explains away. It is counted separately rather than folded
+    -- into `purgeable` because it is deliberately NOT purgeable.
+    'uncertain', (select count(*) from rows r where r.status = 'outcomeUncertain'),
     'purgeable', (select count(*) from rows r
                    where r.status in ('dispatched', 'failedPermanent', 'cancelled'))
   ) into v_out;

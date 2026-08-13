@@ -92,6 +92,24 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
   /** Files that legitimately WRITE or gate on the lifecycle rather than disclose from it. */
   const LIFECYCLE_MODULES = ["death_verification.sql", "estate_lifecycle_state.sql", "release_safety.sql"];
 
+  /**
+   * ★ PHASE 11-K. A THIRD LIST, FOR THE THIRD PRIVILEGE — and separate for exactly the reason the
+   * 11-I note below records. Adding `operator_console.sql` to `LIFECYCLE_MODULES` would have been
+   * the one-word fix and would ALSO have granted it permission to WRITE the lifecycle table, which
+   * it must never have. These are different privileges and they get different lists.
+   *
+   * A lifecycle TABLE READER reads process TIMESTAMPS that the reader function does not return —
+   * `owner_notified_at`, `challenge_window_started_at`, `halted_at`, `released_at`. The operator
+   * case file needs them to answer "when does release become possible" and "has this already
+   * halted"; `estate_lifecycle_state()` returns only the state word, so going through the reader
+   * genuinely cannot answer them. That is why this list exists rather than a fourth entry above.
+   *
+   * ★ MEMBERSHIP CARRIES A PROOF OBLIGATION THE OTHER LISTS DO NOT: the very next test asserts
+   * every member is READ-ONLY against the table. A file may read process facts here; it may not
+   * quietly acquire the ability to move the machine.
+   */
+  const LIFECYCLE_TABLE_READERS = ["operator_console.sql"];
+
   const namesTheReader = (code: string) => /\bpublic\.estate_lifecycle_state\s*\(/.test(code);
   const namesTheTable = (code: string) => /\bpublic\.estate_lifecycle\b(?!_state)/.test(code);
 
@@ -100,9 +118,26 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
     expect(callers).toEqual([...SANCTIONED_READER_CALLERS].sort());
   });
 
-  it("only the lifecycle modules touch the TABLE", () => {
-    const offenders = sources.filter((s) => !LIFECYCLE_MODULES.includes(s.file) && namesTheTable(s.code));
+  it("only the lifecycle modules and the sanctioned table readers touch the TABLE", () => {
+    const permitted = [...LIFECYCLE_MODULES, ...LIFECYCLE_TABLE_READERS];
+    const offenders = sources.filter((s) => !permitted.includes(s.file) && namesTheTable(s.code));
     expect(offenders.map((o) => o.file)).toEqual([]);
+  });
+
+  it("every sanctioned table reader is READ-ONLY against the lifecycle", () => {
+    // ★ POSITIVE CONTROL FIRST. If the file cannot be found the write matchers below would each
+    // run against an empty string and report a clean read-only result about nothing.
+    for (const file of LIFECYCLE_TABLE_READERS) {
+      const src = sources.find((s) => s.file === file);
+      expect(src, `${file} is listed as a lifecycle table reader but was not found`).toBeDefined();
+      expect(namesTheTable(src!.code), `${file} does not name the table at all`).toBe(true);
+
+      // The three ways to move the machine, plus the only sanctioned writer. None may appear.
+      expect(src!.code).not.toMatch(/insert\s+into\s+public\.estate_lifecycle\b(?!_state)/i);
+      expect(src!.code).not.toMatch(/update\s+public\.estate_lifecycle\b(?!_state)/i);
+      expect(src!.code).not.toMatch(/delete\s+from\s+public\.estate_lifecycle\b(?!_state)/i);
+      expect(src!.code).not.toContain("apply_estate_lifecycle_transition");
+    }
   });
 
   it("every disclosure consumer uses the reader ONLY as the predicate's lifecycle argument", () => {

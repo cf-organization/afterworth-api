@@ -127,6 +127,17 @@ const WITNESS = {
     "select not has_function_privilege('authenticated', 'public.estate_release_state(uuid)', 'execute')",
   'db/bundles/executor_workspace_bundle.sql':
     "select to_regprocedure('public.get_executor_workspace(uuid)') is not null",
+  /**
+   * ★ PHASE 11-K. The witness is the CASE FILE projection rather than the constraint 0056 widens,
+   * and deliberately: a CHECK constraint is altered by dropping and re-adding, so a half-applied
+   * bundle could leave the table with NO status constraint at all — a state in which the witness
+   * "does the constraint admit outcomeUncertain" would answer FALSE for two opposite reasons
+   * (never applied, or applied and then rolled back mid-drop). A function that either exists or
+   * does not cannot be ambiguous that way, and `admin_get_death_verification_case` is the LAST
+   * object this bundle creates, so its presence testifies that everything before it landed too.
+   */
+  'db/bundles/operator_console_bundle.sql':
+    "select to_regprocedure('public.admin_get_death_verification_case(uuid)') is not null",
 };
 
 const witnessTrue = (q) => {
