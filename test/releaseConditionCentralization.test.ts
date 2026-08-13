@@ -363,13 +363,17 @@ describe("4 · the death/incapacity split is real for new data and safe for old"
     expect(remap.test(`when release_condition = '${DEPRECATED_FUSED}' then 'after_verified_death'`)).toBe(true);
   });
 
-  it("the death condition is satisfiable ONLY conjoined with death_verified; everything else stays out", () => {
+  it("the death condition is satisfiable ONLY conjoined with RELEASED; everything else stays out", () => {
     /**
-     * ★ REWRITTEN DELIBERATELY IN PHASE 11-D — the 11-B version asserted the death condition was
-     * absent from the satisfying predicate, and it fired when 11-D added it, which is what it was
-     * for. The 11-D shape: `after_verified_death` appears in the body EXACTLY ONCE, conjoined with
-     * the authoritative lifecycle in one expression, under the standard arm only. Incapacity, the
-     * fused value, claim, identity and never remain absent — satisfiable by nothing.
+     * ★ REWRITTEN ONCE PER PHASE, DELIBERATELY. 11-B asserted the death condition was absent from
+     * the satisfying predicate; 11-D added it conjoined with `death_verified`; 11-E re-points that
+     * conjunction at `released`, inserting the owner-challenge window between an accepted
+     * verification and any disclosure. Each rewrite happened because this rule fired, which is the
+     * whole reason it is written as structure rather than prose.
+     *
+     * The 11-E shape: `after_verified_death` appears in the body EXACTLY ONCE, conjoined with
+     * `released`, under the standard arm only. Incapacity, the fused value, claim, identity and
+     * never remain absent — satisfiable by nothing.
      */
     const canonical = load(CANONICAL).code;
     const fn = canonical.slice(canonical.indexOf("function public.release_condition_satisfied"));
@@ -382,10 +386,24 @@ describe("4 · the death/incapacity split is real for new data and safe for old"
     const deathMentions = body.match(/'after_verified_death'/g) ?? [];
     expect(deathMentions.length, "the death condition must appear exactly once in the satisfying body").toBe(1);
     expect(body).toMatch(
-      /p_release_condition\s*=\s*'after_verified_death'\s*\n?\s*and\s+p_lifecycle_state\s*=\s*'death_verified'/
+      /p_release_condition\s*=\s*'after_verified_death'\s*\n?\s*and\s+p_lifecycle_state\s*=\s*'released'/
     );
+    /**
+     * ★ THE VALIDITY GATE NAMES EVERY STATE; THE SATISFYING ARMS NAME EXACTLY ONE. The gate is
+     * what makes an unknown lifecycle fail closed, so its mention of `death_verified` is required —
+     * and a satisfying comparison against it would be the 11-E seam quietly reverted. The gate line
+     * (and its wrapped continuation) is excised before the check so the two cannot be confused.
+     */
+    const withoutGate = body
+      .split("\n")
+      .filter((l) => !l.includes("p_lifecycle_state in (") && !/^\s*'(challenge_window|challenge_halted|released)',?\)?\s*$/.test(l))
+      .join("\n");
+    expect(
+      /p_lifecycle_state\s*=\s*'(death_verified|death_verification_pending|challenge_window|challenge_halted|active)'/.test(withoutGate),
+      "a pre-release lifecycle is compared as SATISFYING — the challenge-window seam is bypassed"
+    ).toBe(false);
     const legacyArm = body.slice(body.indexOf("when 'legacy_immediate_only' then"));
-    expect(legacyArm, "the death condition reached the legacy arm — the policies were harmonized (R12)")
+    expect(legacyArm, "the death condition reached the legacy arm — the policies were harmonized (R10)")
       .not.toContain("'after_verified_death'");
     // ★ …and the body is not empty of conditions altogether, which would pass the loops above
     // trivially. The two it MUST name are named.

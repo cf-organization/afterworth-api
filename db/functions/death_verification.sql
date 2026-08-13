@@ -40,14 +40,26 @@
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 --
 -- ★ THE ONLY WRITER of `estate_lifecycle`, and the transition map is written out as the closed set
--- it is. Three legal moves in 11-C:
+-- it is. Eight legal moves since 11-E:
 --
 --     active                      → death_verification_pending   (case initiated)
 --     death_verification_pending  → active                       (case rejected / cancelled)
 --     death_verification_pending  → death_verified               (admin decision, attained ≥ required)
+--     death_verified              → challenge_window             (window opened, owner notified — 11-E)
+--     death_verification_pending  → challenge_halted             (owner challenge — 11-E)
+--     death_verified              → challenge_halted             (owner challenge — 11-E)
+--     challenge_window            → challenge_halted             (owner challenge — 11-E)
+--     challenge_window            → released                     (window elapsed, release_estate — 11-E)
 --
--- Everything else raises. `released` is not merely absent from this map — it is unrepresentable in
--- the table CHECK (0052), so a future writer needs a reviewed migration, not a bigger map.
+-- Everything else raises. Two absences are the load-bearing half of the 11-E map:
+--
+--   · NOTHING LEAVES challenge_halted. The owner said no; there is no resume, no admin override,
+--     no reopen — restoring one is a future product decision, not a bigger map (R: 11-E brief §7).
+--   · NOTHING LEAVES released. Disclosure cannot be undone (R15); a post-release freeze would be a
+--     new product surface, not an edge here.
+--
+-- And `released` is REACHABLE only through `release_estate` (client-revoked, no caller in 11-E),
+-- which alone checks the window guards before asking for this edge.
 --
 -- ★ TRANSACTIONAL + AUDITED (the 11-A §7 requirement): the current row is locked, the move is
 -- validated against it, and one audit row records from/to/case/reason with the acting user.
@@ -74,11 +86,17 @@ begin
   end if;
 
   -- The closed map. An unknown current state is unreachable (table CHECK) but still refused here:
-  -- unknown state fails closed, it is never a wildcard.
+  -- unknown state fails closed, it is never a wildcard. challenge_halted and released have NO
+  -- outbound edges, deliberately (see the header).
   if not (
        (v_from = 'active'                     and p_to = 'death_verification_pending')
     or (v_from = 'death_verification_pending' and p_to = 'active')
     or (v_from = 'death_verification_pending' and p_to = 'death_verified')
+    or (v_from = 'death_verified'             and p_to = 'challenge_window')
+    or (v_from = 'death_verification_pending' and p_to = 'challenge_halted')
+    or (v_from = 'death_verified'             and p_to = 'challenge_halted')
+    or (v_from = 'challenge_window'           and p_to = 'challenge_halted')
+    or (v_from = 'challenge_window'           and p_to = 'released')
   ) then
     raise exception 'invalid_lifecycle_transition' using errcode = 'P0001';
   end if;

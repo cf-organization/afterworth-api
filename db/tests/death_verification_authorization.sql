@@ -17,17 +17,18 @@
 --       admin-gated setter; the decision routine re-derives the requirement LIVE and refuses
 --       `verify` until attained ≥ required (H2 closed).
 --
---   3 · THE WORKFLOW CHANGES NO DISCLOSURE; ONLY THE VERIFIED STATE DOES, AND ONLY FOR QUALIFYING
---       GRANTS (updated in 11-D). Case created, evidence received, evidence reviewed, attained
---       level raised — after every one of those, EVERY viewer's COMPOSED payload (discovery +
---       assets + net worth + documents + readiness + workspace + notifications) is byte-identical
---       to its value before the death-world existed: progress toward verification discloses
---       nothing. At death VERIFIED, the payload of a viewer holding an owner-authored
---       death-conditioned grant moves — in EXACTLY the projection that grant authorizes and no
---       other — while every viewer without a qualifying grant stays byte-identical, no grant row
---       is touched, no membership or designation appears, and estate Y's death grants stay
---       dormant (a foreign lifecycle activates nothing). Paired with positive controls that move
---       the authorized world and require the payload to move.
+--   3 · NOTHING IN THE VERIFICATION WORKFLOW CHANGES DISCLOSURE — INCLUDING VERIFICATION ITSELF
+--       (re-anchored in 11-E). Case created, evidence received, evidence reviewed, attained level
+--       raised, death VERIFIED — after every one of those, EVERY viewer's COMPOSED payload
+--       (discovery + assets + net worth + documents + readiness + workspace + notifications) is
+--       byte-identical to its value before the death-world existed, and that now includes the
+--       holder of an owner-authored `after_verified_death` grant: 11-E inserts the owner-challenge
+--       window between an accepted verification and any disclosure, so `death_verified` releases
+--       NOTHING. No grant row is touched, no membership or designation appears, and estate Y's
+--       identical death grant stays dormant (a foreign lifecycle reaches nothing). Activation
+--       itself — at `released`, through the real safety door — is proven in
+--       `db/tests/release_safety_authorization.sql`. Paired here with a positive control that
+--       moves the authorized world and requires the payload to move.
 --
 --   4 · EVERY MUTATION IS AUDITED with actor and estate; a DENIED mutation writes nothing.
 --
@@ -202,7 +203,7 @@ end $$;
 -- =================================================================================================
 do $$
 declare
-  v_def text; v_n int; v_lvl public.verification_level; v_res text;
+  v_def text; v_n int; v_lvl public.verification_level; v_res text; v_state text;
   v_probe uuid;
 begin
   raise notice ' ';
@@ -275,7 +276,14 @@ begin
   end if;
   raise notice '  ok   required and attained are the policy engine''s enum (one ladder)';
 
-  -- (e) The lifecycle vocabulary is CLOSED at three states and admits nothing release-shaped.
+  -- (e) The lifecycle vocabulary is CLOSED at the six states of the 11-E safety machine.
+  --
+  -- ★ RE-ANCHORED IN 11-E. This pinned three states and refused anything release-shaped — correct
+  -- while release was unbuilt, and wrong once 0054 deliberately added the safety seam. The absence
+  -- guarantee did not weaken, it MOVED: `released` is storable and reachable ONLY through
+  -- `release_estate` (client-revoked, unconfigured window, no caller), the map has no edge out of
+  -- challenge_halted or released, and the closed-set assertion below still refuses any INVENTED
+  -- state — `frozen` and `release_pending` remain unrepresentable.
   select pg_get_constraintdef(con.oid) into v_def
     from pg_constraint con
     join pg_class rel on rel.oid = con.conrelid
@@ -284,12 +292,17 @@ begin
   if v_def is null then
     raise exception 'FAIL: estate_lifecycle has no CHECK';
   end if;
-  if position('released' in v_def) > 0 or position('frozen' in v_def) > 0
-     or position('release_pending' in v_def) > 0 then
-    raise exception 'FAIL: a release-shaped lifecycle state is STORABLE: %', v_def;
+  if position('frozen' in v_def) > 0 or position('release_pending' in v_def) > 0 then
+    raise exception 'FAIL: an unapproved lifecycle state is STORABLE: %', v_def;
   end if;
-  if (select count(*) from regexp_matches(v_def, '''[a-z_]+''', 'g')) <> 3 then
-    raise exception 'FAIL: the lifecycle vocabulary is not exactly three states: %', v_def;
+  foreach v_state in array array['active', 'death_verification_pending', 'death_verified',
+                                 'challenge_window', 'challenge_halted', 'released'] loop
+    if position('''' || v_state || '''' in v_def) = 0 then
+      raise exception 'FAIL: the lifecycle CHECK is missing the 11-E state %: %', v_state, v_def;
+    end if;
+  end loop;
+  if (select count(*) from regexp_matches(v_def, '''[a-z_]+''', 'g')) <> 6 then
+    raise exception 'FAIL: the lifecycle vocabulary is not exactly six states: %', v_def;
   end if;
   select pg_get_constraintdef(con.oid) into v_def
     from pg_constraint con
@@ -737,13 +750,12 @@ begin
   end if;
   raise notice '  ok   attained = required → case verified; lifecycle = death_verified';
 
-  -- ★ THE CENTRAL PROPERTY, REWRITTEN DELIBERATELY IN 11-D (this is the assertion the 11-C
-  -- tripwire existed to make loud). The estate is death_verified. Viewers WITHOUT a qualifying
-  -- death grant are byte-identical to the pre-case world. The delegate — who holds the
-  -- owner-authored `after_verified_death` inventory grant on X, created through the real door —
-  -- must MOVE, in EXACTLY the discovery projection that grant authorizes, at exactly the tier the
-  -- owner chose, and in no other projection: assets and net worth (legacy policy, R12), documents
-  -- (no document grant), readiness, workspace and notifications all stay frozen.
+  -- ★ THE CENTRAL PROPERTY, REWRITTEN AGAIN IN 11-E — AND THE REWRITE IS THE PHASE. In 11-D this
+  -- block asserted that the delegate's death-conditioned grant went LIVE at death_verified. The
+  -- safety seam means an accepted verification must now disclose NOTHING: release waits for the
+  -- owner-challenge window. So EVERY viewer — the delegate included — is byte-identical to the
+  -- pre-case world at death_verified, and activation is proven one lifecycle later, through the
+  -- real safety door, in `db/tests/release_safety_authorization.sql`.
   if harness_dv.composed(BENE, X)::text is distinct from bene_before::text then
     raise exception 'FAIL[FIREWALL]: death_verified changed the beneficiary composed payload';
   end if;
@@ -753,48 +765,22 @@ begin
   if harness_dv.composed(OWNER_Y, X)::text is distinct from owner_y_before::text then
     raise exception 'FAIL[FIREWALL]: death_verified changed the foreign-owner composed payload';
   end if;
-  raise notice '  ok   FIREWALL: death_verified moved NO viewer without a qualifying grant (3 viewers, 7 surfaces each)';
 
   dele_after := harness_dv.composed(DELE, X);
-  if dele_after::text is not distinct from dele_before::text then
-    raise exception 'FAIL[ACTIVATION]: death_verified did NOT move the delegate''s payload — the '
-      'owner-authored death-conditioned grant never became live through the real verification door';
+  if dele_after::text is distinct from dele_before::text then
+    raise exception 'FAIL[SAFETY SEAM]: death_verified moved the payload of the viewer holding the '
+      'owner-authored death-conditioned grant — an accepted verification released information '
+      'BEFORE the owner-challenge window. before=% after=%',
+      dele_before::text, dele_after::text;
   end if;
-  -- The inventory grant discloses through TWO projections, both fed by the same
-  -- `inventory_disclosure_tier` call: estate discovery, and the professional workspace''s inventory
-  -- block. Both may move — same grant, same predicate, same authored tier — and NOTHING else may.
-  if (dele_after - 'discovery' - 'workspace')::text
-     is distinct from (dele_before - 'discovery' - 'workspace')::text then
-    raise exception 'FAIL[ACTIVATION]: the delegate moved OUTSIDE the projections the grant '
-      'authorizes. before=% after=%',
-      (dele_before - 'discovery' - 'workspace')::text,
-      (dele_after - 'discovery' - 'workspace')::text;
-  end if;
-  if (dele_after -> 'discovery')::text is not distinct from (dele_before -> 'discovery')::text then
-    raise exception 'FAIL[ACTIVATION-control]: discovery did not move — the outside-projection '
-      'assertion above is vacuous for it';
-  end if;
-  -- The workspace delta is confined to its inventory block, and that block honours the tier.
-  if ((dele_after -> 'workspace') - 'inventory')::text
-     is distinct from ((dele_before -> 'workspace') - 'inventory')::text then
-    raise exception 'FAIL[ACTIVATION]: the workspace moved outside its inventory block. before=% after=%',
-      ((dele_before -> 'workspace') - 'inventory')::text,
-      ((dele_after -> 'workspace') - 'inventory')::text;
-  end if;
-  if (dele_after -> 'workspace' -> 'inventory' ->> 'tier') is distinct from 'category_summary'
-     or position('category_summary' in (dele_after -> 'discovery')::text) = 0 then
-    raise exception 'FAIL[ACTIVATION]: an activated projection does not honour the authored '
-      'category_summary tier. workspace=%, discovery=%',
-      (dele_after -> 'workspace' -> 'inventory')::text, (dele_after -> 'discovery')::text;
-  end if;
-  raise notice '  ok   ACTIVATION: the death-conditioned grant went live at its authored tier, in '
-    'its two authorized projections (discovery + workspace inventory) and nowhere else';
+  raise notice '  ok   SAFETY SEAM: death_verified moved NO composed payload — not even the holder '
+    'of a death-conditioned grant (4 viewers, 7 surfaces each)';
 
-  -- ★ CROSS-ESTATE: the SAME delegate holds the SAME death-conditioned grant on estate Y, and X''s
-  -- death_verified is a fact about X. Y''s lifecycle is active; Y''s grant stays dormant.
+  -- ★ CROSS-ESTATE: the SAME delegate holds the SAME death-conditioned grant on estate Y, whose
+  -- lifecycle is active. Nothing about X may move it.
   if harness_dv.composed(DELE, Y)::text is distinct from dele_y_before::text then
     raise exception 'FAIL[CROSS-ESTATE]: X''s death_verified moved the delegate''s estate-Y payload '
-      '— a foreign lifecycle activated a local grant';
+      '— a foreign lifecycle reached a local grant';
   end if;
   raise notice '  ok   CROSS-ESTATE: the identical grant on estate Y stayed dormant (lifecycle is per-estate)';
 

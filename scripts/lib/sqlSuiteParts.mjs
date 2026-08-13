@@ -71,6 +71,11 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // the death-verification suite mutates the hidden world (cases, evidence, levels) and asserts
   // the surfaces the earlier files just proved do not move.
   'db/tests/death_verification_authorization.sql',
+  // ★ PHASE 11-E, AFTER the verification suite and BEFORE the exit matrix. It walks the full
+  // safety path (initiate → verify → window → release / challenge) on its own estates, reusing
+  // `harness_dv`'s helpers, and it is the file that proves the ACTIVATION the verification suite
+  // now deliberately refuses to see.
+  'db/tests/release_safety_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.

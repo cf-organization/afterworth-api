@@ -202,8 +202,20 @@ const EVENTS = [
   'access_request.created', 'access_request.approved', 'access_request.denied',
   'access_grant.created', 'access_grant.revoked',
   'invitation.accepted', 'invitation.declined',
+  // ★ PHASE 11-E — the owner safety notice. Included so the catalog comparison COVERS it rather
+  // than silently omitting the one new entry (an absent row in a reconciliation table reads as
+  // "fine"). Until the notifications bundle is pasted the deployed catalog does not know it, which
+  // is SOURCE-AHEAD rather than drift — classified explicitly below.
+  'death_process.window_opened',
   'aw_probe_event_that_cannot_exist',
 ];
+
+/**
+ * Events this repository has authored but not yet deployed. A source-only entry here is reported as
+ * PENDING DEPLOYMENT — named, never omitted, and never counted as agreement. Anything else that
+ * differs is real drift.
+ */
+const PENDING_EVENTS = new Set(['death_process.window_opened']);
 
 const results = [];
 const record = (name, verdict, detail, cases) => {
@@ -315,13 +327,26 @@ function classify(diffs) {
   const srcMap = new Map(src.map((row) => [row.event, row.category === null ? null : { category: row.category, title: row.title, body: row.body }]));
 
   const diffs = [];
+  const pending = [];
   for (const e of EVENTS) {
     const { data, error } = await deployed.rpc('notification_event_copy', { p_event: e });
     if (error) die(2, `CANNOT VERIFY — deployed notification_event_copy failed: ${error.code} ${error.message}`);
     const row = Array.isArray(data) ? data[0] ?? null : data ?? null;
     const dep = row ? { category: row.category, title: row.title, body: row.body } : null;
     const s = srcMap.get(e) ?? null;
-    if (JSON.stringify(s) !== JSON.stringify(dep)) diffs.push({ key: e, source: s, deployed: dep });
+    if (JSON.stringify(s) === JSON.stringify(dep)) continue;
+    // ★ SOURCE-AHEAD ON A KNOWN-PENDING EVENT IS NOT DRIFT — but it is not agreement either, so it
+    // is reported by name. The reverse (deployed has copy this build does not) IS drift, always:
+    // re-applying the bundle would delete a live notification's words.
+    if (PENDING_EVENTS.has(e) && s !== null && dep === null) {
+      pending.push(e);
+      continue;
+    }
+    diffs.push({ key: e, source: s, deployed: dep });
+  }
+  if (pending.length) {
+    console.log(`  · PENDING DEPLOYMENT — source authors copy for: ${pending.join(', ')}`);
+    console.log('    (deployed catalog does not know it yet; apply lifecycle_notifications_bundle.sql)');
   }
   const known = [...srcMap.values()].filter(Boolean).length;
   if (known === 0) die(2, 'CANNOT VERIFY — the source catalog produced no entries.');
@@ -331,7 +356,8 @@ function classify(diffs) {
     die(2, 'CANNOT VERIFY — the source catalog answered an impossible event; it is not closed.');
   }
   record('notification_event_copy', diffs.length ? classify(diffs) : 'EXACT',
-    `${known} catalog entries compared verbatim · unknown event refused on both sides`, diffs);
+    `${known} catalog entries compared verbatim · unknown event refused on both sides`
+      + (pending.length ? ` · ${pending.length} pending deployment (named above)` : ''), diffs);
 }
 
 /* 4 · the release authority (predicate + writable gate + lifecycle seam) — SOURCE-ONLY UNTIL DEPLOYED. */

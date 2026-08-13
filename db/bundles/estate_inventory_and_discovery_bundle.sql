@@ -2,6 +2,7 @@
 -- Edit the sources instead:
 --   db/migrations/0052_20260812_death_verification_foundation.sql
 --   db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql
+--   db/migrations/0054_20260812_challenge_window_release_seam.sql
 --   db/functions/release_conditions.sql
 --   db/functions/estate_lifecycle_state.sql
 --   db/migrations/0048_20260810_estate_assets.sql
@@ -221,7 +222,14 @@ do $$
 declare
   v_def text;
 begin
-  -- Lifecycle vocabulary: exactly the three 11-C states, and no release-shaped value.
+  -- Lifecycle vocabulary: the three foundation states this migration owns must be present.
+  --
+  -- ★ EDITED IN PHASE 11-E (0052 has never been deployed; the bundles re-apply this file after
+  -- 0054). The original check raised if 'released' was storable — correct while 0052 was the last
+  -- word on the vocabulary, and WRONG the moment 0054 deliberately widened it: a re-applied bundle
+  -- would read the widened CHECK and abort its own idempotent re-paste. The absence pin did not
+  -- weaken — it MOVED to where the vocabulary now lives: 0054's self-check pins exactly six states
+  -- and refuses invented ones, and the SQL suite enumerates the deployed CHECK on every run.
   select pg_get_constraintdef(con.oid) into v_def
     from pg_constraint con
     join pg_class rel on rel.oid = con.conrelid
@@ -231,13 +239,10 @@ begin
   if v_def is null then
     raise exception '0052 FAILED: estate_lifecycle has no state CHECK';
   end if;
-  if position('death_verification_pending' in v_def) = 0
+  if position('active' in v_def) = 0
+     or position('death_verification_pending' in v_def) = 0
      or position('death_verified' in v_def) = 0 then
-    raise exception '0052 FAILED: lifecycle CHECK is missing an 11-C state: %', v_def;
-  end if;
-  if position('released' in v_def) > 0 or position('frozen' in v_def) > 0 then
-    raise exception '0052 FAILED: a release-shaped state is storable — that is the 11-D change, '
-      'not a value waiting for a writer: %', v_def;
+    raise exception '0052 FAILED: lifecycle CHECK is missing an 11-C foundation state: %', v_def;
   end if;
 
   -- Event vocabulary: death only; the fused shape unrepresentable.
@@ -359,6 +364,204 @@ begin
 end $$;
 
 
+-- ==== db/migrations/0054_20260812_challenge_window_release_seam.sql ===============================
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 0054 · PHASE 11-E — the challenge window: the safety seam between death_verified and released
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- ★ WHAT THIS PHASE INSERTS, AND WHY IT EXISTS. 11-D let `after_verified_death` satisfy at
+-- `death_verified`. That connected verification directly to irreversible disclosure — and disclosure
+-- cannot be undone (R15: revoking future access is possible; undoing disclosure is not). 11-E
+-- inserts the missing safety states between them:
+--
+--     active → death_verification_pending → death_verified
+--            → challenge_window            (verification accepted; release deliberately waiting;
+--                                           the owner has been notified and can object)
+--            → released                    (the ONLY lifecycle at which owner-authored
+--                                           death-conditioned grants may evaluate as satisfied)
+--     any pre-released death-process state
+--            → challenge_halted            (the authenticated owner objected; terminal in 11-E)
+--
+-- The predicate change rides in `release_conditions.sql`: `after_verified_death` is FALSE at
+-- death_verified, FALSE throughout challenge_window, FALSE at challenge_halted, TRUE only at
+-- released. So this migration making `released` STORABLE widens no disclosure: the only writer is
+-- `release_estate` (client-revoked, no reachable door in 11-E), behind an elapsed, configured,
+-- owner-notified, unchallenged window.
+--
+-- ★ THE WINDOW DURATION IS CONFIGURATION, NOT A GUESS. `release_safety_policy` ships EMPTY: no
+-- default duration is seeded, because the duration is a product decision this phase does not own.
+-- Fail-closed direction: an estate can always ENTER the challenge window (the owner-safety clock
+-- and notice), but with no configured duration the window NEVER ELAPSES and release refuses with
+-- `release_window_not_configured`. The duration is re-read LIVE at release time (the H2 precedent:
+-- a policy tightened mid-window tightens the window) — never stamped at entry.
+--
+-- ★ THE OWNER CHALLENGE IS CHEAPER THAN THE CLAIM (R13) AND WINS TIES (R14). No evidence, no
+-- review, no waiting period, no designation — one authenticated owner action. The tiebreak is
+-- structural: release requires the window STRICTLY elapsed (`now() > notified_at + duration`), so
+-- at the exact boundary instant release refuses while challenge still succeeds; both transitions
+-- serialize on the lifecycle row lock, and nothing transitions out of challenge_halted.
+--
+-- IDEMPOTENT. Safe to re-apply. APPLY ORDER: after 0052/0053, inside the bundles that carry it.
+
+\set ON_ERROR_STOP on
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- 1 · WIDEN the lifecycle vocabulary to the six-state safety machine. Additive only.
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- The constraint name is resolved from the catalog, not guessed (the 0051 lesson).
+do $$
+declare
+  v_name text;
+begin
+  for v_name in
+    select con.conname
+      from pg_constraint con
+      join pg_class rel on rel.oid = con.conrelid
+      join pg_namespace nsp on nsp.oid = rel.relnamespace
+     where nsp.nspname = 'public'
+       and rel.relname = 'estate_lifecycle'
+       and con.contype = 'c'
+       and pg_get_constraintdef(con.oid) ilike '%state%'
+  loop
+    execute format('alter table public.estate_lifecycle drop constraint %I', v_name);
+  end loop;
+
+  alter table public.estate_lifecycle
+    add constraint estate_lifecycle_state_check
+    check (state in (
+      'active',
+      'death_verification_pending',
+      'death_verified',
+      -- Phase 11-E: the safety seam. Storable here; REACHABLE only through the closed transition
+      -- map in apply_estate_lifecycle_transition, and 'released' only through release_estate.
+      'challenge_window',
+      'challenge_halted',
+      'released'
+    ));
+end $$;
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- 2 · THE SAFETY FACTS live on the lifecycle row: when the owner was notified, when the window
+--     opened, when it was halted or released, and WHICH notification row is the safety notice.
+--     Facts, never authority — release re-derives everything live.
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+alter table public.estate_lifecycle add column if not exists owner_notified_at            timestamptz;
+alter table public.estate_lifecycle add column if not exists challenge_window_started_at  timestamptz;
+alter table public.estate_lifecycle add column if not exists halted_at                    timestamptz;
+alter table public.estate_lifecycle add column if not exists released_at                  timestamptz;
+alter table public.estate_lifecycle add column if not exists safety_notification_id       uuid;
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- 3 · A HALTED CASE IS ITS OWN STATUS. The owner challenge halts any open case; 'cancelled' means
+--     the initiator withdrew and reusing it would erase the difference between "the claimant
+--     changed their mind" and "the owner said they are alive" — facts with different forensics.
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  v_name text;
+begin
+  for v_name in
+    select con.conname
+      from pg_constraint con
+      join pg_class rel on rel.oid = con.conrelid
+      join pg_namespace nsp on nsp.oid = rel.relnamespace
+     where nsp.nspname = 'public'
+       and rel.relname = 'death_verification_cases'
+       and con.contype = 'c'
+       and pg_get_constraintdef(con.oid) ilike '%status%'
+       and pg_get_constraintdef(con.oid) not ilike '%event_type%'
+       and pg_get_constraintdef(con.oid) not ilike '%review_status%'
+       and pg_get_constraintdef(con.oid) not ilike '%initiator_capacity%'
+  loop
+    execute format('alter table public.death_verification_cases drop constraint %I', v_name);
+  end loop;
+
+  alter table public.death_verification_cases
+    add constraint death_verification_cases_status_check
+    check (status in ('open', 'verified', 'rejected', 'cancelled',
+                      -- Phase 11-E: set only by the owner-challenge routine.
+                      'halted'));
+end $$;
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- 4 · THE WINDOW-DURATION CONFIGURATION — one row, definer-only, DELIBERATELY UNSEEDED.
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+create table if not exists public.release_safety_policy (
+  -- Single-row table: the PK admits exactly `true`.
+  id               boolean     primary key default true check (id),
+  challenge_window interval    not null,
+  updated_at       timestamptz not null default now()
+);
+
+alter table public.release_safety_policy enable row level security;
+-- ZERO grants, ZERO policies — reachable only through the DEFINER reader. No seed row: the
+-- duration is a product/operator decision recorded by an explicit, reviewed INSERT, and until it
+-- exists the release window cannot elapse anywhere.
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- 5 · PROVE THE SEAM TOOK, IN THE MIGRATION ITSELF (both directions, the 0051/0052 discipline).
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  v_def text;
+begin
+  select pg_get_constraintdef(con.oid) into v_def
+    from pg_constraint con
+    join pg_class rel on rel.oid = con.conrelid
+    join pg_namespace nsp on nsp.oid = rel.relnamespace
+   where nsp.nspname = 'public' and rel.relname = 'estate_lifecycle'
+     and con.contype = 'c' and pg_get_constraintdef(con.oid) ilike '%state%';
+  if v_def is null then
+    raise exception '0054 FAILED: estate_lifecycle has no state CHECK after the widening';
+  end if;
+  if position('challenge_window' in v_def) = 0
+     or position('challenge_halted' in v_def) = 0
+     or position('released' in v_def) = 0 then
+    raise exception '0054 FAILED: the safety vocabulary is incomplete: %', v_def;
+  end if;
+  if (select count(*) from regexp_matches(v_def, '''[a-z_]+''', 'g')) <> 6 then
+    raise exception '0054 FAILED: the lifecycle vocabulary is not exactly six states: %', v_def;
+  end if;
+  -- 'frozen' and other invented states must still be unrepresentable.
+  if position('frozen' in v_def) > 0 then
+    raise exception '0054 FAILED: an unapproved lifecycle state is storable: %', v_def;
+  end if;
+
+  select pg_get_constraintdef(con.oid) into v_def
+    from pg_constraint con
+    join pg_class rel on rel.oid = con.conrelid
+    join pg_namespace nsp on nsp.oid = rel.relnamespace
+   where nsp.nspname = 'public' and rel.relname = 'death_verification_cases'
+     and con.conname = 'death_verification_cases_status_check';
+  if v_def is null or position('halted' in v_def) = 0 then
+    raise exception '0054 FAILED: the case status vocabulary did not gain ''halted'': %',
+      coalesce(v_def, '<absent>');
+  end if;
+
+  -- The policy table is definer-only and EMPTY: a seeded duration would be a product decision
+  -- taken by a migration.
+  if exists (
+    select 1 from information_schema.role_table_grants
+     where table_schema = 'public' and table_name = 'release_safety_policy'
+       and grantee in ('anon', 'authenticated')
+  ) then
+    raise exception '0054 FAILED: a client role holds a grant on release_safety_policy';
+  end if;
+  if (select count(*) from public.release_safety_policy) <> 0 then
+    -- On RE-application to a database whose operator later configured the window, a row is
+    -- legitimate — the check refuses only a duration arriving in the SAME transaction that
+    -- created the table (i.e. seeded by migration).
+    if (select min(updated_at) from public.release_safety_policy) >= transaction_timestamp() then
+      raise exception '0054 FAILED: release_safety_policy was seeded by this migration — the '
+        'window duration is a product decision, not a default';
+    end if;
+  end if;
+
+  raise notice '0054 · challenge-window seam in place (6 lifecycle states; halted case status; '
+    'safety facts columns; duration configuration table EMPTY and definer-only)';
+end $$;
+
+
 -- ==== db/functions/release_conditions.sql =========================================================
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 -- THE CANONICAL RELEASE-CONDITION AUTHORITY  ·  Phase 11-B, lifecycle-aware since Phase 11-D
@@ -476,10 +679,11 @@ create or replace function public.release_condition_satisfied(
 as $function$
   select coalesce(
     -- ★ THE LIFECYCLE VALIDITY GATE COMES FIRST and refuses EVERYTHING on an out-of-vocabulary
-    -- state. The set is the 0052 CHECK's, spelled here because a pure function cannot read the
-    -- catalog; `db/tests/release_condition_authorization.sql` enumerates the CHECK at run time and
-    -- fails if the two vocabularies ever drift.
-    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified')
+    -- state. The set is the deployed CHECK's (0052 widened by 0054), spelled here because a pure
+    -- function cannot read the catalog; `db/tests/release_condition_authorization.sql` enumerates
+    -- the CHECK at run time and fails if the two vocabularies ever drift.
+    p_lifecycle_state in ('active', 'death_verification_pending', 'death_verified',
+                          'challenge_window', 'challenge_halted', 'released')
     and case p_policy
       -- Documents, the estate-documents category, estate inventory, and notification speech.
       -- `after_owner_approval` (owner-initiated) and `after_access_request_approval`
@@ -489,13 +693,17 @@ as $function$
         p_release_condition = 'immediately'
         or (p_release_condition in ('after_owner_approval', 'after_access_request_approval')
             and p_approved_at is not null)
-        -- ★ PHASE 11-D — THE DEATH ARM. Satisfied exactly while the authoritative lifecycle is
-        -- death_verified; pending verification satisfies nothing, and the conjunction is the
-        -- firewall: claim approval, evidence, and attained levels never appear here because they
-        -- cannot move the lifecycle. Incapacity and the legacy fused value stay out of this arm
-        -- entirely — dormant under every policy, every lifecycle (R6/R7).
+        -- ★ THE DEATH ARM — RE-POINTED IN PHASE 11-E (R7). 11-D satisfied this at death_verified;
+        -- that connected an accepted verification DIRECTLY to irreversible disclosure, and 11-E
+        -- inserts the safety seam: the condition is satisfied ONLY at `released`, which is
+        -- reachable only through the challenge window — owner notified in the same transaction,
+        -- configured duration strictly elapsed, no owner challenge. death_verified satisfies
+        -- NOTHING; challenge_window satisfies NOTHING; challenge_halted satisfies NOTHING.
+        -- Claim approval, evidence, and attained levels never appear here because they cannot
+        -- move the lifecycle. Incapacity and the legacy fused value stay out of this arm
+        -- entirely — dormant under every policy, every lifecycle (R8/R9).
         or (p_release_condition = 'after_verified_death'
-            and p_lifecycle_state = 'death_verified')
+            and p_lifecycle_state = 'released')
 
       -- The asset-value surfaces (account balances, institution names, total asset value, linked
       -- account details). Carried forward EXACTLY as written in 11-B, including their narrowness
@@ -512,13 +720,14 @@ as $function$
 $function$;
 
 comment on function public.release_condition_satisfied(text, timestamptz, text, text) is
-  'THE canonical release-condition authority (Phase 11-B; lifecycle-aware since 11-D). Answers only '
-  '"is this condition presently satisfied", never who may receive a grant, what tier they get, or '
-  'whether anyone has died. PURE: the lifecycle arrives as an argument, resolved by SECURITY DEFINER '
-  'consumers through public.estate_lifecycle_state — never from claim status, evidence, or attained '
-  'levels. after_verified_death is satisfied only under the standard policy at death_verified; '
-  'incapacity, the legacy fused value, identity and claim conditions are dormant under every policy. '
-  'Unknown condition, unknown policy, unknown lifecycle and NULL all refuse.';
+  'THE canonical release-condition authority (Phase 11-B; lifecycle-aware since 11-D; safety-seamed '
+  'in 11-E). Answers only "is this condition presently satisfied", never who may receive a grant, '
+  'what tier they get, or whether anyone has died. PURE: the lifecycle arrives as an argument, '
+  'resolved by SECURITY DEFINER consumers through public.estate_lifecycle_state — never from claim '
+  'status, evidence, or attained levels. after_verified_death is satisfied only under the standard '
+  'policy at RELEASED (R7) — death_verified, challenge_window and challenge_halted all satisfy '
+  'nothing; incapacity, the legacy fused value, identity and claim conditions are dormant under '
+  'every policy. Unknown condition, unknown policy, unknown lifecycle and NULL all refuse.';
 
 revoke execute on function public.release_condition_satisfied(text, timestamptz, text, text) from public, anon;
 grant  execute on function public.release_condition_satisfied(text, timestamptz, text, text) to authenticated;

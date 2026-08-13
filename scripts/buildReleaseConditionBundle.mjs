@@ -47,6 +47,12 @@ buildBundle(
       'db/migrations/0051_20260812_release_condition_engine.sql',
       'db/migrations/0052_20260812_death_verification_foundation.sql',
       'db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
+      // ★ PHASE 11-E: the six-state safety vocabulary rides with the predicate whose validity gate
+      // names it. Pasting this bundle FIRST is what makes the whole sequence safe: the predicate it
+      // carries satisfies the death condition ONLY at `released`, and nothing this bundle installs
+      // can write that state — the transition routines arrive with the LAST bundle, the release
+      // routine is client-revoked with no caller, and the window duration table ships EMPTY.
+      'db/migrations/0054_20260812_challenge_window_release_seam.sql',
       'db/functions/release_conditions.sql',
       'db/functions/estate_lifecycle_state.sql',
       'db/functions/document_grantable.sql',
@@ -83,6 +89,11 @@ buildBundle(
       // serves the lifecycle-blind one to any consumer that was not rewired.
       ['db/migrations/0053_20260812_lifecycle_aware_release_predicate.sql',
         'drop function if exists public.release_condition_satisfied(text, timestamptz, text);'],
+      // ★ THE 11-E SAFETY VOCABULARY AND ITS EMPTY CONFIGURATION. A bundle built from sources where
+      // the six-state widening or the unseeded policy table regressed must refuse to build.
+      ['db/migrations/0054_20260812_challenge_window_release_seam.sql', "'challenge_window',"],
+      ['db/migrations/0054_20260812_challenge_window_release_seam.sql',
+        'create table if not exists public.release_safety_policy'],
       ['db/functions/release_conditions.sql', 'create or replace function public.release_condition_satisfied'],
       // ★ THE PREDICATE IS THE 11-D SHAPE: it takes the lifecycle argument. A bundle built from a
       // pre-11-D source must refuse to build. The death-arm CONJUNCTION is deliberately NOT a build
