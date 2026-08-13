@@ -531,7 +531,15 @@ create table if not exists public.claim_packets (
   requested_by uuid not null references auth.users(id),
   status       text not null default 'submitted'
                  check (status in ('submitted','under_review','approved','rejected','released')),
-  submitted_at timestamptz default now()
+  submitted_at timestamptz default now(),
+  -- ★ MIRRORS PRODUCTION. `db/tables/claim_packets.sql` (captured live) carries `decided_at`, and
+  -- the harness omitted it — so a projection reading a real production column failed here while
+  -- being perfectly correct against the deployed schema. A harness table narrower than production
+  -- makes every test run against a schema nobody ships.
+  -- KNOWN REMAINING DRIFT, deliberately not added because no suite-loaded routine reads them:
+  -- death_certificate_doc_id, executor_id_doc_id, reviewer_id, review_notes. If a routine under
+  -- test ever reads one, add it here in the same commit.
+  decided_at   timestamptz
 );
 alter table public.claim_packets enable row level security;
 

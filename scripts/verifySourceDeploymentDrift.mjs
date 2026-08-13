@@ -612,6 +612,28 @@ function classify(diffs) {
       + `dispatch_owner_safety_notice ${dispatch.missing ? 'ABSENT' : 'present'}. `
       + 'Re-apply db/bundles/death_verification_bundle.sql in full.');
   }
+
+  /**
+   * ★ PHASE 11-I — get_executor_workspace. Source authors it; production has never seen it until the
+   * operator pastes `db/bundles/executor_workspace_bundle.sql`.
+   *
+   * The probe uses the nil uuid, so a DEPLOYED function answers `{"authorized": false}` — the refusal
+   * every non-fiduciary receives — while an UNDEPLOYED one answers "function does not exist". Those
+   * are different answers, which is the whole point: a verifier that could not tell "deployed and
+   * correctly refusing" from "not deployed" would report a missing function as a working gate. That
+   * is the 11-F lesson (OLD LEVER ABSENT vs RELEASE AUTHORITY ABSENT) applied before the paste
+   * rather than after it.
+   */
+  const workspace = await probe('get_executor_workspace', { p_estate: NIL });
+  if (workspace.missing) {
+    record('executor_workspace', 'PENDING_DEPLOYMENT',
+      'source authors get_executor_workspace; production does not have it '
+      + '(apply executor_workspace_bundle.sql)', []);
+  } else {
+    record('executor_workspace', 'UNVERIFIABLE',
+      'DEPLOYED · capacity-gated projection — behaviour covered by '
+      + 'db/tests/executor_workspace_authorization.sql', []);
+  }
 }
 
 /* ── what this instrument deliberately does not reconcile ──────────────────────────────────────── */
@@ -627,6 +649,7 @@ for (const [name, why] of [
 ]) {
   record(name, 'UNVERIFIABLE', why, []);
 }
+
 
 /* ── verdict ───────────────────────────────────────────────────────────────────────────────────── */
 const drifted = results.filter((r) => !['EXACT', 'UNVERIFIABLE', 'PENDING_DEPLOYMENT'].includes(r.verdict));

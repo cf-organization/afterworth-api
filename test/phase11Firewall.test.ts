@@ -291,8 +291,8 @@ describe("3 · nothing can write a released state", () => {
 describe("4 · a fiduciary designation confers capacity, never disclosure", () => {
   /**
    * ★ THE PHASE 10 INVARIANT MOST AT RISK IN PHASE 11. The pull to say "the executor is handling the
-   * estate, so show them the estate" is the whole reason this is written down. Today
-   * `is_estate_executor` gates exactly three things, none of which is a disclosure tier.
+   * estate, so show them the estate" is the whole reason this is written down. Every use of
+   * `is_estate_executor` below is a CAPACITY gate, and none of them is a disclosure tier.
    */
   const executorGated = sources.filter(
     (s) =>
@@ -300,17 +300,28 @@ describe("4 · a fiduciary designation confers capacity, never disclosure", () =
       /\bpublic\.is_estate_executor\s*\(/.test(s.code)
   );
 
-  it("is_estate_executor gates only claim submission, the verification preview, and case initiation", () => {
+  it("is_estate_executor gates claim submission, the verification preview, case initiation, and the workflow READ", () => {
     /**
      * ★ WIDENED IN PHASE 11-C, DELIBERATELY AND ONCE. `death_verification.sql` joined the list: the
      * D2 decision routes case initiation, evidence attachment and cancellation through the same
      * canonical fiduciary predicate that has always gated claim submission. It remains a CAPACITY
      * gate — the file is separately pinned (deathVerificationFoundation.test.ts) to touch no
      * disclosure surface, and the disclosure projections below still may not consult it.
+     *
+     * ★ WIDENED AGAIN IN PHASE 11-I, AND THIS ONE CHANGES THE SENTENCE. `executor_workspace.sql`
+     * is the first place capacity gates a READ. That is precisely the gap 11-H measured: a
+     * fiduciary could START the death-verification process and had no way to read it back. The
+     * addition is safe only because of what that read CONTAINS — no assets, counts, categories,
+     * net worth, documents, beneficiaries, grants or tiers — which is asserted by execution in
+     * `db/tests/executor_workspace_authorization.sql` (§3 information equivalence, §4 a 30-key
+     * forbidden-vocabulary scan) and mutation-proven by five `p11i-workspace-leaks-*` classes.
+     * "Capacity gates a read" is NOT the same claim as "capacity is a tier", and the distinction
+     * is the entire subject of Phase 11-I.
      */
     expect(executorGated.map((e) => e.file).sort()).toEqual(
       [
         "death_verification.sql",
+        "executor_workspace.sql",
         "preview_required_verification_level.sql",
         "submit_claim_packet.sql",
         "submit_claim_with_evidence.sql",

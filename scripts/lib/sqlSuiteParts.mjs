@@ -61,6 +61,8 @@ export const SQL_SUITE_PARTS = Object.freeze([
   'db/functions/is_admin.sql',
   'db/functions/admin_require_gate.sql',
   'db/functions/required_verification_level.sql',
+  'db/functions/preview_required_verification_level.sql',
+  'db/functions/executor_workspace.sql',
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
   'db/tests/estate_readiness_authorization.sql',
@@ -82,6 +84,7 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // owner authored, and relationship never becomes a tier.
   'db/tests/survivor_mode_authorization.sql',
   'db/tests/fiduciary_capacity_authorization.sql',
+  'db/tests/executor_workspace_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.
@@ -94,6 +97,7 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildEstateAssetBundle.mjs', 'db/bundles/estate_inventory_and_discovery_bundle.sql'],
   ['scripts/buildLifecycleNotificationBundle.mjs', 'db/bundles/lifecycle_notifications_bundle.sql'],
   ['scripts/buildDeathVerificationBundle.mjs', 'db/bundles/death_verification_bundle.sql'],
+  ['scripts/buildExecutorWorkspaceBundle.mjs', 'db/bundles/executor_workspace_bundle.sql'],
 ]);
 
 /**

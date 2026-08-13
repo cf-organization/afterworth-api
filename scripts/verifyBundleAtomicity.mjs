@@ -114,6 +114,10 @@ const WITNESS = {
     "select to_regprocedure('public.emit_lifecycle_notification(uuid,uuid,text,text)') is not null",
   'db/bundles/death_verification_bundle.sql':
     "select to_regprocedure('public.authorize_release(uuid,text)') is not null",
+  // ★ Phase 11-I ships exactly one new name, so the witness IS the whole payload: if the function
+  // exists the bundle applied, and if it does not the bundle left nothing behind.
+  'db/bundles/executor_workspace_bundle.sql':
+    "select to_regprocedure('public.get_executor_workspace(uuid)') is not null",
 };
 
 const witnessTrue = (q) => {
@@ -148,11 +152,35 @@ for (const a of ARTIFACTS) {
     .map((l, i) => [l, i])
     .filter(([l]) => /^-- ==== /.test(l))
     .map(([, i]) => i);
-  if (boundaries.length < 2) {
-    die(2, `CANNOT VERIFY — ${a} has ${boundaries.length} part separator(s); the injection point `
-      + 'must be a top-level boundary, and there is no second one to use.');
+  /**
+   * ★ A SINGLE-PART BUNDLE HAS NO MID-BUNDLE SEPARATOR, AND THAT IS NOT A REASON TO SKIP IT.
+   *
+   * Phase 11-I ships one function, so there is no second `-- ==== ` boundary to splice at. The
+   * property under test is unchanged — after an error inside the transaction, does the object
+   * survive? — so the injection point becomes the last top-level statement boundary AFTER the
+   * final dollar-quoted body closes. That is still provably outside every `$function$ … $function$`
+   * (the hazard the separator rule exists to avoid), and it still lands after real work: the
+   * function has been created by then, so a passing rollback check means the wrapper genuinely
+   * discarded a created object rather than aborting before anything existed.
+   *
+   * Refusing to verify here would have been the comfortable choice and the wrong one: it would
+   * leave the only artifact this phase asks the operator to paste as the only artifact whose
+   * atomicity was never executed.
+   */
+  let at;
+  if (boundaries.length >= 2) {
+    at = boundaries[Math.max(1, Math.floor(boundaries.length / 2))];
+  } else {
+    const closes = lines
+      .map((l, i) => [l, i])
+      .filter(([l]) => /^\$function\$;\s*$|^\$\$;\s*$/.test(l))
+      .map(([, i]) => i);
+    if (closes.length === 0) {
+      die(2, `CANNOT VERIFY — ${a} has ${boundaries.length} part separator(s) and no dollar-quote `
+        + 'terminator, so no provably top-level injection point exists.');
+    }
+    at = closes[closes.length - 1] + 1;
   }
-  const at = boundaries[Math.max(1, Math.floor(boundaries.length / 2))];
   const corrupted = [...lines.slice(0, at),
     'select this_function_does_not_exist_aw_probe();',
     ...lines.slice(at)].join('\n');

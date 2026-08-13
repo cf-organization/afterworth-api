@@ -75,6 +75,12 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
     "death_verification.sql",
     "estate_discovery_rpcs.sql",
     "estate_lifecycle_state.sql",
+    // ★ PHASE 11-I. The fiduciary workflow read consults the lifecycle to report PROCESS state —
+    // challenge window open, halted, release completed — to the executor running that process. It
+    // is a non-disclosure consumer like release_safety.sql: it reports where the workflow stands,
+    // never what the estate contains, which §3/§4 of executor_workspace_authorization.sql assert
+    // by execution. It is therefore exempt from the only-as-a-predicate-argument rule below.
+    "executor_workspace.sql",
     "get_estate_net_worth.sql",
     "list_estate_assets.sql",
     // ★ PHASE 11-E. The safety module reads the lifecycle to gate its own transitions — the one
@@ -106,7 +112,20 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
      * to OPEN, unclosed, within the 200 characters before the mention. A local `if`/`case`
      * comparison has no such unclosed call in front of it.
      */
-    const evaluators = SANCTIONED_READER_CALLERS.filter((f) => !LIFECYCLE_MODULES.includes(f));
+    /**
+     * ★ THE EXEMPTION IS ITS OWN LIST, NOT `LIFECYCLE_MODULES`. Adding `executor_workspace.sql` to
+     * that array would have been the one-word fix and would ALSO have granted it permission to
+     * touch the `estate_lifecycle` TABLE directly, which it neither does nor needs — silently
+     * widening a second audit to satisfy this one. These are two different privileges and they get
+     * two different lists.
+     *
+     * A non-disclosure reader consults the lifecycle to report or gate PROCESS state. Phase 11-I's
+     * workflow projection reports "challenge window open / halted / release completed" to the
+     * fiduciary running that process, and discloses nothing about the estate — asserted by
+     * execution in db/tests/executor_workspace_authorization.sql §3 and §4.
+     */
+    const NON_DISCLOSURE_READERS = [...LIFECYCLE_MODULES, "executor_workspace.sql"];
+    const evaluators = SANCTIONED_READER_CALLERS.filter((f) => !NON_DISCLOSURE_READERS.includes(f));
     for (const f of evaluators) {
       const code = sources.find((s) => s.file === f)!.code;
       for (const m of code.matchAll(/public\.estate_lifecycle_state\s*\(/g)) {
