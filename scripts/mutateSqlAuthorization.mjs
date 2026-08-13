@@ -1036,6 +1036,18 @@ const MUTATIONS = Object.freeze([
     from: "       and a.archived_at is null\n     group by a.category",
     to: "       and (a.archived_at is null or a.archived_at is not null)\n     group by a.category",
   },
+
+  /* ── PHASE 11-H · fiduciary capacity is not a disclosure tier ──────────────────────────────── */
+  {
+    id: 'p11h-membership-opens-fiduciary-workflow',
+    why: 'THE CONVERSE LAUNDERING. "This person is an approved member of the estate, so let them '
+      + 'report a death" turns a relationship into workflow authority. Death verification is the '
+      + 'most consequential process in the product and it is opened by DESIGNATION, never by '
+      + 'membership — an owner chooses who may start it.',
+    file: 'db/functions/death_verification.sql',
+    from: "  if not public.is_estate_executor(p_estate, v_uid) then",
+    to: "  if not (public.is_estate_executor(p_estate, v_uid)\n          or exists (select 1 from public.estate_memberships m\n                      where m.estate_id = p_estate and m.user_id = v_uid and m.status = 'approved')) then",
+  },
   {
     id: 'p11f-same-reviewer-allowed',
     why: 'D1 IN ONE CHARACTER. Turning the two-person comparison into an inequality that can never '
