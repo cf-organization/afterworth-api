@@ -91,6 +91,44 @@ if (KEY.startsWith('sb_secret')) {
 }
 const deployed = createClient(URL_, KEY, { auth: { persistSession: false } });
 
+/**
+ * ★ THE RECONCILER MUST PROBE UNDER THE ROLE SOURCE INTENDS — a lesson paid for at deploy time.
+ *
+ * Every probe here used to run as `anon` (the publishable key, unauthenticated). That was correct
+ * while every reconciled contract was PUBLIC-executable, and it silently stopped being correct in
+ * Phase 11-B: `notification_grant_is_live` is SECURITY INVOKER and now DELEGATES to
+ * `release_condition_satisfied`, which source deliberately revokes from `anon` and grants to
+ * `authenticated`. So the chain refuses for anon BY DESIGN.
+ *
+ * It passed for months only because the DEPLOYED body still inlined the release rule and made no
+ * nested call; the first real paste turned a latent instrument defect into a hard failure
+ * (`42501 permission denied for function release_condition_satisfied`). Classified by
+ * `scripts/classifyPredicatePrivilege.mjs`: anon refused, authenticated succeeds end-to-end, and the
+ * SECURITY DEFINER production path resolves fine — a verifier role defect, not a privilege defect.
+ *
+ * ★ SO THE CLIENT IS CHOSEN PER CONTRACT, NOT GLOBALLY. Contracts that source exposes to anon keep
+ * using `deployed`; contracts whose privilege contract names `authenticated` are reconciled by an
+ * authenticated client. Granting the predicate to anon "to make the verifier pass" would have been
+ * the same instrument defect resolved by weakening production — precisely backwards.
+ */
+const MOBILE_ENV = parseEnvFile(resolve(ROOT, '../afterworth-mobile/.env.test'));
+let authed = null;
+async function authedClient() {
+  if (authed) return authed;
+  const email = MOBILE_ENV.get('AW_OR_OWNER_EMAIL');
+  const password = MOBILE_ENV.get('AW_OR_OWNER_PASSWORD');
+  if (!email || !password) {
+    die(2, 'CANNOT VERIFY — AW_OR_OWNER_EMAIL/_PASSWORD absent from afterworth-mobile/.env.test.',
+      ['Some contracts are granted to `authenticated` and revoked from `anon`; reconciling them as',
+       'anon would report a DESIGNED refusal as drift. Refusing to guess is the only safe answer.']);
+  }
+  const c = createClient(URL_, KEY, { auth: { persistSession: false } });
+  const { data, error } = await c.auth.signInWithPassword({ email, password });
+  if (error || !data?.user) die(2, `CANNOT VERIFY — reconciler sign-in failed: ${error?.message ?? 'no user'}`);
+  authed = c;
+  return authed;
+}
+
 /* ── the source side: an ephemeral Postgres with the real bundles applied ──────────────────────── */
 const BUNDLES = [
   // ★ FIRST (Phase 11-B). `notification_grant_is_live` is `language sql`, so the lifecycle bundle
@@ -293,10 +331,18 @@ function classify(diffs) {
   const diffs = [];
   for (const { c, st, ap } of cases) {
     const approved = ap !== null;
-    const { data, error } = await deployed.rpc('notification_grant_is_live', {
+    const { data, error } = await (await authedClient()).rpc('notification_grant_is_live', {
       p_status: st, p_release_condition: c, p_approved_at: approved ? new Date(0).toISOString() : null,
     });
-    if (error) die(2, `CANNOT VERIFY — deployed notification_grant_is_live failed: ${error.code} ${error.message}`);
+    if (error) {
+      // ★ A 42501 HERE IS NOW A REAL FINDING, not a role artefact: this client IS the role source
+      // grants. Say so explicitly rather than emitting the bare code again.
+      const hint = error.code === '42501'
+        ? ' — authenticated is refused a function source GRANTS to it; this is a PRIVILEGE DEFECT, '
+          + 'not a probe artefact (see scripts/classifyPredicatePrivilege.mjs)'
+        : '';
+      die(2, `CANNOT VERIFY — deployed notification_grant_is_live failed: ${error.code} ${error.message}${hint}`);
+    }
     const s = srcMap.get(`${st}|${c}|${approved}`);
     if (s !== data) diffs.push({ key: `${st}/${c}/approved=${approved}`, source: s, deployed: data });
   }
@@ -306,7 +352,7 @@ function classify(diffs) {
   // "exact agreement" about two functions that both wrongly release a death-conditioned grant.
   for (const cond of ['after_verified_death_or_incapacity', 'after_claim_case_approval', 'never',
                       'after_verified_death', 'after_verified_incapacity']) {
-    const { data } = await deployed.rpc('notification_grant_is_live', {
+    const { data } = await (await authedClient()).rpc('notification_grant_is_live', {
       p_status: 'active', p_release_condition: cond, p_approved_at: new Date(0).toISOString(),
     });
     if (data !== false) die(1, `DEPLOYED FIREWALL BREACH — notification_grant_is_live('active','${cond}', <approved>) returned ${data}`);
@@ -393,14 +439,17 @@ function classify(diffs) {
    * lifecycle-blind rule to any caller that was not rewired. Present-and-alone is a verdict-1
    * failure, not a note.
    */
+  const rcClient = await authedClient();
   const probes = {
-    satisfied4: await deployed.rpc('release_condition_satisfied', {
+    satisfied4: await rcClient.rpc('release_condition_satisfied', {
       p_release_condition: 'immediately', p_approved_at: null, p_policy: 'standard', p_lifecycle_state: 'active',
     }),
-    satisfied3: await deployed.rpc('release_condition_satisfied', {
+    satisfied3: await rcClient.rpc('release_condition_satisfied', {
       p_release_condition: 'immediately', p_approved_at: null, p_policy: 'standard',
     }),
-    writable: await deployed.rpc('release_condition_writable', { p_release_condition: 'immediately' }),
+    writable: await rcClient.rpc('release_condition_writable', { p_release_condition: 'immediately' }),
+    // ★ THE SEAM STAYS AN ANON PROBE ON PURPOSE: it is revoked from EVERY client role, so its
+    // refusal is the posture being checked, and asking as authenticated would prove less.
     seam: await deployed.rpc('estate_lifecycle_state', { p_estate: '00000000-0000-4000-8000-000000000000' }),
   };
   const missing = (r) => r.error?.code === 'PGRST202';
@@ -419,39 +468,50 @@ function classify(diffs) {
   }
   if (has4 && hasWritable && hasSeam) {
     // Deployed at the 11-D shape. Spot-check the three answers that define the phase — all pure.
+    /**
+     * ★ THE DEPLOYED RELEASE CONTRACT, SPOT-CHECKED IN FULL — and rewritten at first execution.
+     *
+     * This list previously expected `death/death_verified = true`, which was the Phase 11-D
+     * semantics. 11-E inserted the challenge window and 11-F the dispatch state, making that
+     * expectation exactly backwards — yet it never failed, because the block is only reachable once
+     * the authority is DEPLOYED, and until today it never was. A branch that never runs cannot be
+     * caught being wrong, which is why the first real deployment is the moment to re-derive it
+     * rather than trust it.
+     *
+     * The rows below are the whole 11-F contract: ONE satisfying cell, and the four pre-release
+     * states plus the dormant conditions all refusing.
+     */
+    const ask = async (cond, policy, lifecycle) => (await rcClient.rpc('release_condition_satisfied', {
+      p_release_condition: cond, p_approved_at: null, p_policy: policy, p_lifecycle_state: lifecycle,
+    })).data;
     const spot = [
-      ['immediately/active', probes.satisfied4.data, true],
-      [
-        'death/death_verified (standard)',
-        (await deployed.rpc('release_condition_satisfied', {
-          p_release_condition: 'after_verified_death', p_approved_at: null,
-          p_policy: 'standard', p_lifecycle_state: 'death_verified',
-        })).data,
-        true,
-      ],
-      [
-        'death/active (standard)',
-        (await deployed.rpc('release_condition_satisfied', {
-          p_release_condition: 'after_verified_death', p_approved_at: null,
-          p_policy: 'standard', p_lifecycle_state: 'active',
-        })).data,
-        false,
-      ],
-      [
-        'death/death_verified (LEGACY — R12 clamp)',
-        (await deployed.rpc('release_condition_satisfied', {
-          p_release_condition: 'after_verified_death', p_approved_at: null,
-          p_policy: 'legacy_immediate_only', p_lifecycle_state: 'death_verified',
-        })).data,
-        false,
-      ],
+      ['immediately/active (standard)', probes.satisfied4.data, true],
+      // THE one satisfying cell.
+      ['death/RELEASED (standard)', await ask('after_verified_death', 'standard', 'released'), true],
+      // Every pre-release stage refuses — the safety seam, as deployed.
+      ['death/active (standard)', await ask('after_verified_death', 'standard', 'active'), false],
+      ['death/death_verified (standard)', await ask('after_verified_death', 'standard', 'death_verified'), false],
+      ['death/owner_notification_dispatched (standard)',
+        await ask('after_verified_death', 'standard', 'owner_notification_dispatched'), false],
+      ['death/challenge_window (standard)', await ask('after_verified_death', 'standard', 'challenge_window'), false],
+      ['death/challenge_halted (standard)', await ask('after_verified_death', 'standard', 'challenge_halted'), false],
+      // The legacy clamp survives release (R10).
+      ['death/released (LEGACY clamp)', await ask('after_verified_death', 'legacy_immediate_only', 'released'), false],
+      // The dormant vocabulary stays dormant even at released.
+      ['incapacity/released (standard)', await ask('after_verified_incapacity', 'standard', 'released'), false],
+      ['fused-legacy/released (standard)',
+        await ask('after_verified_death_or_incapacity', 'standard', 'released'), false],
+      ['never/released (standard)', await ask('never', 'standard', 'released'), false],
+      // Unknown lifecycle fails closed.
+      ['immediately/UNKNOWN-lifecycle (standard)', await ask('immediately', 'standard', 'aw_probe_not_a_state'), false],
     ];
     const wrong = spot.filter(([, got, want]) => got !== want);
     if (wrong.length) {
       die(1, `DEPLOYED release authority disagrees on: ${wrong.map(([k, got, want]) => `${k} = ${JSON.stringify(got)} (expected ${want})`).join('; ')}`);
     }
     record('release_condition_authority', 'EXACT',
-      'DEPLOYED at the 11-D shape · 4 defining answers spot-checked; full truth table in the SQL suite', []);
+      `DEPLOYED at the 11-F shape · ${spot.length} contract cells spot-checked (death satisfies at `
+      + 'released ONLY); full truth table in the SQL suite', []);
   } else if (!has4 && !hasWritable && !hasSeam) {
     record('release_condition_authority', 'UNVERIFIABLE',
       'NOT YET DEPLOYED (source + bundle only) — equivalence proven via notification_grant_is_live above', []);
