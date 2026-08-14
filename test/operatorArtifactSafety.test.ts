@@ -34,13 +34,19 @@ const artifacts = fs
 
 describe("0 · the audit is reading something", () => {
   it("finds every generated operator artifact", () => {
-    // ★ 7 SINCE PHASE 11-K: operator_console_bundle.sql joins executor_workspace_bundle.sql (11-I)
-    // and estate_release_state_lockdown_bundle.sql (the security lockdown, kept as its own artifact
-    // so a one-line privilege withdrawal does not require re-pasting the 14-part estate bundle).
+    // ★ 8 SINCE PHASE 11-L: halt_notification_bundle.sql joins operator_console_bundle.sql (11-K),
+    // executor_workspace_bundle.sql (11-I) and estate_release_state_lockdown_bundle.sql (the
+    // security lockdown, kept as its own artifact so a one-line privilege withdrawal does not
+    // require re-pasting the 14-part estate bundle).
     // The count is asserted rather than derived so that a new operator artifact cannot appear
     // without a human deciding it should — every one of these is pasted into production by hand,
     // and this assertion firing is the intended way for that decision to be forced.
-    expect(artifacts.length).toBe(7);
+    //
+    // ★ 11-L IS A DELIBERATE 8th ARTIFACT rather than an edit to an existing one. Its two inputs
+    // live in the lifecycle and death bundles, and re-pasting either of those to ship one catalog
+    // row and one `perform` would put 140KB+ of unrelated DDL back through a hand-paste. A small
+    // artifact is the cheaper thing to review and the cheaper thing to roll back.
+    expect(artifacts.length).toBe(8);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

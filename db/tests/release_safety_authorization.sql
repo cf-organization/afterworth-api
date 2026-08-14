@@ -1249,6 +1249,292 @@ begin
   raise notice '  ok   CENSUS: totals, status/age distribution and the age gate; no address disclosed';
 end $rs6$;
 
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 7 · PHASE 11-L — THE HALT NOTIFICATION REACHES THE INITIATING FIDUCIARY, AND NOBODY ELSE
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- Every assertion here is about a notification ROW, because that is the only artifact the recipient
+-- ever sees. The stage is built so each rule is observable: a fixture where the recipient is not the
+-- caller, a second estate with its OWN initiator, a revoked designation, and a failed halt.
+do $rs7$
+declare
+  OWNER_H uuid; EXEC_H uuid; BEN_H uuid; H uuid; v_case_h uuid;
+  OWNER_X uuid; EXEC_X uuid; X uuid;
+  OWNER_R uuid; EXEC_R uuid; R uuid;
+  OWNER_F uuid; F uuid;
+  v_res text; n int; n_before int;
+  cat_title text; cat_body text; cat_kind text;
+  row_title text; row_body text; row_kind text; row_link text;
+begin
+  raise notice ' ';
+  raise notice '7 · the halt notification (Phase 11-L)';
+
+  insert into auth.users default values returning id into OWNER_H;
+  insert into auth.users default values returning id into EXEC_H;
+  insert into auth.users default values returning id into BEN_H;
+  insert into public.estates (owner_id, name) values (OWNER_H, 'RS Estate H') returning id into H;
+  insert into public.estate_memberships (estate_id, user_id, role, status) values
+    (H, OWNER_H, 'primary_user', 'approved'),
+    (H, BEN_H,   'beneficiary',  'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (H, EXEC_H, 'executor', 'active');
+
+  -- ── CONTROL: the catalog must actually carry the event, or every assertion below is vacuous ────
+  select category, title, body into cat_kind, cat_title, cat_body
+    from public.notification_event_copy('death_process.halted');
+  if cat_title is null or cat_body is null or cat_kind is null then
+    raise exception 'FAIL[control]: the catalog has no death_process.halted entry — nothing below '
+      'could observe a notification even if one were emitted';
+  end if;
+  -- The category must be one the RN client already decodes. `other` would render "Account update".
+  if cat_kind <> 'claimUpdate' then
+    raise exception 'FAIL: the halt category is %, which the client does not decode to a real label', cat_kind;
+  end if;
+  raise notice '  ok   CONTROL: the catalog carries death_process.halted as %', cat_kind;
+
+  -- ── A FAILED HALT EMITS NOTHING (mutations 1 and 2) ───────────────────────────────────────────
+  -- Emission lives inside the transition, so a refused halt cannot produce a row. Asserted BEFORE
+  -- the successful halt, so the count below starts from a known zero.
+  select count(*) into n_before from public.notifications where kind = 'claimUpdate';
+  v_res := harness_rs.attempt(OWNER_H, format('select public.challenge_death_process(%L)', H));
+  if position('nothing_to_challenge' in v_res) = 0 then
+    raise exception 'FAIL[precondition]: challenging an untouched estate got %', v_res;
+  end if;
+  select count(*) into n from public.notifications where kind = 'claimUpdate';
+  if n <> n_before then
+    raise exception 'FAIL: a REFUSED halt emitted % notification(s) — emission is outside the '
+      'transition, so a notification can exist for a state change that never happened', n - n_before;
+  end if;
+  raise notice '  ok   a refused halt (nothing_to_challenge) emits NOTHING';
+
+  -- ── THE HALT NOTIFIES THE INITIATOR ───────────────────────────────────────────────────────────
+  if harness_rs.attempt(EXEC_H, format('select public.initiate_death_verification_case(%L)', H)) <> 'OK' then
+    raise exception 'FAIL[precondition]: the designee could not initiate on H';
+  end if;
+  select id into v_case_h from public.death_verification_cases where estate_id = H and status = 'open';
+
+  -- Precondition: no halt notification exists for this estate yet, so the halt is what creates it.
+  if exists (select 1 from public.notifications where estate_id = H and kind = 'claimUpdate') then
+    raise exception 'FAIL[precondition]: a claimUpdate row already exists on H before the halt';
+  end if;
+
+  if harness_rs.attempt(OWNER_H, format('select public.challenge_death_process(%L)', H)) <> 'OK' then
+    raise exception 'FAIL: the owner could not halt on H';
+  end if;
+
+  select count(*) into n from public.notifications where estate_id = H and kind = 'claimUpdate';
+  if n <> 1 then
+    raise exception 'FAIL: the halt produced % claimUpdate notification(s) on H, expected exactly 1', n;
+  end if;
+
+  select user_id, title, body, kind, action_deep_link
+    into OWNER_F, row_title, row_body, row_kind, row_link
+    from public.notifications where estate_id = H and kind = 'claimUpdate';
+  if OWNER_F <> EXEC_H then
+    raise exception 'FAIL: the halt notification went to a user who did not initiate the case';
+  end if;
+  raise notice '  ok   the INITIATING fiduciary receives exactly one notification';
+
+  -- ── AND NOBODY ELSE DOES (mutation 4: the owner; plus no broadcast) ───────────────────────────
+  if exists (select 1 from public.notifications
+              where estate_id = H and kind = 'claimUpdate' and user_id = OWNER_H) then
+    raise exception 'FAIL: the CHALLENGING OWNER received claimant-facing copy about their own halt';
+  end if;
+  if exists (select 1 from public.notifications
+              where estate_id = H and kind = 'claimUpdate' and user_id = BEN_H) then
+    raise exception 'FAIL: a beneficiary received the halt notification — this is a broadcast';
+  end if;
+  raise notice '  ok   the owner and the beneficiary receive NOTHING';
+
+  -- ── THE COPY IS THE CATALOG'S, NOT COMPOSED HERE (mutation 8) ─────────────────────────────────
+  if row_title is distinct from cat_title or row_body is distinct from cat_body then
+    raise exception 'FAIL: the emitted copy (%, %) differs from the catalog (%, %) — text was '
+      'composed at the emission site', row_title, row_body, cat_title, cat_body;
+  end if;
+
+  -- ── THE COPY DISCLOSES NOTHING (mutations 6 and 7) ────────────────────────────────────────────
+  -- Channel, address, reason, evidence and accusation are each named rather than gestured at, so a
+  -- future copy edit that reintroduces one fails here instead of shipping.
+  if row_body ilike '%@%' or row_title ilike '%@%' then
+    raise exception 'FAIL: the halt copy contains an address shape: % / %', row_title, row_body;
+  end if;
+  if row_body ilike '%email%' or row_body ilike '%phone%' or row_body ilike '%sms%'
+     or row_body ilike '%channel%' then
+    raise exception 'FAIL: the halt copy names an owner channel: %', row_body;
+  end if;
+  if row_body ilike '%evidence%' or row_body ilike '%certificate%' or row_body ilike '%document%' then
+    raise exception 'FAIL: the halt copy names evidence: %', row_body;
+  end if;
+  if row_body ilike '%fraud%' or row_body ilike '%suspic%' or row_body ilike '%false%'
+     or row_body ilike '%invalid%' or row_body ilike '%denied%' or row_body ilike '%reject%' then
+    raise exception 'FAIL: the halt copy carries accusatory or judgemental language: %', row_body;
+  end if;
+  -- It must not explain WHY, and "because"/"reason" are how an explanation would arrive.
+  if row_body ilike '%because%' or row_body ilike '%reason%' then
+    raise exception 'FAIL: the halt copy explains the halt: %', row_body;
+  end if;
+  -- No identifier of any kind may be interpolated into user-facing text.
+  if row_body like ('%' || H::text || '%') or row_body like ('%' || OWNER_H::text || '%')
+     or row_body like ('%' || v_case_h::text || '%') then
+    raise exception 'FAIL: the halt copy interpolates an identifier: %', row_body;
+  end if;
+  if row_body ilike '%RS Estate H%' then
+    raise exception 'FAIL: the halt copy names the estate: %', row_body;
+  end if;
+  raise notice '  ok   copy is the catalog constant: no channel, address, reason, evidence, id or estate name';
+
+  -- ── NO DEEP LINK (mutation 9) ─────────────────────────────────────────────────────────────────
+  -- The recipient's own surface exists (/executor) but has no allowlist key in the RN client, and an
+  -- unmatched string resolves to null there anyway. Emitting one would be inventing a route.
+  if row_link is not null then
+    raise exception 'FAIL: the halt notification carries a deep link (%) — no allowlisted fiduciary '
+      'destination exists, so this can only be an unmatched or invented route', row_link;
+  end if;
+  raise notice '  ok   no deep link is attached';
+
+  -- ── IDEMPOTENT RE-CHALLENGE EMITS NOTHING FURTHER (mutation 5) ────────────────────────────────
+  if harness_rs.attempt(OWNER_H, format('select public.challenge_death_process(%L)', H)) <> 'OK' then
+    raise exception 'FAIL: the idempotent replay of the challenge was refused';
+  end if;
+  select count(*) into n from public.notifications where estate_id = H and kind = 'claimUpdate';
+  if n <> 1 then
+    raise exception 'FAIL: an idempotent re-challenge produced % notification(s), expected 1 — the '
+      'recipient is told twice that a process stopped once', n;
+  end if;
+  raise notice '  ok   idempotent re-challenge emits NO second notification';
+
+  -- ── AN UNRELATED ESTATE'S INITIATOR IS UNTOUCHED (mutation 10) ────────────────────────────────
+  -- A second estate with its OWN open case and its OWN initiator. Halting H must not reach X.
+  insert into auth.users default values returning id into OWNER_X;
+  insert into auth.users default values returning id into EXEC_X;
+  insert into public.estates (owner_id, name) values (OWNER_X, 'RS Estate X') returning id into X;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (X, OWNER_X, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (X, EXEC_X, 'executor', 'active');
+  if harness_rs.attempt(EXEC_X, format('select public.initiate_death_verification_case(%L)', X)) <> 'OK' then
+    raise exception 'FAIL[precondition]: the designee could not initiate on X';
+  end if;
+  if exists (select 1 from public.notifications where user_id = EXEC_X and kind = 'claimUpdate') then
+    raise exception 'FAIL: halting H notified the initiator of a DIFFERENT estate';
+  end if;
+  if exists (select 1 from public.notifications where estate_id = X and kind = 'claimUpdate') then
+    raise exception 'FAIL: a claimUpdate row exists on X, whose process was never halted';
+  end if;
+  -- X's case must still be open — halting H must not have touched another estate's case at all.
+  if (select status from public.death_verification_cases where estate_id = X) <> 'open' then
+    raise exception 'FAIL: halting H changed the case status on X';
+  end if;
+  raise notice '  ok   an unrelated estate''s initiator and case are untouched';
+
+  -- ── HISTORICAL INITIATOR: A REVOKED DESIGNEE IS STILL TOLD (the case-model rule) ──────────────
+  --
+  -- ★ THE FIXTURE IS BUILT SO THE RULE IS OBSERVABLE, because a live-designation lookup would pass
+  -- against estate H (whose executor is still active). 0052 states the initiator fields are "a
+  -- snapshot of fact … never an authority the case can later re-assert". The notification asserts no
+  -- authority — it reports one fact about something this person personally did — so revocation must
+  -- NOT suppress it. Under a live-designation rule the message is silently dropped for exactly the
+  -- person owed it, and the owner's revocation becomes a way to stop the claimant ever learning.
+  insert into auth.users default values returning id into OWNER_R;
+  insert into auth.users default values returning id into EXEC_R;
+  insert into public.estates (owner_id, name) values (OWNER_R, 'RS Estate R') returning id into R;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (R, OWNER_R, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (R, EXEC_R, 'executor', 'active');
+  if harness_rs.attempt(EXEC_R, format('select public.initiate_death_verification_case(%L)', R)) <> 'OK' then
+    raise exception 'FAIL[precondition]: the designee could not initiate on R';
+  end if;
+  update public.estate_designations set status = 'revoked' where estate_id = R;
+  if exists (select 1 from public.estate_designations where estate_id = R and status = 'active') then
+    raise exception 'FAIL[precondition]: estate R still has an active designation — this fixture '
+      'cannot observe a live-designation requirement';
+  end if;
+  if harness_rs.attempt(OWNER_R, format('select public.challenge_death_process(%L)', R)) <> 'OK' then
+    raise exception 'FAIL: the owner could not halt on R';
+  end if;
+  if not exists (select 1 from public.notifications
+                  where estate_id = R and kind = 'claimUpdate' and user_id = EXEC_R) then
+    raise exception 'FAIL: the initiator of a case was NOT told their process halted because their '
+      'designation had since been revoked — historical initiator semantics were replaced by a live '
+      'designation lookup, and the person owed the message is the one who lost it';
+  end if;
+  raise notice '  ok   a REVOKED designee is still told their own process halted (historical initiator)';
+
+  -- ── THE OWNER-EXCLUSION GUARD, ON A FIXTURE THAT CAN OBSERVE IT ───────────────────────────────
+  --
+  -- ★ WITHOUT THIS ESTATE THE GUARD IS UNTESTABLE, AND THAT IS THE WHOLE REASON IT EXISTS HERE. On
+  -- H the initiator (EXEC_H) is not the owner, so deleting `and v_initiator <> v_uid` changes
+  -- nothing and every assertion above still passes — a control that cannot fail. The state that
+  -- makes it observable is an owner who is ALSO the designated executor of their own estate:
+  -- `initiate_death_verification_case` requires an active designation for auth.uid() and forbids no
+  -- self-designation, so this is representable rather than contrived.
+  --
+  -- Such an owner halting their own process must receive NOTHING. They performed both acts; sending
+  -- them claimant-facing copy about their own halt reads as a message from a stranger about their
+  -- own death process.
+  declare
+    OWNER_S uuid; S uuid;
+  begin
+    insert into auth.users default values returning id into OWNER_S;
+    insert into public.estates (owner_id, name) values (OWNER_S, 'RS Estate S') returning id into S;
+    insert into public.estate_memberships (estate_id, user_id, role, status)
+    values (S, OWNER_S, 'primary_user', 'approved');
+    insert into public.estate_designations (estate_id, user_id, designation_type, status)
+    values (S, OWNER_S, 'executor', 'active');
+
+    if harness_rs.attempt(OWNER_S, format('select public.initiate_death_verification_case(%L)', S)) <> 'OK' then
+      raise exception 'FAIL[precondition]: an owner who is also the designated executor could not '
+        'initiate on their own estate — this fixture cannot observe the owner-exclusion guard';
+    end if;
+    if (select initiated_by from public.death_verification_cases where estate_id = S) <> OWNER_S then
+      raise exception 'FAIL[precondition]: estate S''s case initiator is not the owner';
+    end if;
+
+    if harness_rs.attempt(OWNER_S, format('select public.challenge_death_process(%L)', S)) <> 'OK' then
+      raise exception 'FAIL: the owner could not halt their own process on S';
+    end if;
+    if exists (select 1 from public.notifications where estate_id = S and kind = 'claimUpdate') then
+      raise exception 'FAIL: an owner who initiated AND halted their own process received '
+        'claimant-facing copy about it — the owner-exclusion guard is gone';
+    end if;
+    raise notice '  ok   an owner who is also the initiator receives NOTHING (guard is observable)';
+  end;
+
+  -- ── THE RECIPIENT IS NOT CALLER-SUPPLIABLE ────────────────────────────────────────────────────
+  -- challenge_death_process takes ONE argument. A second one is unrepresentable, so no client can
+  -- nominate a recipient. Asserted against the catalog rather than by reading the body.
+  if (select count(*) from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+       where ns.nspname = 'public' and p.proname = 'challenge_death_process'
+         and p.pronargs = 1) <> 1 then
+    raise exception 'FAIL: challenge_death_process no longer has exactly one parameter — a recipient '
+      'or actor argument would let a caller choose who is notified';
+  end if;
+  raise notice '  ok   the routine takes one argument: no recipient can be caller-supplied';
+
+  -- ── THE STAGE TOTAL, SCOPED TO THIS STAGE'S ESTATES ───────────────────────────────────────────
+  --
+  -- ★ SCOPED, AND THE FIRST VERSION WAS NOT. It counted every `claimUpdate` row in the database and
+  -- expected 2, which failed at 4 — correctly. Stage 2 halts estates C and N through the same door,
+  -- so those two rows are the feature working, not contamination. An unscoped count in a suite that
+  -- shares one database measures other stages' behaviour and calls it this stage's.
+  --
+  -- Four halt ATTEMPTS happened here: H refused (active), H succeeded, H replayed (idempotent),
+  -- R succeeded. X was never halted. So exactly two rows, one each on H and R.
+  select count(*) into n from public.notifications
+   where kind = 'claimUpdate' and estate_id in (H, X, R);
+  if n <> 2 then
+    raise exception 'FAIL: % claimUpdate rows across this stage''s estates, expected exactly 2 '
+      '(one on H, one on R, none on X)', n;
+  end if;
+  if (select count(*) from public.notifications where kind = 'claimUpdate' and estate_id = H) <> 1
+     or (select count(*) from public.notifications where kind = 'claimUpdate' and estate_id = R) <> 1
+     or (select count(*) from public.notifications where kind = 'claimUpdate' and estate_id = X) <> 0 then
+    raise exception 'FAIL: the per-estate halt-notification distribution is wrong (H/R/X)';
+  end if;
+  raise notice '  ok   exactly 2 halt notifications: one on H, one on R, none on X (4 halt attempts)';
+end $rs7$;
+
 do $$
 begin
   raise notice ' ';

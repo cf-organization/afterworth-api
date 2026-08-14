@@ -1353,6 +1353,122 @@ const MUTATIONS = Object.freeze([
     from: "revoke execute on function public.claim_owner_notices(int) from public, anon, authenticated;",
     to: "grant execute on function public.claim_owner_notices(int) to authenticated;",
   },
+
+  /* ══ PHASE 11-L · the halt notification to the initiating fiduciary ═══════════════════════════ */
+  {
+    id: 'p11l-halt-notification-omitted',
+    why: 'THE PHASE, DELETED. A halt that tells nobody leaves the fiduciary who started the process '
+      + 'watching a workflow that has silently stopped, with no signal that it did. They would '
+      + 'reasonably conclude the product is broken and try again.\n'
+      + '      ★ EXPRESSED AS AN UNREACHABLE GUARD RATHER THAN A DELETED CALL, AND THAT IS THE '
+      + 'POINT. Deleting the `perform` outright removes the string `death_process.halted` from '
+      + 'release_safety.sql, which the bundle\'s own absence control pins — so the first version of '
+      + 'this mutation died at BUILD time with HARNESS_FAILURE and proved nothing about whether the '
+      + 'SQL suite can see a missing notification. Same shape as '
+      + '`p11b-legacy-fused-becomes-writable`, and as the two 11-K grant controls. `if false` keeps '
+      + 'the artifact intact and the emission unreachable, so the RUNTIME layer is what is on trial. '
+      + 'The build control still fails on a genuinely absent phase; that is a different question and '
+      + 'it keeps its own answer.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_initiator is not null and v_initiator <> v_uid then\n    perform public.emit_lifecycle_notification(",
+    to: "  if false then\n    perform public.emit_lifecycle_notification(",
+  },
+  {
+    id: 'p11l-notification-precedes-the-halt',
+    why: 'EMISSION LIFTED ABOVE THE STATE CHECKS, so a REFUSED halt notifies anyway. The initiating '
+      + 'fiduciary is told their process stopped while it is still running — and on an `active` '
+      + 'estate, where no process exists at all. A notification must never describe a transition '
+      + 'that did not happen.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_state = 'challenge_halted' then\n    return 'challenge_halted'; -- idempotent replay: no re-stamp, no re-audit\n  end if;",
+    to: "  perform public.emit_lifecycle_notification(\n    (select initiated_by from public.death_verification_cases where estate_id = p_estate limit 1),\n    p_estate, 'death_process.halted', null);\n  if v_state = 'challenge_halted' then\n    return 'challenge_halted';\n  end if;",
+  },
+  {
+    id: 'p11l-wrong-fiduciary-notified',
+    why: 'THE RECIPIENT, TAKEN FROM THE WRONG CASE. Notifying some other estate\'s initiator tells '
+      + 'a stranger that a death process exists and has halted — a death-process oracle aimed at '
+      + 'someone with no relationship to the estate at all — while the person actually owed the '
+      + 'message gets nothing.',
+    file: 'db/functions/release_safety.sql',
+    from: "      v_initiator, p_estate, 'death_process.halted', null);",
+    to: "      (select initiated_by from public.death_verification_cases\n        where estate_id <> p_estate order by created_at limit 1),\n      p_estate, 'death_process.halted', null);",
+  },
+  {
+    id: 'p11l-owner-also-notified',
+    why: 'CLAIMANT-FACING COPY SENT TO THE OWNER. "The estate process you initiated has been '
+      + 'halted" is addressed to the person who STARTED the process. Sent to the owner who just '
+      + 'stopped it, it reads as a stranger narrating their own death process back to them.',
+    file: 'db/functions/release_safety.sql',
+    from: "    perform public.emit_lifecycle_notification(\n      v_initiator, p_estate, 'death_process.halted', null);",
+    to: "    perform public.emit_lifecycle_notification(\n      v_initiator, p_estate, 'death_process.halted', null);\n    perform public.emit_lifecycle_notification(\n      v_uid, p_estate, 'death_process.halted', null);",
+  },
+  {
+    id: 'p11l-owner-exclusion-guard-removed',
+    why: 'THE GUARD ITSELF. Only observable on an estate whose owner is ALSO the designated '
+      + 'initiator, which §7 builds deliberately (estate S) — on every other fixture the initiator '
+      + 'is not the owner and deleting this comparison changes nothing. A control that cannot fail '
+      + 'is not a control, so the fixture exists to make this one fail.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_initiator is not null and v_initiator <> v_uid then",
+    to: "  if v_initiator is not null then",
+  },
+  {
+    id: 'p11l-duplicate-on-idempotent-replay',
+    why: 'THE REPLAY GUARD, REMOVED TOGETHER WITH THE STATUS SCOPE — both are needed to actually '
+      + 'produce a duplicate, which is why this is one compound edit rather than two. A second '
+      + 'challenge then re-halts an already-halted case and emits again, telling the fiduciary '
+      + 'twice that a process stopped once. Repeated notifications about a death process read as '
+      + 'repeated events.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_state = 'challenge_halted' then\n    return 'challenge_halted'; -- idempotent replay: no re-stamp, no re-audit\n  end if;",
+    to: "  if v_state = 'challenge_halted' then\n    update public.death_verification_cases\n       set status = 'halted', updated_at = now()\n     where estate_id = p_estate and status = 'halted'\n    returning initiated_by into v_initiator;\n    if v_initiator is not null then\n      perform public.emit_lifecycle_notification(\n        v_initiator, p_estate, 'death_process.halted', null);\n    end if;\n    return 'challenge_halted';\n  end if;",
+  },
+  {
+    id: 'p11l-copy-reveals-owner-channel',
+    why: 'THE COPY DISCLOSING HOW THE OWNER ANSWERED. Naming the channel tells a possibly-hostile '
+      + 'claimant which address or device reached a living owner — provenance about a person the '
+      + 'challenge window exists to protect, handed to the one party with a motive to use it.',
+    file: 'db/functions/lifecycle_notification_rpcs.sql',
+    from: "     'The estate process you initiated has been halted.')",
+    to: "     'The estate process you initiated has been halted by the owner via email.')",
+  },
+  {
+    id: 'p11l-copy-reveals-reason',
+    why: 'THE COPY EXPLAINING WHY. A reason is either a disclosure about the owner\'s state of mind '
+      + 'or an accusation against the recipient, and this routine cannot tell a good-faith '
+      + 'claimant from a bad-faith one — so it must say the same sentence to both.',
+    file: 'db/functions/lifecycle_notification_rpcs.sql',
+    from: "     'The estate process you initiated has been halted.')",
+    to: "     'The estate process you initiated has been halted because the evidence was rejected.')",
+  },
+  {
+    id: 'p11l-freeform-copy-bypasses-catalog',
+    why: 'TEXT COMPOSED AT THE EMISSION SITE. The catalog is the ONLY place notification copy '
+      + 'exists precisely so disclosure review has one file to read. A caller that composes its own '
+      + 'string moves user-facing copy — and every disclosure decision in it — out of review.',
+    file: 'db/functions/release_safety.sql',
+    from: "    perform public.emit_lifecycle_notification(\n      v_initiator, p_estate, 'death_process.halted', null);",
+    to: "    perform public.emit_notification(\n      v_initiator, p_estate, 'claimUpdate', 'Estate process halted',\n      'The owner challenged your claim on this estate.', null, '{}'::jsonb);",
+  },
+  {
+    id: 'p11l-deep-link-attached',
+    why: 'A ROUTE THAT DOES NOT EXIST IN THE CLIENT ALLOWLIST. `afterworth://executor` resolves to '
+      + 'null in `features/notifications/actions.ts`, so this cannot navigate — but shipping it '
+      + 'asserts a destination the product has not wired, and the next person to add the allowlist '
+      + 'entry would wire it without re-examining whether a halted claimant should be sent there.',
+    file: 'db/functions/release_safety.sql',
+    from: "      v_initiator, p_estate, 'death_process.halted', null);",
+    to: "      v_initiator, p_estate, 'death_process.halted', 'afterworth://executor');",
+  },
+  {
+    id: 'p11l-unrelated-estate-notified',
+    why: 'THE ESTATE SCOPE, DROPPED. One owner\'s challenge then halts EVERY open case in the '
+      + 'product and notifies every initiator — mass disclosure plus mass corruption of unrelated '
+      + 'workflows, from a single authorized action on a single estate.',
+    file: 'db/functions/release_safety.sql',
+    from: "   where estate_id = p_estate and status = 'open'\n  returning initiated_by into v_initiator;",
+    to: "   where status = 'open'\n  returning initiated_by into v_initiator;",
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;

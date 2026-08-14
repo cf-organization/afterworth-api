@@ -138,6 +138,25 @@ const WITNESS = {
    */
   'db/bundles/operator_console_bundle.sql':
     "select to_regprocedure('public.admin_get_death_verification_case(uuid)') is not null",
+  /**
+   * ★ PHASE 11-L. This artifact CREATES NO NEW NAME — it replaces two existing functions — so
+   * `to_regprocedure(...) is not null` cannot testify: both names exist before it runs and after.
+   * The only observable state delta is CATALOG CONTENT: whether the copy catalog answers for
+   * `death_process.halted`.
+   *
+   * ★ AND IT WILL REPORT NO_STATE_DELTA, WHICH IS THE HONEST RESULT RATHER THAN A DISAPPOINTING ONE.
+   * The suite seeds from current source, and `lifecycle_notifications_bundle` — rebuilt from the same
+   * edited file — already carries the new catalog row. So the witness is true at baseline, exactly
+   * the `estate_release_state_lockdown_bundle` situation, and the harness excludes it from the
+   * verdict instead of scoring it.
+   *
+   * The alternative was to hunt for an observable that happens to discriminate, which the note below
+   * names for what it is: choosing an observable to make a number come out right. Atomicity for this
+   * artifact rests on structure — pure SQL, exactly one begin/commit, one transaction — all asserted
+   * above, plus the corrupted-run check that still executes.
+   */
+  'db/bundles/halt_notification_bundle.sql':
+    "select exists (select 1 from public.notification_event_copy('death_process.halted'))",
 };
 
 const witnessTrue = (q) => {

@@ -1759,8 +1759,13 @@ create or replace function public.challenge_death_process(p_estate uuid)
  set search_path to 'public'
 as $function$
 declare
-  v_uid   uuid := auth.uid();
-  v_state text;
+  v_uid       uuid := auth.uid();
+  v_state     text;
+  -- ★ Phase 11-L. The initiator of the case THIS CALL halts, captured from the UPDATE's own
+  -- RETURNING rather than looked up afterwards. A separate SELECT could name a case this call did
+  -- not touch — one already halted, or one halted by a concurrent transaction — and would notify
+  -- someone about a process that is still running, or notify twice about one that stopped once.
+  v_initiator uuid;
 begin
   if v_uid is null then
     raise exception 'auth_required' using errcode = '42501';
@@ -1798,9 +1803,52 @@ begin
    where estate_id = p_estate;
 
   -- Any open case is halted — distinct from 'cancelled' (initiator withdrew): the owner said no.
+  -- ★ RETURNING gives us the initiator of the case actually halted HERE. At most one row can match:
+  -- `death_verification_cases_one_open_per_estate` is a partial unique index on (estate_id) where
+  -- status = 'open', so `into` is safe and there is structurally no set to broadcast to.
   update public.death_verification_cases
      set status = 'halted', updated_at = now()
-   where estate_id = p_estate and status = 'open';
+   where estate_id = p_estate and status = 'open'
+  returning initiated_by into v_initiator;
+
+  -- ────────────────────────────────────────────────────────────────────────────────────────────
+  -- ★ PHASE 11-L — TELL THE INITIATING FIDUCIARY THAT THEIR PROCESS STOPPED.
+  -- ────────────────────────────────────────────────────────────────────────────────────────────
+  --
+  -- ★ RECIPIENT COMES FROM WORKFLOW STATE, NEVER FROM A CALLER. `p_estate` is the only input to
+  -- this routine; there is no recipient parameter and therefore nothing for a client to point at
+  -- someone else. `initiated_by` is `not null references auth.users(id)` on the case row.
+  --
+  -- ★ HISTORICAL INITIATOR, AND THE CASE MODEL SETTLES IT RATHER THAN A GUESS. 0052 states that
+  -- `initiator_designation_id` / `initiator_capacity` are "a snapshot of fact ('this person acted
+  -- as executor'), never an authority the case can later re-assert — a revoked designee does not
+  -- keep acting because a case remembers them." So a designation revoked after initiation must NOT
+  -- suppress this message: the notification asserts no authority, it reports one fact about
+  -- something the recipient personally did. They already know they initiated it; being told it
+  -- stopped discloses nothing they did not bring with them. Re-deriving a LIVE designation here
+  -- would instead silently drop the message for exactly the person owed it.
+  --
+  -- ★ IT CANNOT REACH THE OWNER. The owner is the caller (is_estate_owner above), and the guard
+  -- below excludes them explicitly. That covers the degenerate case where an estate owner is also
+  -- a designee on their own estate: they would otherwise receive claimant-facing copy about their
+  -- own halt, which reads as a message from a stranger about their own death process.
+  --
+  -- ★ NO DEEP LINK, DELIBERATELY. The recipient's own surface is `/executor`
+  -- (`get_executor_workspace`, which refuses a revoked designee) — but the RN deep-link allowlist
+  -- in `features/notifications/actions.ts` has no `afterworth://executor` key, and a link that is
+  -- not in the allowlist resolves to null and renders as a non-navigating row anyway. Passing an
+  -- unmatched string would be inventing a route rather than using one. Wiring that destination is
+  -- a bounded mobile follow-up, recorded in docs/phase11l-halt-notification.md §6.
+  --
+  -- ★ EMISSION IS INSIDE THIS TRANSACTION, so it commits with the halt or not at all — no
+  -- notification can precede or outlive the state change it describes. The idempotent-replay
+  -- return above happens BEFORE any of this, so a second challenge emits nothing. And when no case
+  -- was open, `v_initiator` is null and nothing is emitted: a halt with no initiated process to
+  -- report has nobody to report it to.
+  if v_initiator is not null and v_initiator <> v_uid then
+    perform public.emit_lifecycle_notification(
+      v_initiator, p_estate, 'death_process.halted', null);
+  end if;
 
   -- ★ NO PROVENANCE. The fact recorded is THAT the owner challenged and from which state — never
   -- a channel, a device, an address, or a location (§17: provenance is security-sensitive

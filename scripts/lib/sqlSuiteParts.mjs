@@ -54,6 +54,20 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // owner_notice_outbox status CHECK and adds the delivery recorder plus the two operator
   // projections — all of which read objects the death bundle creates above.
   'db/bundles/operator_console_bundle.sql',
+  // ★ PHASE 11-L, LAST AMONG THE BUNDLES. It re-pastes `release_safety.sql` and
+  // `lifecycle_notification_rpcs.sql` with the halt notification, so it must load AFTER
+  // `release_conditions_bundle` (its functions call `release_condition_satisfied`, and
+  // `notification_grant_is_live` is `language sql` — resolved at CREATE time, so a missing helper is
+  // a load failure, not a degradation).
+  //
+  // ★ IT WAS DELIBERATELY LEFT OUT OF THIS LIST AND THAT WAS WRONG. The reasoning was that its two
+  // inputs already reach the suite through the lifecycle and death bundles, so loading the same
+  // bodies twice would only prove `create or replace` is idempotent. `releaseConditionCentralization`
+  // §5 fired and was right: the invariant is about a FRESH database built from the artifacts alone,
+  // where "some other bundle happens to carry that file" is not a load-order guarantee. Re-pasting
+  // an overlapping module is also the established pattern — `operator_console_bundle` re-pastes
+  // `outbox_safety.sql` after `death_verification_bundle` already loaded it.
+  'db/bundles/halt_notification_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
@@ -108,6 +122,8 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildExecutorWorkspaceBundle.mjs', 'db/bundles/executor_workspace_bundle.sql'],
   ['scripts/buildReleaseStateLockdownBundle.mjs', 'db/bundles/estate_release_state_lockdown_bundle.sql'],
   ['scripts/buildOperatorConsoleBundle.mjs', 'db/bundles/operator_console_bundle.sql'],
+  // ★ PHASE 11-L. Registered so the atomicity verifier and every rebuild-before-trust step cover it.
+  ['scripts/buildHaltNotificationBundle.mjs', 'db/bundles/halt_notification_bundle.sql'],
 ]);
 
 /**
