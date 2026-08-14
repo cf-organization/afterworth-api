@@ -245,6 +245,16 @@ const EVENTS = [
   // "fine"). Until the notifications bundle is pasted the deployed catalog does not know it, which
   // is SOURCE-AHEAD rather than drift — classified explicitly below.
   'death_process.window_opened',
+  // ★ PHASE 11-L — the halt notification to the initiating fiduciary. Added for the reason the
+  // comment above states, AND BECAUSE 11-L DID NOT DO IT. The reconciler reported
+  // "8 catalog entries compared verbatim · EXACT" while never comparing the newest entry at all:
+  // `EVENTS` is a hardcoded list, so a new catalog row is invisible to it and its absence reads as
+  // agreement. That is the exact hazard the 11-E note warns about, one phase later.
+  //
+  // Any future catalog entry must be added here in the same commit that adds it to
+  // `notification_event_copy`, or this instrument silently stops covering it. Pinned by
+  // `test/releaseConditionCentralization.test.ts` §6.
+  'death_process.halted',
   'aw_probe_event_that_cannot_exist',
 ];
 
@@ -253,7 +263,17 @@ const EVENTS = [
  * PENDING DEPLOYMENT — named, never omitted, and never counted as agreement. Anything else that
  * differs is real drift.
  */
-const PENDING_EVENTS = new Set(['death_process.window_opened']);
+/*
+ * ★ EMPTIED IN PHASE 11-M, ON EVIDENCE. `death_process.window_opened` sat here from 11-E and both
+ * death-domain events are now deployed — the live catalog answers each with the copy source
+ * specifies, probed directly. Leaving a deployed event on this list would let a genuinely MISSING
+ * deployment be reported as PENDING rather than as drift, which is the softer of the two mistakes
+ * and still the wrong answer.
+ *
+ * Add an entry here ONLY while source is deliberately ahead of production, and remove it in the
+ * commit that verifies the paste.
+ */
+const PENDING_EVENTS = new Set([]);
 
 const results = [];
 const record = (name, verdict, detail, cases) => {
