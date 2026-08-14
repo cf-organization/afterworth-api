@@ -579,3 +579,44 @@ describe("6 · the predicate consumes the lifecycle as an ARGUMENT and still rea
     expect(callers).toEqual([]);
   });
 });
+
+/**
+ * ★ PHASE 11-M. THE RECONCILER'S EVENT LIST IS HARDCODED, SO IT CAN SILENTLY STOP COVERING THINGS.
+ *
+ * `verifySourceDeploymentDrift.mjs` compares the notification catalog by iterating a literal `EVENTS`
+ * array. 11-L added `death_process.halted` to `notification_event_copy` and did not add it there, so
+ * the reconciler reported "8 catalog entries compared verbatim · EXACT" while never comparing the new
+ * entry at all — an absent row in a reconciliation table reads as agreement. The file's own 11-E
+ * comment warns about exactly this, which is what makes it worth a test rather than a note.
+ *
+ * This asserts the two lists agree, in both directions.
+ */
+describe("7 · the drift reconciler covers every catalog event", () => {
+  const catalogEvents = (): string[] => {
+    const src = load("db/functions/lifecycle_notification_rpcs.sql").code;
+    // The catalog is a VALUES list of ('event', 'category', 'title', 'body') tuples.
+    const body = src.slice(src.indexOf("notification_event_copy"));
+    return [...body.matchAll(/\(\s*'([a-z_]+\.[a-z_]+)'\s*,/g)].map((m) => m[1]);
+  };
+  const driftEvents = (): string[] => {
+    const src = load("scripts/verifySourceDeploymentDrift.mjs").code;
+    const block = src.slice(src.indexOf("const EVENTS = ["), src.indexOf("];", src.indexOf("const EVENTS = [")));
+    return [...block.matchAll(/'([a-z_]+\.[a-z_]+)'/g)].map((m) => m[1]);
+  };
+
+  it("the scan set is nonempty (this test must not pass by finding nothing)", () => {
+    expect(catalogEvents().length).toBeGreaterThanOrEqual(8);
+    expect(driftEvents().length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("every event in the catalog is reconciled by the drift verifier", () => {
+    const missing = catalogEvents().filter((e) => !driftEvents().includes(e));
+    expect(missing, `catalog events absent from verifySourceDeploymentDrift EVENTS: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("the drift verifier names no event the catalog does not define", () => {
+    // A probe key deliberately absent from the catalog is the negative control and is excluded.
+    const stray = driftEvents().filter((e) => !catalogEvents().includes(e) && !e.startsWith("aw_probe"));
+    expect(stray, `EVENTS names events the catalog does not define: ${stray.join(", ")}`).toEqual([]);
+  });
+});
