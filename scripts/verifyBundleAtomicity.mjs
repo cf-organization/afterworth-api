@@ -157,6 +157,14 @@ const WITNESS = {
    */
   'db/bundles/halt_notification_bundle.sql':
     "select exists (select 1 from public.notification_event_copy('death_process.halted'))",
+  /**
+   * ★ PHASE 11-MB. This artifact ships exactly one NEW name, so the witness IS the whole payload: if
+   * the routine resolves the bundle applied, and if it does not the bundle left nothing behind. Unlike
+   * 11-L this discriminates properly — the name does not exist at baseline, so `applies` and `rollback`
+   * are both real observations rather than NO_STATE_DELTA.
+   */
+  'db/bundles/fiduciary_discovery_bundle.sql':
+    "select to_regprocedure('public.get_my_fiduciary_estates()') is not null",
 };
 
 const witnessTrue = (q) => {

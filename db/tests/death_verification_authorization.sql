@@ -1028,3 +1028,257 @@ begin
   raise notice ' ';
   raise notice 'ALL DEATH VERIFICATION ASSERTIONS PASSED';
 end $dv$;
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- PHASE 11-MB · FIDUCIARY ESTATE DISCOVERY — DISCOVERY MOVES, DISCLOSURE DOES NOT
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- The whole reason `get_my_fiduciary_estates()` exists is that a designation was undiscoverable, so
+-- provisioning manufactured a beneficiary membership to make the estate appear in the selector. This
+-- stage proves the replacement carries ONLY discovery: the same person, before and after a designation,
+-- with every disclosure projection compared BYTE-IDENTICALLY and the two things that must move proven
+-- to move. Both halves are mandatory — a negative control with no positive control cannot distinguish
+-- "nothing leaked" from "the instrument sees nothing".
+do $mb$
+declare
+  OWNER_F uuid; BENE_F uuid; DELE_F uuid; FID_F uuid; STRANGER_F uuid; F uuid;
+  OWNER_Z uuid; FID_Z uuid; Z uuid;
+  before_disc jsonb; after_disc jsonb; bene_before jsonb; bene_after jsonb;
+  n int; v_cap text; v_name text; v_res text; v_keys text;
+begin
+  raise notice ' ';
+  raise notice '11-MB · fiduciary estate discovery';
+
+  insert into auth.users default values returning id into OWNER_F;
+  insert into auth.users default values returning id into BENE_F;
+  insert into auth.users default values returning id into DELE_F;
+  insert into auth.users default values returning id into FID_F;
+  insert into auth.users default values returning id into STRANGER_F;
+  insert into public.estates (owner_id, name) values (OWNER_F, 'MB Estate F') returning id into F;
+  insert into public.estate_memberships (estate_id, user_id, role, status) values
+    (F, OWNER_F, 'primary_user', 'approved'),
+    (F, BENE_F,  'beneficiary',  'approved'),
+    (F, DELE_F,  'professional_delegate', 'approved');
+  -- A FURNISHED estate: the disclosure comparison must run against real content, or "unchanged"
+  -- would be a statement about an empty estate rather than about the firewall.
+  -- Furnished exactly the way this suite already furnishes estate X, so the composed payload carries
+  -- REAL disclosure. An all-error or all-empty payload satisfies byte-equivalence vacuously.
+  insert into public.normalized_assets (estate_id, connection_id, institution_name, asset_group, balance_cents, currency)
+  values (F, gen_random_uuid(), 'MB Northbank', 'cashBank', 3300000, 'USD');
+  insert into public.documents (estate_id, title) values (F, 'MB will');
+  perform harness_dv.grant_inventory(F, OWNER_F, BENE_F, 'beneficiary', 'category_summary', 'immediately');
+
+  -- ── CONTROL: the routine exists and answers EMPTY for someone with no designation ──────────────
+  -- An absent routine and an empty answer are different facts. PGRST202/42883 would surface here as a
+  -- raised error, so reaching a count at all proves the routine is present.
+  perform set_config('request.jwt.claim.sub', FID_F::text, true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates();
+  reset role;
+  if n <> 0 then
+    raise exception 'FAIL[control]: a user with no designation already enumerates % fiduciary estate(s)', n;
+  end if;
+  raise notice '  ok   CONTROL: the routine is present and answers EMPTY for a non-designee';
+
+  -- ── BASELINE, captured before any designation exists ──────────────────────────────────────────
+  -- ★ THE ALIAS IS `fe`, NOT `f`. A single-letter alias collides with this block's `F` estate
+  -- variable and PL/pgSQL refuses the ambiguity outright — the same trap the release-safety suite
+  -- records against `c`. Loud, and worth keeping loud.
+  before_disc := harness_dv.composed(FID_F, F);
+  bene_before := harness_dv.composed(BENE_F, F);
+  perform set_config('request.jwt.claim.sub', FID_F::text, true);
+  set local role authenticated;
+  select (public.get_executor_workspace(F) ->> 'authorized') into v_res;
+  reset role;
+  if v_res <> 'false' then
+    raise exception 'FAIL[baseline]: executor workspace already authorized before any designation (%)', v_res;
+  end if;
+
+  -- ── THE ONLY CHANGE: ONE ACTIVE DESIGNATION. No membership, no grant, no beneficiary row. ─────
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (F, FID_F, 'executor', 'active');
+
+  -- ── POSITIVE CONTROL: discovery and workflow MUST move ────────────────────────────────────────
+  perform set_config('request.jwt.claim.sub', FID_F::text, true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates();
+  select fe.estate_display_name, fe.capacity into v_name, v_cap
+    from public.get_my_fiduciary_estates() fe where fe.estate_id = F;
+  select (public.get_executor_workspace(F) ->> 'authorized') into v_res;
+  reset role;
+  if n <> 1 then
+    raise exception 'FAIL[positive control]: designation granted but discovery returns % row(s)', n;
+  end if;
+  if v_cap <> 'executor' then
+    raise exception 'FAIL: discovery reports capacity % for an executor designation', v_cap;
+  end if;
+  if v_name is distinct from 'MB Estate F' then
+    raise exception 'FAIL: discovery reports display name % (expected the estate name)', v_name;
+  end if;
+  if v_res <> 'true' then
+    raise exception 'FAIL[positive control]: designation granted but executor workspace answers %', v_res;
+  end if;
+  raise notice '  ok   POSITIVE CONTROL: discovery lists the estate once and the workspace authorizes';
+
+  -- ── NEGATIVE CONTROL: every disclosure projection BYTE-IDENTICAL ──────────────────────────────
+  after_disc := harness_dv.composed(FID_F, F);
+  if after_disc is distinct from before_disc then
+    raise exception 'FAIL: a designation moved the composed disclosure payload — discovery became '
+      'disclosure. before=% after=%', before_disc, after_disc;
+  end if;
+  raise notice '  ok   NEGATIVE CONTROL: discovery/assets/net worth/documents/tier BYTE-IDENTICAL';
+
+  -- The independently-held beneficiary must be untouched too: granting someone else a designation
+  -- may not perturb a third party's disclosure.
+  bene_after := harness_dv.composed(BENE_F, F);
+  if bene_after is distinct from bene_before then
+    raise exception 'FAIL: granting FID a designation changed the BENEFICIARY''s disclosure payload';
+  end if;
+  raise notice '  ok   an independent beneficiary''s disclosure is unchanged by another''s designation';
+
+  -- ── NO MEMBERSHIP WAS MANUFACTURED ────────────────────────────────────────────────────────────
+  if exists (select 1 from public.estate_memberships m where m.estate_id = F and m.user_id = FID_F) then
+    raise exception 'FAIL: a designation produced an estate_memberships row';
+  end if;
+  if exists (select 1 from public.access_grants g where g.estate_id = F and g.grantee_user_id = FID_F) then
+    raise exception 'FAIL: a designation produced an access grant';
+  end if;
+  raise notice '  ok   the designation created NO membership and NO grant';
+
+  -- ── AUTHORIZATION MATRIX: only the caller's OWN active designations ───────────────────────────
+  insert into auth.users default values returning id into OWNER_Z;
+  insert into auth.users default values returning id into FID_Z;
+  insert into public.estates (owner_id, name) values (OWNER_Z, 'MB Estate Z') returning id into Z;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (Z, OWNER_Z, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (Z, FID_Z, 'executor', 'active');
+
+  for v_res, v_keys in
+    select t.probe_uid::text, t.probe_cause
+      from (values
+        (OWNER_F,    'the estate OWNER, who holds no designation'),
+        (BENE_F,     'a beneficiary'),
+        (DELE_F,     'a professional delegate'),
+        (STRANGER_F, 'a non-member')
+      ) t(probe_uid, probe_cause)
+  loop
+    perform set_config('request.jwt.claim.sub', v_res, true);
+    set local role authenticated;
+    select count(*) into n from public.get_my_fiduciary_estates();
+    reset role;
+    if n <> 0 then
+      raise exception 'FAIL: % enumerated % fiduciary estate(s)', v_keys, n;
+    end if;
+  end loop;
+  raise notice '  ok   owner, beneficiary, delegate and stranger each enumerate NOTHING';
+
+  -- Cross-estate isolation: FID_Z sees only Z, FID_F only F. Neither learns of the other.
+  perform set_config('request.jwt.claim.sub', FID_Z::text, true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates() fe where fe.estate_id = F;
+  reset role;
+  if n <> 0 then
+    raise exception 'FAIL: a foreign designee enumerated another estate''s fiduciary relationship';
+  end if;
+  perform set_config('request.jwt.claim.sub', FID_F::text, true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates();
+  reset role;
+  if n <> 1 then
+    raise exception 'FAIL: cross-estate isolation broke FID_F''s own enumeration (% rows)', n;
+  end if;
+  raise notice '  ok   cross-estate isolated: each designee enumerates only their own estate';
+
+  -- ── TWO INDEPENDENT REFUSALS FOR AN UNIDENTIFIED CALLER, ASSERTED SEPARATELY ──────────────────
+  --
+  -- ★ THE FIRST VERSION OF THIS CONFLATED THEM AND FAILED. `harness_dv.attempt(null, …)` runs as role
+  -- `authenticated` with no `sub`, so it exercises the PREDICATE layer, not the GRANT layer — the call
+  -- legitimately SUCCEEDS and returns zero rows. Asserting "it must error" was asserting the wrong
+  -- layer, and passing would have meant the predicate was broken.
+  --
+  -- Layer 1 — the GRANT: role `anon` holds no EXECUTE at all.
+  begin
+    set local role anon;
+    perform count(*) from public.get_my_fiduciary_estates();
+    reset role;
+    raise exception 'FAIL: role anon holds EXECUTE on get_my_fiduciary_estates';
+  exception
+    when insufficient_privilege then
+      reset role;
+      raise notice '  ok   layer 1 — role anon: permission denied (no EXECUTE)';
+  end;
+
+  -- Layer 2 — the PREDICATE: an authenticated session with no identity matches nothing. This is what
+  -- would still hold if a grant were ever widened by mistake, which is why it is asserted on its own.
+  perform set_config('request.jwt.claim.sub', '', true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates();
+  reset role;
+  if n <> 0 then
+    raise exception 'FAIL: an authenticated caller with NO identity enumerated % estate(s)', n;
+  end if;
+  raise notice '  ok   layer 2 — authenticated with no auth.uid(): EMPTY, not an error';
+
+  -- ── REVOKED DESIGNATION DISAPPEARS ────────────────────────────────────────────────────────────
+  update public.estate_designations set status = 'revoked'
+   where estate_id = F and user_id = FID_F;
+  perform set_config('request.jwt.claim.sub', FID_F::text, true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates();
+  select (public.get_executor_workspace(F) ->> 'authorized') into v_res;
+  reset role;
+  if n <> 0 then
+    raise exception 'FAIL: a REVOKED designation is still enumerated (% rows)', n;
+  end if;
+  if v_res <> 'false' then
+    raise exception 'FAIL: a revoked designee still holds the executor workspace (%)', v_res;
+  end if;
+  raise notice '  ok   a revoked designation vanishes from discovery AND from the workspace';
+
+  -- ── DUAL CAPACITY ON ONE ESTATE STILL YIELDS ONE ROW ──────────────────────────────────────────
+  -- A person may hold executor AND trustee (the unique index is per designation_type). Without the
+  -- aggregate the selector would show the estate twice. The capacity must match the tiebreak
+  -- `initiate_death_verification_case` uses, or the case history and the screen disagree.
+  update public.estate_designations set status = 'active'
+   where estate_id = F and user_id = FID_F;
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (F, FID_F, 'trustee', 'active');
+  perform set_config('request.jwt.claim.sub', FID_F::text, true);
+  set local role authenticated;
+  select count(*) into n from public.get_my_fiduciary_estates();
+  select fe.capacity into v_cap from public.get_my_fiduciary_estates() fe where fe.estate_id = F;
+  reset role;
+  if n <> 1 then
+    raise exception 'FAIL: executor+trustee on one estate enumerates % rows (expected 1)', n;
+  end if;
+  if v_cap <> 'executor' then
+    raise exception 'FAIL: dual capacity reports % — it must match initiate''s order-by tiebreak', v_cap;
+  end if;
+  raise notice '  ok   executor+trustee on one estate yields ONE row, capacity executor (matches initiate)';
+
+  -- ── THE PAYLOAD CARRIES NOTHING BUT DISCOVERY ─────────────────────────────────────────────────
+  -- Asserted against the RESOLVED column list, so a future added column fails here rather than
+  -- shipping. Three columns, named.
+  select string_agg(a.attname, ',' order by a.attnum) into v_keys
+    from pg_proc p
+    join pg_namespace ns on ns.oid = p.pronamespace
+    join unnest(p.proargnames) with ordinality as a(attname, attnum) on true
+   where ns.nspname = 'public' and p.proname = 'get_my_fiduciary_estates';
+  if v_keys is distinct from 'estate_id,estate_display_name,capacity' then
+    raise exception 'FAIL: the discovery payload column set changed to [%] — a new column must be '
+      'reviewed as a disclosure decision, not added silently', v_keys;
+  end if;
+  raise notice '  ok   payload is exactly (estate_id, estate_display_name, capacity)';
+
+  -- ── NO CALLER PARAMETER ───────────────────────────────────────────────────────────────────────
+  if (select count(*) from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+       where ns.nspname = 'public' and p.proname = 'get_my_fiduciary_estates' and p.pronargs = 0) <> 1 then
+    raise exception 'FAIL: get_my_fiduciary_estates takes an argument — a caller could enumerate '
+      'another person''s fiduciary relationships';
+  end if;
+  raise notice '  ok   zero arguments: auth.uid() is the only subject';
+
+  raise notice ' ';
+  raise notice 'ALL 11-MB FIDUCIARY DISCOVERY ASSERTIONS PASSED';
+end $mb$;

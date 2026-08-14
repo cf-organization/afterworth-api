@@ -46,7 +46,13 @@ describe("0 · the audit is reading something", () => {
     // live in the lifecycle and death bundles, and re-pasting either of those to ship one catalog
     // row and one `perform` would put 140KB+ of unrelated DDL back through a hand-paste. A small
     // artifact is the cheaper thing to review and the cheaper thing to roll back.
-    expect(artifacts.length).toBe(8);
+    //
+    // ★ 11-MB IS THE 9th, AND ITS SIZE IS THE ARGUMENT FOR IT. One read-only routine, one part, no
+    // migration — because the PROVISIONING correction it enables must NOT ship in the same paste. The
+    // corrected provisioning would leave a newly designated fiduciary with no membership and an estate
+    // the mobile selector cannot find, so discovery has to be deployed and consumed FIRST. Keeping the
+    // two in separate artifacts is what makes that ordering enforceable rather than remembered.
+    expect(artifacts.length).toBe(9);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

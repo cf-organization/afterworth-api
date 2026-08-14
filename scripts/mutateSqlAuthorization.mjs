@@ -1469,6 +1469,56 @@ const MUTATIONS = Object.freeze([
     from: "   where estate_id = p_estate and status = 'open'\n  returning initiated_by into v_initiator;",
     to: "   where status = 'open'\n  returning initiated_by into v_initiator;",
   },
+
+  /* ══ PHASE 11-MB · fiduciary estate discovery ═════════════════════════════════════════════════ */
+  {
+    id: 'p11mb-discovery-enumerates-other-users',
+    why: 'THE ROUTINE BECOMES A MAP OF WHO IS EXECUTOR OF WHAT. Dropping the auth.uid() predicate lets '
+      + 'any authenticated caller enumerate every fiduciary relationship in the product — a question '
+      + 'this product refuses everywhere else, answered in one call.',
+    file: 'db/functions/fiduciary_estate_discovery.sql',
+    from: "   where d.user_id = auth.uid()\n     and d.status = 'active'",
+    to: "   where d.status = 'active'",
+  },
+  {
+    id: 'p11mb-revoked-designation-enumerated',
+    why: 'A REVOKED FIDUCIARY KEEPS THE ESTATE IN THEIR SELECTOR. Their workspace correctly refuses, so '
+      + 'the estate would appear and then answer "not available" — and worse, an owner who revoked a '
+      + 'designee to stop them would still see them holding the estate in their list.',
+    file: 'db/functions/fiduciary_estate_discovery.sql',
+    from: "     and d.status = 'active'\n     and d.designation_type in ('executor', 'trustee')",
+    to: "     and d.designation_type in ('executor', 'trustee')",
+  },
+  {
+    id: 'p11mb-discovery-leaks-estate-contents',
+    why: 'DISCOVERY BECOMES DISCLOSURE. Adding an asset count tells a fiduciary — who holds NO grant, '
+      + 'no tier and no membership — how much is in the estate. That is the precise line this routine '
+      + 'exists on the safe side of, and a count is disclosure just as much as a value is.',
+    file: 'db/functions/fiduciary_estate_discovery.sql',
+    from: "  select d.estate_id,\n         e.name,\n         min(d.designation_type)",
+    to: "  select d.estate_id,\n         e.name,\n         min(d.designation_type) || ' · assets=' || (select count(*) from public.normalized_assets na where na.estate_id = d.estate_id)::text",
+  },
+  {
+    id: 'p11mb-discovery-granted-to-anon',
+    why: 'THE FIRST OF TWO REFUSAL LAYERS, REMOVED. auth.uid() is NULL for anon so the predicate still '
+      + 'matches nothing — which is exactly why the grant must be asserted SEPARATELY. A widened grant '
+      + 'with an intact predicate leaks nothing today and everything the day the predicate changes.\n'
+      + '      ★ EXPRESSED AS AN ADDITIVE GRANT, not a replaced revoke, so the artifact control still '
+      + 'finds both privilege lines and the mutation reaches Postgres. A later widening is also the '
+      + 'more realistic shape of this defect than someone deleting the revoke.',
+    file: 'db/functions/fiduciary_estate_discovery.sql',
+    from: "grant  execute on function public.get_my_fiduciary_estates() to authenticated;",
+    to: "grant  execute on function public.get_my_fiduciary_estates() to authenticated;\ngrant  execute on function public.get_my_fiduciary_estates() to anon;",
+  },
+  {
+    id: 'p11mb-dual-capacity-duplicates-estate',
+    why: 'ONE ESTATE, TWO SELECTOR ROWS. A person holding executor AND trustee on one estate is '
+      + 'representable (the unique index is per designation_type), so without the aggregate the estate '
+      + 'is listed twice — two rows, two cache keys, two accessibility announcements for one estate.',
+    file: 'db/functions/fiduciary_estate_discovery.sql',
+    from: "   group by d.estate_id, e.name;",
+    to: ";",
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
