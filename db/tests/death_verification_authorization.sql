@@ -1592,3 +1592,172 @@ begin
   raise notice ' ';
   raise notice 'ALL 11-MC PROVISIONING ASSERTIONS PASSED';
 end $mc$;
+
+-- ══════════════════════════════════════════════════════════════════════════════════════════════════
+-- §11-MF · THE CANCEL HANDLE IS REACHABLE, AND THE ADVISORY LIST STOPS OVER-PROMISING
+--
+-- ★ TWO DEFECTS, ONE ROOT: the workspace answered questions about a case without ever naming it.
+--
+--   1. `cancel_death_verification_case(p_case uuid)` takes a CASE id. The only routine that ever gave
+--      a fiduciary one was `initiate`, as its return value. Every READ omitted it — so an initiator
+--      who restarted the app could never cancel the process they started, and no product path could
+--      recover the handle. Initiation without cancellation, from the user's side.
+--
+--   2. `attach_evidence` and `cancel_verification` were emitted as ONE literal, but they do not share
+--      a gate: attach needs any active executor, cancel needs `initiated_by = auth.uid()`. So a
+--      co-fiduciary was offered a cancel the door refuses.
+--
+-- ★ THE LOAD-BEARING ASSERTION IS E · the initiator cancels using the id READ FROM THE WORKSPACE,
+--   never from `initiate`'s return value. That is the defect reproduced and closed; every other
+--   assertion here is scaffolding for it.
+-- ══════════════════════════════════════════════════════════════════════════════════════════════════
+do $mf$
+declare
+  OWNER_F2 uuid; EXEC_A uuid; EXEC_B uuid; F2 uuid;
+  v_case uuid; v_read_case uuid; v_res text; v_json jsonb; v_json_b jsonb;
+begin
+  raise notice ' ';
+  raise notice '11-MF · cancel handle reachable + advisory list scoped';
+
+  -- ── CONTROL: the corrected routine is loaded, or every assertion below is about the wrong body ──
+  if (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname='public' and p.proname='get_executor_workspace') not like '%v_is_initiator%' then
+    raise exception 'FAIL[control]: the loaded get_executor_workspace is the PRE-correction body';
+  end if;
+  raise notice '  ok   CONTROL: the corrected workspace routine is loaded';
+
+  insert into auth.users default values returning id into OWNER_F2;
+  insert into auth.users default values returning id into EXEC_A;
+  insert into auth.users default values returning id into EXEC_B;
+  insert into public.estates (owner_id, name) values (OWNER_F2, 'MF Estate') returning id into F2;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (F2, OWNER_F2, 'primary_user', 'approved');
+
+  -- TWO active executors on one estate. This is the fixture the old code could not distinguish.
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (F2, EXEC_A, 'executor', 'active'), (F2, EXEC_B, 'executor', 'active');
+
+  -- ═══ A · NO CASE ⇒ NO HANDLE, NO INITIATOR CLAIM, NO CANCEL OFFER ═══════════════════════════════
+  perform set_config('request.jwt.claim.sub', EXEC_A::text, true);
+  set local role authenticated;
+  select public.get_executor_workspace(F2) into v_json;
+  reset role;
+
+  if (v_json -> 'verification' -> 'case_id') is distinct from 'null'::jsonb then
+    raise exception 'FAIL: a case_id was published with no case in existence';
+  end if;
+  if (v_json -> 'verification' ->> 'is_initiator') <> 'false' then
+    raise exception 'FAIL: is_initiator is not fail-closed when no case exists';
+  end if;
+  if v_json -> 'actions' @> '["cancel_verification"]'::jsonb then
+    raise exception 'FAIL: cancel offered with no case';
+  end if;
+  -- Positive control: the instrument CAN see this array, so the absence above means something.
+  if not (v_json -> 'actions' @> '["initiate_verification"]'::jsonb) then
+    raise exception 'FAIL[positive control]: initiate_verification absent — the actions list is not '
+      'being read at all, so every absence assertion here is vacuous';
+  end if;
+  raise notice '  ok   no case: case_id null, is_initiator false, no cancel offer (initiate IS offered)';
+
+  -- ═══ B · THE INITIATOR GETS THE HANDLE AND THE OFFER ════════════════════════════════════════════
+  perform set_config('request.jwt.claim.sub', EXEC_A::text, true);
+  set local role authenticated;
+  select public.initiate_death_verification_case(F2) into v_case;
+  select public.get_executor_workspace(F2) into v_json;
+  reset role;
+
+  if v_case is null then
+    raise exception 'FAIL[precondition]: initiation returned no case';
+  end if;
+  select (v_json -> 'verification' ->> 'case_id')::uuid into v_read_case;
+  if v_read_case is distinct from v_case then
+    raise exception 'FAIL: the workspace case_id (%) does not match the initiated case (%)',
+      v_read_case, v_case;
+  end if;
+  if (v_json -> 'verification' ->> 'is_initiator') <> 'true' then
+    raise exception 'FAIL: the initiator is not told they are the initiator';
+  end if;
+  if not (v_json -> 'actions' @> '["cancel_verification"]'::jsonb) then
+    raise exception 'FAIL: the initiator is not offered cancel';
+  end if;
+  if not (v_json -> 'actions' @> '["attach_evidence"]'::jsonb) then
+    raise exception 'FAIL: the initiator is not offered attach';
+  end if;
+  raise notice '  ok   initiator: case_id matches, is_initiator true, cancel + attach offered';
+
+  -- ═══ C · THE CO-EXECUTOR GETS ATTACH BUT NOT CANCEL, AND NO HANDLE ══════════════════════════════
+  perform set_config('request.jwt.claim.sub', EXEC_B::text, true);
+  set local role authenticated;
+  select public.get_executor_workspace(F2) into v_json_b;
+  reset role;
+
+  if (v_json_b ->> 'authorized') <> 'true' then
+    raise exception 'FAIL[precondition]: the co-executor is not authorized, so C proves nothing';
+  end if;
+  if v_json_b -> 'actions' @> '["cancel_verification"]'::jsonb then
+    raise exception 'FAIL: a NON-INITIATOR was offered cancel — the over-promise is back';
+  end if;
+  if not (v_json_b -> 'actions' @> '["attach_evidence"]'::jsonb) then
+    raise exception 'FAIL: the co-executor lost attach — the two gates were conflated in the other '
+      'direction, which is a regression, not a fix';
+  end if;
+  if (v_json_b -> 'verification' -> 'case_id') is distinct from 'null'::jsonb then
+    raise exception 'FAIL: a non-initiator was handed the case handle';
+  end if;
+  if (v_json_b -> 'verification' ->> 'is_initiator') <> 'false' then
+    raise exception 'FAIL: a non-initiator is told they initiated';
+  end if;
+  -- The co-executor still learns the case EXISTS. That is unchanged and deliberate.
+  if (v_json_b -> 'verification' ->> 'state') <> 'open' then
+    raise exception 'FAIL[precondition]: the co-executor cannot see the case state, so the scoping '
+      'assertions above are measuring a refusal rather than a scoped payload';
+  end if;
+  raise notice '  ok   co-executor: attach offered, cancel NOT offered, no handle, state still visible';
+
+  -- ═══ D · NO THIRD-PARTY IDENTITY LEAKS THROUGH THE NEW FIELDS ═══════════════════════════════════
+  if v_json_b::text like '%' || EXEC_A::text || '%' then
+    raise exception 'FAIL: the initiator''s uid appears in the co-executor''s payload';
+  end if;
+  if v_json_b::text like '%' || OWNER_F2::text || '%' then
+    raise exception 'FAIL: the owner''s uid appears in the co-executor''s payload';
+  end if;
+  raise notice '  ok   no third-party uid in the co-executor payload';
+
+  -- ═══ E · ★ THE DEFECT, CLOSED: CANCEL FROM A READ HANDLE ════════════════════════════════════════
+  -- Deliberately uses v_read_case — the id obtained from get_executor_workspace — NOT v_case from
+  -- initiate. Before this change v_read_case did not exist, so this statement was unwritable.
+  v_res := harness_dv.attempt(EXEC_A, format('select public.cancel_death_verification_case(%L)', v_read_case));
+  if v_res <> 'OK' then
+    raise exception 'FAIL: the initiator could not cancel using the handle the workspace published: %', v_res;
+  end if;
+  raise notice '  ok   ★ initiator cancelled using the WORKSPACE-published handle, not initiate''s return';
+
+  -- ═══ F · THE DOOR IS STILL THE BOUNDARY, NOT THE LIST ═══════════════════════════════════════════
+  -- Re-open, then prove the co-executor is refused even holding the real id. Scoping the advisory list
+  -- must not be mistaken for the security control; if the list were the only defence, this passes while
+  -- the system is wide open.
+  perform set_config('request.jwt.claim.sub', EXEC_A::text, true);
+  set local role authenticated;
+  select public.initiate_death_verification_case(F2) into v_case;
+  reset role;
+
+  v_res := harness_dv.attempt(EXEC_B, format('select public.cancel_death_verification_case(%L)', v_case));
+  if v_res not like 'ERR:%not_authorized%' then
+    raise exception 'FAIL: a non-initiator holding the real case id was not refused by the door: %', v_res;
+  end if;
+  raise notice '  ok   the door refuses a non-initiator holding the real id (list is advisory only)';
+
+  -- Restore: leave no open case behind, exactly as the fixture-integrity section expects.
+  v_res := harness_dv.attempt(EXEC_A, format('select public.cancel_death_verification_case(%L)', v_case));
+  if v_res <> 'OK' then
+    raise exception 'FAIL[teardown]: could not cancel the re-opened case: %', v_res;
+  end if;
+  if exists (select 1 from public.death_verification_cases c
+              where c.estate_id = F2 and c.status = 'open') then
+    raise exception 'FAIL[teardown]: an open case survived §11-MF';
+  end if;
+  raise notice '  ok   no open case left behind';
+
+  raise notice ' ';
+  raise notice 'ALL 11-MF ASSERTIONS PASSED';
+end $mf$;

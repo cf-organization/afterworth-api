@@ -1576,6 +1576,44 @@ const MUTATIONS = Object.freeze([
     from: '      (estate_id, user_id, designation_type, status, source_invitation_id, granted_by)',
     to: '      (estate_id, user_id, designation_type, status, granted_by)',
   },
+  /* ── §11-MF · the cancel handle and the advisory-list scoping ──────────────────────────────── */
+  {
+    id: 'mf-cancel-refused-to-initiator-only-undone',
+    why: 'The over-promise restored: attach and cancel emitted as ONE literal again. They do not '
+      + 'share a gate — attach needs any active executor, cancel needs initiated_by = auth.uid() — '
+      + 'so a co-fiduciary is offered a cancel the door refuses. Requires the TWO-executor fixture; '
+      + 'with one executor the initiator IS every executor and this survives.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "  if v_case_state = 'open' and v_is_initiator then\n    v_actions := v_actions || '[\"cancel_verification\"]'::jsonb;\n  end if;",
+    to: "  if v_case_state = 'open' then\n    v_actions := v_actions || '[\"cancel_verification\"]'::jsonb;\n  end if;",
+  },
+  {
+    id: 'mf-case-handle-unscoped',
+    why: 'The case handle published to every executor rather than the one who can use it. Proves the '
+      + 'scoping is asserted, not incidental.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "      'case_id',        case when v_is_initiator then v_case.case_id else null end,",
+    to: "      'case_id',        v_case.case_id,",
+  },
+  {
+    id: 'mf-case-handle-withheld',
+    why: 'The defect itself: the workspace answers questions about a case without naming it, so '
+      + 'cancel_death_verification_case(p_case) is unreachable from any read and an initiator who '
+      + 'restarts the app can never cancel. Killed by the assertion that cancels using the '
+      + 'WORKSPACE-published handle rather than initiate\'s return value.',
+    file: 'db/functions/executor_workspace.sql',
+    from: "      'case_id',        case when v_is_initiator then v_case.case_id else null end,",
+    to: "      'case_id',        null,",
+  },
+  {
+    id: 'mf-is-initiator-fails-open',
+    why: 'Absence read as authority: no case becomes "you initiated it". A fail-open default on a '
+      + 'caller-scoped authority fact is how a cancel affordance appears for a process that does '
+      + 'not exist.',
+    file: 'db/functions/executor_workspace.sql',
+    from: '  v_is_initiator := coalesce(v_case.is_initiator, false);',
+    to: '  v_is_initiator := coalesce(v_case.is_initiator, true);',
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;

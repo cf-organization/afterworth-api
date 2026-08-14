@@ -77,6 +77,8 @@ declare
   v_required   text;
   v_actions    jsonb := '[]'::jsonb;
   v_case_state text;
+  -- Caller-scoped: "did YOU start this", never "who did". Fail-closed default.
+  v_is_initiator boolean := false;
 begin
   -- ★ THE GATE IS THE FIRST STATEMENT. Nothing above this line reads estate data.
   if v_uid is null then
@@ -99,8 +101,23 @@ begin
   v_lifecycle := public.estate_lifecycle_state(p_estate);
   v_required  := public.preview_required_verification_level(p_estate);
 
-  -- The estate's one live verification case. Identity of the initiator is NOT selected.
-  select c.status, c.required_level_at_initiation, c.attained_level, c.created_at, c.decided_at
+  /**
+   * The estate's one live verification case.
+   *
+   * ★ THE CASE ID IS SELECTED, AND UNTIL PHASE 11-MF IT WAS NOT — WHICH MADE CANCELLATION
+   * UNREACHABLE. `cancel_death_verification_case(p_case uuid)` takes a CASE id. The only routine that
+   * ever handed a fiduciary one was `initiate`, as its return value. Every read surface omitted it, so
+   * an initiator who restarted the app, force-quit, crashed, or picked up a second device could never
+   * cancel the process they had started — and no product path could recover the handle. That is
+   * initiation without cancellation, from the user's side.
+   *
+   * ★ `initiated_by` IS SELECTED FOR ONE CALLER-SCOPED BOOLEAN, NOT FOR DISCLOSURE. The comment this
+   * replaces said "Identity of the initiator is NOT selected", and that instinct was right: a
+   * co-fiduciary's identity is not this caller's to read. So the uid is compared and discarded —
+   * `is_initiator` answers only "did YOU start this", never "who did".
+   */
+  select c.status, c.required_level_at_initiation, c.attained_level, c.created_at, c.decided_at,
+         c.id as case_id, (c.initiated_by = v_uid) as is_initiator
     into v_case
     from public.death_verification_cases c
    where c.estate_id = p_estate
@@ -108,6 +125,8 @@ begin
    limit 1;
 
   v_case_state := coalesce(v_case.status, 'none');
+  -- No case ⇒ not the initiator. Fail closed: absence must never read as authority.
+  v_is_initiator := coalesce(v_case.is_initiator, false);
 
   -- The caller's OWN claim packet.
   select k.status, k.submitted_at, k.decided_at
@@ -122,12 +141,26 @@ begin
    * ★ ACTIONS ARE DERIVED FROM THE SAME AUTHORITIES THE MUTATIONS ENFORCE, so the list cannot
    * promise something the door would refuse. It is advisory, never an authorization: every action
    * below is re-checked by the routine that performs it.
+   *
+   * ★ THAT CLAIM WAS FALSE FOR `cancel_verification` UNTIL PHASE 11-MF, AND THE ASYMMETRY IS THE
+   * POINT. The two open-case actions do NOT share a gate:
+   *
+   *   attach_death_verification_evidence — is_estate_executor + case open.      ANY active executor.
+   *   cancel_death_verification_case     — is_estate_executor + initiated_by = auth.uid().  INITIATOR.
+   *
+   * They were emitted together as one literal, so a co-fiduciary who did not start the process was
+   * offered a cancel the door refuses with `not_authorized`. A list that over-promises is worse than no
+   * list: a client that trusts it renders a control that always fails, and a client that distrusts it
+   * has no reason to consult it at all.
    */
   if v_case_state <> 'open' and v_lifecycle = 'active' then
     v_actions := v_actions || '["initiate_verification"]'::jsonb;
   end if;
   if v_case_state = 'open' then
-    v_actions := v_actions || '["attach_evidence","cancel_verification"]'::jsonb;
+    v_actions := v_actions || '["attach_evidence"]'::jsonb;
+  end if;
+  if v_case_state = 'open' and v_is_initiator then
+    v_actions := v_actions || '["cancel_verification"]'::jsonb;
   end if;
   if v_claim.status is null then
     v_actions := v_actions || '["submit_claim"]'::jsonb;
@@ -137,6 +170,18 @@ begin
     'authorized', true,
     'capacity',   v_capacity,
     'verification', jsonb_build_object(
+      /**
+       * ★ THE HANDLE CANCELLATION NEEDS, SCOPED TO THE ONE CALLER WHO CAN USE IT.
+       *
+       * Null unless this caller initiated the open case. A co-fiduciary already learns the case's
+       * state, level and timestamps here, so the uuid carries no further estate content — but they
+       * cannot cancel, so handing them the handle would serve nothing and widen the surface for
+       * nothing. `attach_evidence` is an any-executor action that will need this id too; extending it
+       * is a deliberate decision for the phase that binds attach, not a default granted in advance.
+       */
+      'case_id',        case when v_is_initiator then v_case.case_id else null end,
+      /** Caller-scoped fact about THEMSELVES. Never names the initiator. */
+      'is_initiator',   v_is_initiator,
       'state',          v_case_state,
       'required_level', v_required,
       -- The bar recorded when the case opened, which may differ from today's policy.
