@@ -81,6 +81,10 @@ export const SQL_SUITE_PARTS = Object.freeze([
   'db/functions/required_verification_level.sql',
   'db/functions/preview_required_verification_level.sql',
   'db/functions/executor_workspace.sql',
+  // ★ PHASE 11-MB. Loaded as source for the same reason as its neighbours above: it is offered for
+  // deployment in its own artifact, and the suite needs the routine present to assert that DISCOVERY
+  // moves while every disclosure projection does not.
+  'db/functions/fiduciary_estate_discovery.sql',
   'db/tests/estate_assets_authorization.sql',
   'db/tests/estate_discovery_authorization.sql',
   'db/tests/estate_readiness_authorization.sql',
@@ -124,6 +128,9 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildOperatorConsoleBundle.mjs', 'db/bundles/operator_console_bundle.sql'],
   // ★ PHASE 11-L. Registered so the atomicity verifier and every rebuild-before-trust step cover it.
   ['scripts/buildHaltNotificationBundle.mjs', 'db/bundles/halt_notification_bundle.sql'],
+  // ★ PHASE 11-MB. One read-only routine; registered so the atomicity verifier and every
+  // rebuild-before-trust step cover it.
+  ['scripts/buildFiduciaryDiscoveryBundle.mjs', 'db/bundles/fiduciary_discovery_bundle.sql'],
 ]);
 
 /**
