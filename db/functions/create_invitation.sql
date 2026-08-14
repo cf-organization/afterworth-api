@@ -28,10 +28,36 @@ begin
     raise exception 'invitee_contact_required' using errcode = 'P0001';
   end if;
 
-  -- kind allows all four; executor/trustee take the GENERIC 'beneficiary' access-class membership (derive it).
   if p_kind not in ('beneficiary','professional_delegate','executor','trustee') then
     raise exception 'kind_not_supported' using errcode = 'P0001';
   end if;
+  -- ════════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ PHASE 11-MC — THIS LINE STAYS, AND IT IS NOW INERT. BOTH HALVES OF THAT MATTER.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- WHY IT CANNOT BE REMOVED: `invitations.proposed_role` is `text NOT NULL` with
+  -- `check (proposed_role = any (array['beneficiary','professional_delegate']))`. There is no value that
+  -- honestly means "no access class", and inventing one is DDL on a live table plus a migration. So an
+  -- executor/trustee invitation must still persist one of two disclosure-class words it does not mean.
+  --
+  -- WHY REMOVING IT WOULD HAVE BEEN WORSE THAN LEAVING IT: the defect was never this value. It was that
+  -- `provision_from_invitation` created a membership AT this value for every acceptance. Drop the force
+  -- and an executor invitation minted with `p_proposed_role = 'professional_delegate'` would have
+  -- provisioned a PROFESSIONAL DELEGATE membership instead — a different manufactured disclosure class,
+  -- and a worse one, because nothing in the product expects a fiduciary to arrive as a delegate.
+  --
+  -- WHERE THE FIX ACTUALLY LIVES: `provision_from_invitation` now gates membership creation on `kind`,
+  -- the authoritative and immutable statement of what the invitation is. That also fixes every
+  -- OUTSTANDING invitation — this column is written at CREATE time, so rows minted before the correction
+  -- already carry 'beneficiary', and a provisioner keyed on `proposed_role` would have kept honouring it
+  -- forever.
+  --
+  -- WHAT IT STILL AFFECTS: nothing in provisioning. It remains visible as `proposedRole` in
+  -- `resolve_membership`'s pending-invitation payload, where the client maps it to a presentation-only
+  -- `accessClass` label — `features/invitations/model.ts` states outright that nothing gates on it. So a
+  -- fiduciary invitation card can still show the wrong relationship WORD. That is a real accuracy defect
+  -- and it is recorded rather than silently tolerated: fixing it means surfacing `kind` in that payload,
+  -- which is a separate backend+client slice. Making the column nullable belongs with it.
   if p_kind in ('executor','trustee') then
     p_proposed_role := 'beneficiary';
   elsif p_proposed_role not in ('beneficiary','professional_delegate') then

@@ -66,13 +66,55 @@ describe("★ existing invitation behaviour is untouched", () => {
     expect(diff).toBe("");
   });
 
-  it("no pre-existing invitation handler was modified", () => {
-    for (const file of ["accept.ts", "bind.ts", "decline.ts", "preview.ts", "resolve.ts"]) {
+  /**
+   * ★ THIS LIST LOST `accept.ts` AND `bind.ts` IN PHASE 11-MC, DELIBERATELY AND WITH A REPLACEMENT.
+   *
+   * The blanket "byte-identical to main" guard was written when adding invitation ACTIONS, to prove the
+   * existing handlers were not disturbed. 11-MC genuinely must disturb two of them: a fiduciary
+   * acceptance no longer provisions a membership, so the RPC returns three nulls, and the old validator
+   * required all five columns to be strings and answered 502 `upstream_unexpected_shape`. Left unchanged,
+   * every executor acceptance would look like a server fault to the invitee while the designation had in
+   * fact committed.
+   *
+   * ★ A BLANKET "DO NOT TOUCH" IS NOT A BEHAVIOURAL INVARIANT, so it is replaced by one rather than
+   * dropped. The property that actually matters about these two files is asserted below, and
+   * `test/provisioningFirewall.test.ts` pins it in more detail. `decline.ts`, `preview.ts` and
+   * `resolve.ts` have no reason to move and keep the strict guard.
+   *
+   * ★ AND A CAVEAT WORTH KNOWING: this audit diffs `origin/main...HEAD`, so it sees only COMMITTED work.
+   * It passed vacuously through the whole of 11-MC's implementation and only fired after the commit —
+   * which is exactly when it was needed, but do not read a green local run as evidence that these files
+   * are untouched.
+   */
+  it("no UNRELATED invitation handler was modified", () => {
+    for (const file of ["decline.ts", "preview.ts", "resolve.ts"]) {
       const diff = execFileSync("git", ["diff", "origin/main...HEAD", "--", `lib/invitations/${file}`], {
         cwd: ROOT,
         encoding: "utf8",
       }).trim();
       expect(diff, file).toBe("");
+    }
+  });
+
+  it("accept and bind still validate the estate fields strictly", () => {
+    // What 11-MC relaxed is the MEMBERSHIP triple, and only that. Estate identity is present on every
+    // acceptance, so a genuinely broken response must still fail closed.
+    for (const file of ["accept.ts", "bind.ts"]) {
+      const src = fs.readFileSync(path.join(ROOT, "lib", "invitations", file), "utf8");
+      expect(src, file).toContain('typeof row.estate_id !== "string"');
+      expect(src, file).toContain('typeof row.estate_display_name !== "string"');
+      expect(src, file).toContain("upstream_unexpected_shape");
+    }
+  });
+
+  it("accept and bind reject a PARTIAL membership rather than reporting a roleless claim", () => {
+    // All three present, or all three null. A mixture would let a future regression report a role with
+    // no membership behind it — a disclosure claim with nothing supporting it.
+    for (const file of ["accept.ts", "bind.ts"]) {
+      const src = fs.readFileSync(path.join(ROOT, "lib", "invitations", file), "utf8");
+      expect(src, file).toContain("membershipPresent");
+      expect(src, file).toContain("membershipAbsent");
+      expect(src, file).toMatch(/if \(!membershipPresent && !membershipAbsent\)/);
     }
   });
 });

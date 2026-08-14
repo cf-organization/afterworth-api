@@ -165,6 +165,24 @@ const WITNESS = {
    */
   'db/bundles/fiduciary_discovery_bundle.sql':
     "select to_regprocedure('public.get_my_fiduciary_estates()') is not null",
+  /**
+   * ★ PHASE 11-MC. This artifact creates no new NAME — it replaces four existing bodies — so the witness
+   * is BODY CONTENT: whether `provision_from_invitation` carries the `kind` gate.
+   *
+   * ★ IT REPORTS NO_STATE_DELTA, AND THE FIRST VERSION OF THIS COMMENT PREDICTED IT WOULD NOT. The
+   * prediction was that the seeded source for the other bundles would still hold the pre-correction body
+   * until this artifact applied. It does not: `lifecycle_notifications_bundle` ALSO carries
+   * `provision_from_invitation`, and it is rebuilt from the same corrected file, so the corrected body is
+   * already installed by the time this bundle runs. The witness is therefore true at baseline.
+   *
+   * That is the honest outcome rather than a fault — the same shape as `halt_notification_bundle`, and
+   * the harness excludes such a witness from the verdict instead of scoring it. Hunting for an observable
+   * that happened to discriminate would be choosing a measurement to make a number come out right.
+   * Atomicity here rests on structure: pure SQL, exactly one transaction, both asserted above, plus the
+   * corrupted-run check that still executes.
+   */
+  'db/bundles/provisioning_correction_bundle.sql':
+    "select prosrc like '%v_is_fiduciary%' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public' and p.proname='provision_from_invitation'",
 };
 
 const witnessTrue = (q) => {

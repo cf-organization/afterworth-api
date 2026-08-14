@@ -1282,3 +1282,313 @@ begin
   raise notice ' ';
   raise notice 'ALL 11-MB FIDUCIARY DISCOVERY ASSERTIONS PASSED';
 end $mb$;
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- PHASE 11-MC · A FIDUCIARY INVITATION NO LONGER MANUFACTURES A DISCLOSURE CLASS
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- `provision_from_invitation` used to insert an approved `estate_memberships` row at the invitation's
+-- `proposed_role` for EVERY acceptance, and `create_invitation` forces that to 'beneficiary' for
+-- executor/trustee. So workflow capacity silently minted disclosure standing.
+--
+-- ★ THE FIXTURE IS ALSO THE OUTSTANDING-INVITATION TEST, AND THAT IS NOT A COINCIDENCE.
+-- `proposed_role` is persisted at CREATE time, so an invitation minted BEFORE the correction is
+-- byte-identical to one minted after: kind='executor', proposed_role='beneficiary'. Proving the
+-- corrected provisioner ignores that stored value therefore proves outstanding invitations are fixed
+-- too — there is no separate case to write, and no data migration to run.
+do $mc$
+declare
+  OWNER_M uuid; FID_M uuid; BENE_M uuid; DELE_M uuid; M uuid;
+  INV_FID uuid; INV_BENE uuid; INV_DUAL uuid; INV_DELE uuid;
+  v_ret uuid; v_ret2 uuid; n int; v_state text;
+  disc_before jsonb; disc_after jsonb; bene_before jsonb; bene_after jsonb;
+begin
+  raise notice ' ';
+  raise notice '11-MC · fiduciary provisioning creates no membership';
+
+  insert into auth.users default values returning id into OWNER_M;
+  insert into auth.users default values returning id into FID_M;
+  insert into auth.users default values returning id into BENE_M;
+  insert into auth.users default values returning id into DELE_M;
+  insert into public.estates (owner_id, name) values (OWNER_M, 'MC Estate') returning id into M;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (M, OWNER_M, 'primary_user', 'approved');
+  -- Furnished, so the disclosure comparison runs against real content rather than an empty estate.
+  insert into public.normalized_assets (estate_id, connection_id, institution_name, asset_group, balance_cents, currency)
+  values (M, gen_random_uuid(), 'MC Northbank', 'cashBank', 5100000, 'USD');
+  insert into public.documents (estate_id, title) values (M, 'MC will');
+
+  -- ── CONTROL: the corrected routine is the one under test ──────────────────────────────────────
+  if (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname='public' and p.proname='provision_from_invitation') not like '%v_is_fiduciary%' then
+    raise exception 'FAIL[control]: the loaded provision_from_invitation is the PRE-correction body — '
+      'every assertion below would be about the wrong routine';
+  end if;
+  raise notice '  ok   CONTROL: the corrected provisioner is loaded';
+
+  -- ═══ A · EXECUTOR INVITATION → DESIGNATION ONLY ═══════════════════════════════════════════════
+  -- Note proposed_role='beneficiary': exactly what create_invitation persists, and exactly what an
+  -- invitation minted before the correction carries.
+  insert into public.invitations
+    (estate_id, invited_by, kind, proposed_role, status, expires_at, invitee_email)
+  values (M, OWNER_M, 'executor', 'beneficiary', 'pending', now() + interval '14 days',
+          'mc-fid@example.invalid')
+  returning id into INV_FID;
+
+  disc_before := harness_dv.composed(FID_M, M);
+  perform set_config('request.jwt.claim.sub', FID_M::text, true);
+  set local role authenticated;
+  select (public.get_executor_workspace(M) ->> 'authorized') into v_state;
+  reset role;
+  if v_state <> 'false' then
+    raise exception 'FAIL[baseline]: the invitee already holds the executor workspace';
+  end if;
+
+  v_ret := public.provision_from_invitation(INV_FID, FID_M);
+
+  -- NO MEMBERSHIP, and the return value says so rather than pointing at one.
+  if exists (select 1 from public.estate_memberships em where em.estate_id = M and em.user_id = FID_M) then
+    raise exception 'FAIL: an executor invitation manufactured an estate_memberships row';
+  end if;
+  if v_ret is not null then
+    raise exception 'FAIL: provision_from_invitation returned a membership id (%) for a fiduciary-only '
+      'acceptance — the callers would report an approved membership that does not exist', v_ret;
+  end if;
+  if exists (select 1 from public.access_grants g where g.estate_id = M and g.grantee_user_id = FID_M) then
+    raise exception 'FAIL: an executor invitation produced a disclosure grant';
+  end if;
+  raise notice '  ok   executor invitation: NO membership, NO grant, NULL membership id returned';
+
+  -- THE DESIGNATION IS STAMPED — the half that must survive the correction.
+  select count(*) into n from public.estate_designations d
+   where d.estate_id = M and d.user_id = FID_M and d.designation_type = 'executor' and d.status = 'active';
+  if n <> 1 then
+    raise exception 'FAIL: the designation was not stamped (% active executor rows) — a correction that '
+      'removed BOTH side effects leaves a fiduciary with neither authority', n;
+  end if;
+  if not exists (select 1 from public.estate_designations d
+                  where d.estate_id = M and d.user_id = FID_M and d.source_invitation_id = INV_FID) then
+    raise exception 'FAIL: source_invitation_id provenance was lost';
+  end if;
+  raise notice '  ok   the designation IS stamped, with source_invitation provenance';
+
+  -- POSITIVE CONTROL: workflow and discovery move.
+  perform set_config('request.jwt.claim.sub', FID_M::text, true);
+  set local role authenticated;
+  select (public.get_executor_workspace(M) ->> 'authorized') into v_state;
+  select count(*) into n from public.get_my_fiduciary_estates() fe where fe.estate_id = M;
+  reset role;
+  if v_state <> 'true' then
+    raise exception 'FAIL[positive control]: the workspace still refuses after a valid designation (%)', v_state;
+  end if;
+  if n <> 1 then
+    raise exception 'FAIL[positive control]: fiduciary discovery does not list the estate (% rows)', n;
+  end if;
+  raise notice '  ok   POSITIVE CONTROL: workspace authorizes and discovery lists the estate';
+
+  -- NEGATIVE CONTROL: disclosure byte-identical.
+  disc_after := harness_dv.composed(FID_M, M);
+  if disc_after is distinct from disc_before then
+    raise exception 'FAIL: accepting a fiduciary invitation moved the composed disclosure payload — '
+      'workflow authority became disclosure authority';
+  end if;
+  raise notice '  ok   NEGATIVE CONTROL: every disclosure projection BYTE-IDENTICAL';
+
+  -- IDEMPOTENT REPLAY: no duplicate designation, still no membership.
+  v_ret2 := public.provision_from_invitation(INV_FID, FID_M);
+  select count(*) into n from public.estate_designations d
+   where d.estate_id = M and d.user_id = FID_M and d.designation_type = 'executor' and d.status = 'active';
+  if n <> 1 then
+    raise exception 'FAIL: a replayed acceptance created % active designations', n;
+  end if;
+  if v_ret2 is not null or exists (select 1 from public.estate_memberships em
+                                    where em.estate_id = M and em.user_id = FID_M) then
+    raise exception 'FAIL: a replayed fiduciary acceptance manufactured a membership';
+  end if;
+  raise notice '  ok   replay is idempotent: one designation, still no membership';
+
+  -- ═══ A2 · A TRUSTEE INVITATION BEHAVES IDENTICALLY ═══════════════════════════════════════════
+  --
+  -- ★ ADDED BECAUSE A MUTATION SURVIVED. `p11mc-trustee-still-forces-beneficiary` narrowed the gate to
+  -- `in ('executor')` alone and NOTHING failed: every assertion above uses an executor invitation, so
+  -- half the fiduciary vocabulary was corrected and half was not, and the suite could not tell. The two
+  -- capacities must be proven separately or "fiduciary" means whichever one the fixture happened to use.
+  declare
+    TRU_M uuid; INV_TRU uuid; v_tret uuid;
+  begin
+    insert into auth.users default values returning id into TRU_M;
+    insert into public.invitations
+      (estate_id, invited_by, kind, proposed_role, status, expires_at, invitee_email)
+    values (M, OWNER_M, 'trustee', 'beneficiary', 'pending', now() + interval '14 days',
+            'mc-tru@example.invalid')
+    returning id into INV_TRU;
+
+    v_tret := public.provision_from_invitation(INV_TRU, TRU_M);
+
+    if exists (select 1 from public.estate_memberships em where em.estate_id = M and em.user_id = TRU_M) then
+      raise exception 'FAIL: a TRUSTEE invitation manufactured an estate_memberships row';
+    end if;
+    if v_tret is not null then
+      raise exception 'FAIL: a trustee acceptance returned a membership id (%)', v_tret;
+    end if;
+    if not exists (select 1 from public.estate_designations d
+                    where d.estate_id = M and d.user_id = TRU_M
+                      and d.designation_type = 'trustee' and d.status = 'active') then
+      raise exception 'FAIL: the trustee designation was not stamped';
+    end if;
+    perform set_config('request.jwt.claim.sub', TRU_M::text, true);
+    set local role authenticated;
+    select (public.get_executor_workspace(M) ->> 'authorized') into v_state;
+    select count(*) into n from public.get_my_fiduciary_estates() fe where fe.estate_id = M;
+    reset role;
+    if v_state <> 'true' or n <> 1 then
+      raise exception 'FAIL: a trustee designee is not workflow-authorized/discoverable (auth=%, rows=%)',
+        v_state, n;
+    end if;
+    raise notice '  ok   TRUSTEE invitation: no membership, designation stamped, workflow reachable';
+  end;
+
+  -- ═══ B · A BENEFICIARY INVITATION IS UNTOUCHED — the control on the whole change ══════════════
+  insert into public.invitations
+    (estate_id, invited_by, kind, proposed_role, status, expires_at, invitee_email)
+  values (M, OWNER_M, 'beneficiary', 'beneficiary', 'pending', now() + interval '14 days',
+          'mc-bene@example.invalid')
+  returning id into INV_BENE;
+  v_ret := public.provision_from_invitation(INV_BENE, BENE_M);
+  if v_ret is null then
+    raise exception 'FAIL[control]: a BENEFICIARY invitation stopped creating a membership — the '
+      'correction leaked into the non-fiduciary path';
+  end if;
+  if (select em.role from public.estate_memberships em where em.id = v_ret) <> 'beneficiary' then
+    raise exception 'FAIL[control]: a beneficiary invitation provisioned the wrong role';
+  end if;
+  raise notice '  ok   CONTROL: a beneficiary invitation still provisions its membership';
+
+  -- A professional-delegate invitation likewise.
+  insert into public.invitations
+    (estate_id, invited_by, kind, proposed_role, status, expires_at, invitee_email)
+  values (M, OWNER_M, 'professional_delegate', 'professional_delegate', 'pending',
+          now() + interval '14 days', 'mc-dele@example.invalid')
+  returning id into INV_DELE;
+  if public.provision_from_invitation(INV_DELE, DELE_M) is null then
+    raise exception 'FAIL[control]: a professional-delegate invitation stopped creating a membership';
+  end if;
+  if (select em.role from public.estate_memberships em where em.estate_id = M and em.user_id = DELE_M)
+     <> 'professional_delegate' then
+    raise exception 'FAIL[control]: a delegate invitation provisioned the wrong role';
+  end if;
+  raise notice '  ok   CONTROL: a professional-delegate invitation still provisions its membership';
+
+  -- ═══ C · DUAL ROLE — an independent access class is PRESERVED, capacity is ADDED ══════════════
+  bene_before := harness_dv.composed(BENE_M, M);
+  perform harness_dv.grant_inventory(M, OWNER_M, BENE_M, 'beneficiary', 'category_summary', 'immediately');
+  bene_before := harness_dv.composed(BENE_M, M);   -- re-captured WITH the grant, so it is non-trivial
+
+  insert into public.invitations
+    (estate_id, invited_by, kind, proposed_role, status, expires_at, invitee_email)
+  values (M, OWNER_M, 'executor', 'beneficiary', 'pending', now() + interval '14 days',
+          'mc-dual@example.invalid')
+  returning id into INV_DUAL;
+  v_ret := public.provision_from_invitation(INV_DUAL, BENE_M);
+
+  -- The pre-existing membership is REPORTED, not replaced, and not duplicated.
+  select count(*) into n from public.estate_memberships em where em.estate_id = M and em.user_id = BENE_M;
+  if n <> 1 then
+    raise exception 'FAIL: the dual-role recipient holds % membership rows', n;
+  end if;
+  if (select em.role from public.estate_memberships em where em.estate_id = M and em.user_id = BENE_M)
+     <> 'beneficiary' then
+    raise exception 'FAIL: a fiduciary acceptance changed an independently-held access class';
+  end if;
+  if v_ret is null then
+    raise exception 'FAIL: the existing membership was not reported for a dual-role acceptance';
+  end if;
+  if not exists (select 1 from public.estate_designations d
+                  where d.estate_id = M and d.user_id = BENE_M and d.status = 'active') then
+    raise exception 'FAIL: the dual-role recipient did not gain fiduciary capacity';
+  end if;
+
+  bene_after := harness_dv.composed(BENE_M, M);
+  if bene_after is distinct from bene_before then
+    raise exception 'FAIL: gaining a designation changed an existing beneficiary''s disclosure payload';
+  end if;
+  raise notice '  ok   DUAL ROLE: beneficiary disclosure BYTE-IDENTICAL, fiduciary capacity added';
+
+  perform set_config('request.jwt.claim.sub', BENE_M::text, true);
+  set local role authenticated;
+  select (public.get_executor_workspace(M) ->> 'authorized') into v_state;
+  reset role;
+  if v_state <> 'true' then
+    raise exception 'FAIL: the dual-role recipient cannot reach the executor workspace (%)', v_state;
+  end if;
+  raise notice '  ok   DUAL ROLE: both authorities are live at once';
+
+  -- ═══ C2 · PROFESSIONAL DELEGATE + EXECUTOR — the access class must not be REWRITTEN ═══════════
+  --
+  -- ★ ADDED BECAUSE A MUTATION SURVIVED. `p11mc-fiduciary-replaces-existing-membership` rewrote the
+  -- existing membership's role to the invitation's `proposed_role` ('beneficiary') and NOTHING failed:
+  -- the dual-role case above uses someone who is ALREADY a beneficiary, so the overwrite was a no-op.
+  -- The fixture that can observe it is a DELEGATE gaining fiduciary capacity — a role the overwrite
+  -- would silently downgrade. Anchoring on the case that interleaves is the whole rule.
+  declare
+    INV_DD uuid; v_dret uuid; dele_before jsonb; dele_after jsonb;
+  begin
+    perform harness_dv.grant_inventory(M, OWNER_M, DELE_M, 'professional_delegate', 'category_summary', 'immediately');
+    dele_before := harness_dv.composed(DELE_M, M);
+
+    insert into public.invitations
+      (estate_id, invited_by, kind, proposed_role, status, expires_at, invitee_email)
+    values (M, OWNER_M, 'executor', 'beneficiary', 'pending', now() + interval '14 days',
+            'mc-dd@example.invalid')
+    returning id into INV_DD;
+
+    v_dret := public.provision_from_invitation(INV_DD, DELE_M);
+
+    if (select em.role from public.estate_memberships em where em.estate_id = M and em.user_id = DELE_M)
+       <> 'professional_delegate' then
+      raise exception 'FAIL: accepting a fiduciary invitation REWROTE an independently-held '
+        'professional_delegate access class';
+    end if;
+    select count(*) into n from public.estate_memberships em where em.estate_id = M and em.user_id = DELE_M;
+    if n <> 1 then
+      raise exception 'FAIL: the delegate now holds % membership rows', n;
+    end if;
+    if not exists (select 1 from public.estate_designations d
+                    where d.estate_id = M and d.user_id = DELE_M and d.status = 'active') then
+      raise exception 'FAIL: the delegate did not gain fiduciary capacity';
+    end if;
+
+    dele_after := harness_dv.composed(DELE_M, M);
+    /**
+     * ★ THE DISCLOSURE SUBSET, NOT THE WHOLE PAYLOAD — AND MY FIRST VERSION GOT THIS WRONG.
+     *
+     * `harness_dv.composed` includes `workspace` (`get_professional_workspace`), and 11-H established
+     * that a designation legitimately ADDS A CAPACITY there without changing the relationship or the
+     * tier. So a whole-payload equality assertion failed for the right reason and the wrong claim: it
+     * called a documented, correct change a disclosure leak.
+     *
+     * The invariant is narrower and sharper: every DISCLOSURE projection is byte-identical, while the
+     * capacity list is expected to move. Both halves are asserted, because "nothing changed" with no
+     * positive control cannot tell a firewall from a broken instrument.
+     */
+    if (dele_after - 'workspace') is distinct from (dele_before - 'workspace') then
+      raise exception 'FAIL: a designation changed an existing DELEGATE''s DISCLOSURE payload '
+        '(discovery/assets/net worth/documents/readiness)';
+    end if;
+    if dele_after -> 'workspace' is not distinct from dele_before -> 'workspace' then
+      raise exception 'FAIL[positive control]: the delegate''s workspace did NOT change — the capacity '
+        'was not added, so the equality assertion above proves nothing';
+    end if;
+    raise notice '  ok   DELEGATE + EXECUTOR: disclosure BYTE-IDENTICAL, capacity added to the workspace';
+  end;
+
+  -- ═══ D · NO FIDUCIARY VOCABULARY EVER LANDS IN A MEMBERSHIP ROLE ══════════════════════════════
+  if exists (select 1 from public.estate_memberships em
+              where em.estate_id = M and em.role in ('executor', 'trustee')) then
+    raise exception 'FAIL: a fiduciary capacity was written into a membership role';
+  end if;
+  raise notice '  ok   no membership row anywhere carries executor/trustee';
+
+  raise notice ' ';
+  raise notice 'ALL 11-MC PROVISIONING ASSERTIONS PASSED';
+end $mc$;

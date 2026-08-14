@@ -1519,6 +1519,63 @@ const MUTATIONS = Object.freeze([
     from: "   group by d.estate_id, e.name;",
     to: ";",
   },
+
+  /* ══ PHASE 11-MC · fiduciary provisioning creates no disclosure class ═════════════════════════ */
+  {
+    id: 'p11mc-executor-forces-beneficiary-again',
+    why: 'THE DEFECT, RESTORED. Every new executor and trustee silently receives an approved beneficiary '
+      + 'membership — workflow capacity manufacturing a disclosure class, which is the entire authority '
+      + 'model this phase exists to separate.',
+    file: 'db/functions/provision_from_invitation.sql',
+    from: "  v_is_fiduciary := coalesce(v_inv.kind in ('executor', 'trustee'), false);",
+    to: '  v_is_fiduciary := false;',
+  },
+  {
+    id: 'p11mc-trustee-still-forces-beneficiary',
+    why: 'HALF THE DEFECT, RESTORED — and the half a reviewer is least likely to check. Executor is '
+      + 'corrected and trustee is not, so the two fiduciary capacities diverge in what they grant the '
+      + 'recipient while every executor-shaped test stays green.',
+    file: 'db/functions/provision_from_invitation.sql',
+    from: "coalesce(v_inv.kind in ('executor', 'trustee'), false)",
+    to: "coalesce(v_inv.kind in ('executor'), false)",
+  },
+  {
+    id: 'p11mc-null-kind-skips-membership',
+    why: 'THE NULL-SAFETY REMOVED. `NULL in (...)` is NULL, so `not v_is_fiduciary` becomes `not NULL` '
+      + 'and an ORDINARY beneficiary acceptance provisions nothing at all. Production declares '
+      + '`invitations.kind` NOT NULL, but the conservative default for an unrecognised invitation must be '
+      + 'the path that existed before this change — never the one that creates no membership.',
+    file: 'db/functions/provision_from_invitation.sql',
+    from: "coalesce(v_inv.kind in ('executor', 'trustee'), false)",
+    to: "v_inv.kind in ('executor', 'trustee')",
+  },
+  {
+    id: 'p11mc-designation-not-stamped',
+    why: 'THE OTHER HALF OF THE CORRECTION, DELETED. Removing the membership side effect AND the '
+      + 'designation leaves a fiduciary with NEITHER authority — strictly worse than the defect, because '
+      + 'the recipient now has no route to the workflow at all and nothing says so.',
+    file: 'db/functions/provision_from_invitation.sql',
+    from: "  if v_inv.kind in ('executor','trustee') then\n    v_desig_id := null;",
+    to: "  if false then\n    v_desig_id := null;",
+  },
+  {
+    id: 'p11mc-fiduciary-replaces-existing-membership',
+    why: 'AN INDEPENDENTLY-HELD ACCESS CLASS OVERWRITTEN. A person who is already a professional '
+      + 'delegate accepts an executor invitation and is silently downgraded to beneficiary — authority '
+      + 'laundering between two axes that are supposed to compose, not replace.',
+    file: 'db/functions/provision_from_invitation.sql',
+    from: "    select em.id into v_membership_id from public.estate_memberships em\n     where em.estate_id = v_inv.estate_id and em.user_id = p_user;\n  end if;",
+    to: "    update public.estate_memberships set role = v_inv.proposed_role\n     where estate_id = v_inv.estate_id and user_id = p_user\n    returning id into v_membership_id;\n  end if;",
+  },
+  {
+    id: 'p11mc-provenance-lost',
+    why: 'THE PROVENANCE THAT MAKES LEGACY CLEANUP POSSIBLE. `source_invitation_id` is the only way to '
+      + 'tell a mechanically-manufactured beneficiary membership from an independently intended one. '
+      + 'Losing it on the designation removes the audit trail for which invitation granted the capacity.',
+    file: 'db/functions/provision_from_invitation.sql',
+    from: '      (estate_id, user_id, designation_type, status, source_invitation_id, granted_by)',
+    to: '      (estate_id, user_id, designation_type, status, granted_by)',
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;

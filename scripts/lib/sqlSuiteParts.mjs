@@ -131,6 +131,8 @@ export const SQL_BUNDLES = Object.freeze([
   // ★ PHASE 11-MB. One read-only routine; registered so the atomicity verifier and every
   // rebuild-before-trust step cover it.
   ['scripts/buildFiduciaryDiscoveryBundle.mjs', 'db/bundles/fiduciary_discovery_bundle.sql'],
+  // ★ PHASE 11-MC. Registered so the atomicity verifier and every rebuild-before-trust step cover it.
+  ['scripts/buildProvisioningCorrectionBundle.mjs', 'db/bundles/provisioning_correction_bundle.sql'],
 ]);
 
 /**
