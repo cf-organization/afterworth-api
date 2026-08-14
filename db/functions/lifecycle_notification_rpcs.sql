@@ -107,7 +107,29 @@ as $function$
     -- to commit before the window may open — the one notification in the product that is
     -- load-bearing rather than a heads-up.
     ('death_process.window_opened', 'safetyNotice', 'A release process is waiting',
-     'A release process is waiting on your estate. You can review and halt it now.')
+     'A release process is waiting on your estate. You can review and halt it now.'),
+
+    -- ── the halt, to the INITIATING FIDUCIARY (Phase 11-L) ──────────────────────────────────────
+    -- To the executor or trustee who OPENED the case, and to nobody else. It tells them one fact
+    -- about their OWN action — the same posture as `access_request.denied`, which tells a requester
+    -- their own outcome without explaining the decision.
+    --
+    -- ★ THE VOICE IS PASSIVE ON PURPOSE. "has been halted", never "the owner halted it". Naming the
+    -- owner as the actor would disclose that the owner is alive and responded, which is a fact about
+    -- a living person's liveness on a channel the recipient has no authority over. The recipient
+    -- needs to know their process stopped; they do not need to know who stopped it or how.
+    --
+    -- ★ AND IT EXPLAINS NOTHING. No channel, no address, no reason, no evidence, no estate name, no
+    -- asset, no count, no other party, and no word that could read as an accusation. A claimant who
+    -- acted in good faith and a claimant who did not receive the identical sentence, because this
+    -- routine cannot tell them apart and must not appear to.
+    --
+    -- ★ CATEGORY `claimUpdate` IS DELIBERATE AND COSTS THE CLIENT NOTHING. It is already in the RN
+    -- client's KNOWN_CATEGORIES with the label "Claim update", and no server event used it before —
+    -- so this event decodes exactly rather than degrading to `other` ("Account update"). Inventing a
+    -- new category would have required a mobile release to render this event honestly.
+    ('death_process.halted',        'claimUpdate',  'Estate process halted',
+     'The estate process you initiated has been halted.')
   ) as c(event, category, title, body)
   where c.event = p_event;
 $function$;

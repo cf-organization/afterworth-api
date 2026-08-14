@@ -48,14 +48,42 @@ verifier prints the uids on demand when they are needed.
 
 ## 3 · Posture: they carry no estate authority
 
-`handle_new_user()` inserts **only** into `public.profiles` — it creates no estate, no membership,
-no designation and no grant. So the "unavoidable bootstrap estate" case does not arise here: the
-accounts consist of one `auth.users` row and one `profiles` row each.
+`handle_new_user()` inserts **only** into `public.profiles` — no estate, no membership, no
+designation, no grant. At creation each account was one `auth.users` row and one `profiles` row.
 
-Both sessions carry `role=authenticated`. **Neither holds any service-role capability** — this
-project grants `service_role` nothing on these tables, and an operator assertion may never be made
-with a service key regardless, because it would prove the value was obtainable rather than that the
-caller was authorized.
+### They each acquired one empty personal estate afterwards, and this records why
+
+`resolve_membership()` **lazily bootstraps** a primary estate — `'My Estate'`, `is_primary = true` —
+for any authenticated caller who owns none. A Phase 11-L readiness probe called
+`POST /api/invitations/resolve` for both accounts, because that endpoint is the *authoritative*
+estate-context interface and this repository's rule is to probe authoritative state through it rather
+than by guessing at table reads. That call created the estates.
+
+This is the **"unavoidable account bootstrap creates an empty personal estate"** case, and it is
+worth stating plainly rather than leaving to be rediscovered: the estate is a product side effect of
+signing in and resolving, not something provisioning chose.
+
+Verified for each account through its own product path:
+
+| Property | Value |
+|---|---|
+| `is_owner` on its own bootstrap estate | true |
+| `membership_role` / `status` | `primary_user` / `approved` — on its OWN estate only |
+| `additionalContexts` | **0** — no relationship to any other estate |
+| `pendingInvitations` | **0** |
+| `get_executor_workspace(own estate).authorized` | **false** — no executor or trustee designation |
+| Beneficiary / professional-delegate membership | none |
+| Inventory or document grants | none |
+
+An empty personal estate confers authority over nothing but itself, and neither account is a
+beneficiary, delegate, or fiduciary anywhere. Both sessions carry `role=authenticated`.
+
+**Neither holds any service-role capability** — this project grants `service_role` nothing on these
+tables, and an operator assertion may never be made with a service key regardless, because it would
+prove the value was obtainable rather than that the caller was authorized.
+
+They must not be given an estate relationship, turned into fiduciaries or beneficiaries, or reused as
+customer fixture identities. They are operator identities.
 
 ## 4 · The one thing automation cannot do
 
