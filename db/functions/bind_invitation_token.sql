@@ -46,8 +46,17 @@ begin
       perform public.provision_from_invitation(v_inv.id, v_user);   -- idempotent self-heal (re-stamps a missing designation)
       select em.id into v_membership_id from public.estate_memberships em
        where em.estate_id = v_inv.estate_id and em.user_id = v_user;
-      return query select v_membership_id, v_inv.estate_id,
-        (select e.name from public.estates e where e.id = v_inv.estate_id), v_inv.proposed_role::text, 'approved'::text;
+          -- ★ PHASE 11-MC: A FIDUCIARY ACCEPTANCE HAS NO MEMBERSHIP, SO IT REPORTS NONE.
+      -- `provision_from_invitation` no longer creates a membership for an executor/trustee invitation,
+      -- so `v_membership_id` is NULL for a recipient who holds no independent access class. Returning
+      -- the invitation's stale `proposed_role` and a hardcoded 'approved' would assert an approved
+      -- beneficiary membership that does not exist — the exact fiction this phase removes, restated on
+      -- the way out. Role and status are NULL together with the membership id; the fiduciary authority
+      -- is reported by `get_my_fiduciary_estates`, which is the surface that owns it.
+  return query select v_membership_id, v_inv.estate_id,
+        (select e.name from public.estates e where e.id = v_inv.estate_id),
+        case when v_membership_id is null then null else v_inv.proposed_role::text end,
+        case when v_membership_id is null then null else 'approved'::text end;
       return;
     else
       raise exception 'invitation_already_accepted' using errcode = 'P0005';
@@ -59,6 +68,8 @@ begin
   perform public.write_audit('invitation.bound', 'estate_memberships', v_membership_id, v_inv.estate_id,
     jsonb_build_object('token_fingerprint', substr(v_hash,1,12), 'invitation_id', v_inv.id));
   return query select v_membership_id, v_inv.estate_id,
-    (select e.name from public.estates e where e.id = v_inv.estate_id), v_inv.proposed_role::text, 'approved'::text;
+    (select e.name from public.estates e where e.id = v_inv.estate_id),
+    case when v_membership_id is null then null else v_inv.proposed_role::text end,
+    case when v_membership_id is null then null else 'approved'::text end;
 end;
 $function$;

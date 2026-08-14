@@ -52,7 +52,12 @@ describe("0 · the audit is reading something", () => {
     // corrected provisioning would leave a newly designated fiduciary with no membership and an estate
     // the mobile selector cannot find, so discovery has to be deployed and consumed FIRST. Keeping the
     // two in separate artifacts is what makes that ordering enforceable rather than remembered.
-    expect(artifacts.length).toBe(9);
+    // ★ 11-MC IS THE 10th. It replaces four function bodies and adds no object, so it could in
+    // principle have been folded into an existing bundle — but the four inputs span the invitation
+    // module, and re-pasting the 17-part lifecycle bundle to ship one branch would put ~140KB of
+    // unrelated DDL back through a hand-paste. A small artifact stays the cheaper thing to review and
+    // the cheaper thing to roll back.
+    expect(artifacts.length).toBe(10);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

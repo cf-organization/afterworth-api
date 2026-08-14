@@ -1,25 +1,22 @@
 /**
- * PHASE 11-MB · THE PROVISIONING FIREWALL — A TEST WRITTEN TO BE FLIPPED.
+ * PHASE 11-MC · THE PROVISIONING FIREWALL, INVERTED.
  *
- * ★ THIS ASSERTS A DEFECT IS STILL PRESENT, ON PURPOSE, AND THAT IS NOT A CONTRADICTION.
+ * ★ THIS TEST WAS WRITTEN TO BE FLIPPED, AND THIS IS THE FLIP. It previously asserted that
+ * executor/trustee provisioning STILL forced a beneficiary membership — a tripwire against correcting
+ * the defect before the mobile client could represent designation-only contexts. That client landed
+ * (afterworth-mobile c4fb291: nullable access class, independent fiduciary axis, composing roster
+ * merge), so the ordering constraint is satisfied and the correction has been made.
  *
- * Executor/trustee provisioning forces the invitation's `proposed_role` to `beneficiary`, which
- * manufactures a disclosure class as a side effect of granting workflow capacity. That is the defect
- * Phase 11-MA diagnosed and 11-MC will correct. It must NOT be corrected yet, because the ordering is
- * the safety property:
+ * The assertion is now permanent and points the other way: a fiduciary invitation must NOT manufacture
+ * a disclosure class, and this fails if the old behaviour ever returns. It was NOT deleted, because
+ * "the defect came back" is exactly the regression nobody would notice — the product would keep working
+ * and quietly hand beneficiary standing to every new executor.
  *
- *   1. deploy fiduciary DISCOVERY            ← done (get_my_fiduciary_estates)
- *   2. teach the mobile selector to consume it
- *   3. THEN stop forcing the role
- *
- * Reversed, a newly provisioned fiduciary gets a designation, NO membership, and an estate the mobile
- * app cannot find — correctly authorized and permanently unable to reach the workflow. `resolve_membership`
- * enumerates `estate_memberships` alone, so today the forced membership is the ONLY thing making the
- * estate discoverable.
- *
- * So this test is a tripwire against doing step 3 early. When 11-MC lands, it is EXPECTED to fail, and
- * the correct response is to invert it — not to delete it. An inverted assertion then guards the other
- * direction: that the forced role never comes back.
+ * ★ IT ASSERTS THE GATE IS ON `kind`, NOT ON `proposed_role`, AND THAT DISTINCTION IS THE WHOLE
+ * COMPATIBILITY STORY. `proposed_role` is persisted at CREATE time, so every invitation minted before
+ * the correction already carries 'beneficiary'. A provisioner keyed on that column would honour it
+ * forever and outstanding invitations would keep manufacturing memberships. Keying on `kind` fixes new
+ * and outstanding alike.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -29,49 +26,119 @@ const ROOT = path.resolve(__dirname, "..");
 const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
 
 describe("0 · the firewall is reading the right files", () => {
-  it("both provisioning files exist and are nonempty", () => {
-    // Asserting the scan set BEFORE evaluating any rule: a firewall that reads an empty string
-    // reports whatever the matcher's default is, and 63 assertions once passed against nothing here.
-    expect(read("db/functions/create_invitation.sql").length).toBeGreaterThan(500);
-    expect(read("db/functions/provision_from_invitation.sql").length).toBeGreaterThan(500);
+  it("every file it reasons about exists and is nonempty", () => {
+    // Asserting the scan set BEFORE evaluating any rule: a firewall that reads an empty string reports
+    // whatever the matcher defaults to, and this repository has had 63 assertions pass against nothing.
+    for (const f of [
+      "db/functions/create_invitation.sql",
+      "db/functions/provision_from_invitation.sql",
+      "db/functions/accept_invitation.sql",
+      "db/functions/bind_invitation_token.sql",
+      "lib/invitations/accept.ts",
+      "lib/invitations/bind.ts",
+    ]) {
+      expect(read(f).length, f).toBeGreaterThan(500);
+    }
   });
 });
 
-describe("1 · executor/trustee provisioning is STILL in the pre-correction shape", () => {
-  it("create_invitation still FORCES proposed_role to beneficiary", () => {
-    const src = read("db/functions/create_invitation.sql");
-    // The exact line 11-MA identified. Whitespace-tolerant so a reformat does not read as a fix.
-    expect(src).toMatch(/p_kind\s+in\s*\(\s*'executor'\s*,\s*'trustee'\s*\)\s*then\s*\n?\s*p_proposed_role\s*:=\s*'beneficiary'/);
-  });
-
-  it("provision_from_invitation still inserts a membership at the invitation's proposed_role", () => {
+describe("1 · a fiduciary invitation must NOT manufacture a disclosure class", () => {
+  it("provision_from_invitation gates membership creation on the invitation KIND", () => {
     const src = read("db/functions/provision_from_invitation.sql");
-    expect(src).toMatch(/insert\s+into\s+public\.estate_memberships/i);
-    expect(src).toMatch(/v_inv\.proposed_role/);
+    // The authoritative, immutable discriminator — not the persisted proposed_role. Tolerant of the
+    // `coalesce(...)` wrapper so the null-safety fix does not read as the gate disappearing.
+    expect(src).toMatch(/v_is_fiduciary\s*:=[^;]*v_inv\.kind\s+in\s*\(\s*'executor'\s*,\s*'trustee'\s*\)/);
+    expect(src).toMatch(/if\s+not\s+v_is_fiduciary\s+then/);
+    // It must NOT key off the persisted column, which is stale on every outstanding invitation.
+    expect(src).not.toMatch(/v_is_fiduciary\s*:=[^;]*proposed_role/);
   });
 
-  it("provision_from_invitation still stamps the designation (this half is CORRECT and must survive)", () => {
-    // The correction removes the membership side effect. It must not disturb the designation, or a
-    // fiduciary would end up with neither authority — a worse outcome than the defect.
+  it("the kind gate is NULL-SAFE, so an unrecognised invitation provisions as before", () => {
+    // `NULL in (...)` is NULL, and `not NULL` would SKIP the membership branch — an ordinary beneficiary
+    // acceptance would then provision nothing. Production declares `invitations.kind` NOT NULL, but the
+    // conservative default for an unrecognised invitation must be the pre-correction path, never the one
+    // that creates no membership. A laxer test preamble caught this on the first run.
+    const src = read("db/functions/provision_from_invitation.sql");
+    expect(src).toMatch(/coalesce\(\s*v_inv\.kind\s+in\s*\([^)]*\)\s*,\s*false\s*\)/);
+  });
+
+  it("the membership insert is INSIDE the non-fiduciary branch", () => {
+    const src = read("db/functions/provision_from_invitation.sql");
+    const branch = src.indexOf("if not v_is_fiduciary then");
+    const insert = src.indexOf("insert into public.estate_memberships");
+    const elseAt = src.indexOf("\n  else\n", branch);
+    expect(branch).toBeGreaterThanOrEqual(0);
+    expect(insert).toBeGreaterThan(branch);
+    expect(elseAt).toBeGreaterThan(insert); // the insert precedes the else, i.e. it is in the `if` arm
+  });
+
+  it("the beneficiary self-link is also inside the non-fiduciary branch", () => {
+    const src = read("db/functions/provision_from_invitation.sql");
+    const branch = src.indexOf("if not v_is_fiduciary then");
+    const link = src.indexOf("update public.beneficiaries set user_id");
+    const elseAt = src.indexOf("\n  else\n", branch);
+    expect(link).toBeGreaterThan(branch);
+    expect(elseAt).toBeGreaterThan(link);
+  });
+
+  it("the DESIGNATION is still stamped — the half that must survive the correction", () => {
+    // A correction that removed both side effects would leave a fiduciary with NEITHER authority, which
+    // is worse than the defect it replaced.
     const src = read("db/functions/provision_from_invitation.sql");
     expect(src).toMatch(/insert\s+into\s+public\.estate_designations/i);
     expect(src).toMatch(/v_inv\.kind\s+in\s*\(\s*'executor'\s*,\s*'trustee'\s*\)/);
+    expect(src).toMatch(/source_invitation_id/); // provenance retained
+  });
+
+  it("no membership role is fabricated to carry fiduciary capacity", () => {
+    const src = read("db/functions/provision_from_invitation.sql");
+    // executor/trustee must never appear as a membership ROLE value being inserted.
+    expect(src).not.toMatch(/role[^\n]*values[^\n]*'executor'/i);
+    expect(src).not.toMatch(/'executor'::text\s*,\s*'approved'/i);
   });
 });
 
-describe("2 · the discovery routine that must ship FIRST is present in source", () => {
-  it("get_my_fiduciary_estates exists, is self-scoped, and is anon-revoked", () => {
-    const src = read("db/functions/fiduciary_estate_discovery.sql");
-    expect(src).toMatch(/create or replace function public\.get_my_fiduciary_estates\(\)/);
-    expect(src).toMatch(/d\.user_id = auth\.uid\(\)/);
-    expect(src).toMatch(/revoke execute on function public\.get_my_fiduciary_estates\(\) from public, anon;/);
+describe("2 · the callers report a membership-less acceptance honestly", () => {
+  it.each(["db/functions/accept_invitation.sql", "db/functions/bind_invitation_token.sql"])(
+    "%s returns null role/status when there is no membership",
+    (f) => {
+      const src = read(f);
+      const guards = src.match(/case when v_membership_id is null then null else/g) ?? [];
+      // Both return sites — the main path and the idempotent self-heal branch.
+      expect(guards.length).toBeGreaterThanOrEqual(4);
+      expect(src).not.toMatch(/v_inv\.proposed_role::text,\s*'approved'::text/);
+    }
+  );
+
+  it.each(["lib/invitations/accept.ts", "lib/invitations/bind.ts"])(
+    "%s accepts a null membership instead of returning 502",
+    (f) => {
+      const src = read(f);
+      // The old validator required all five fields to be strings; a fiduciary acceptance would have
+      // been reported to the invitee as a server fault while the designation had committed.
+      expect(src).not.toMatch(/typeof row\.membership_id !== "string" \|\|\s*\n\s*typeof row\.estate_id/);
+      expect(src).toMatch(/membershipPresent/);
+      expect(src).toMatch(/membershipAbsent/);
+      // A partial membership (some fields present, some null) must still fail closed.
+      expect(src).toMatch(/partial membership/);
+    }
+  );
+});
+
+describe("3 · create_invitation still persists a proposed_role, and that is deliberate", () => {
+  it("the forced value remains, because the column is NOT NULL with a two-value CHECK", () => {
+    // Documented at the site: removing the force without the provisioner gate would have provisioned a
+    // PROFESSIONAL DELEGATE membership instead — a worse manufactured disclosure class.
+    const src = read("db/functions/create_invitation.sql");
+    expect(src).toMatch(/p_proposed_role\s*:=\s*'beneficiary'/);
+    expect(src).toMatch(/INERT/);
   });
 
-  it("it is offered as its own deploy artifact, separate from any provisioning change", () => {
-    // Two artifacts is what makes the ordering enforceable rather than remembered.
-    const bundle = read("db/bundles/fiduciary_discovery_bundle.sql");
-    expect(bundle).toMatch(/get_my_fiduciary_estates/);
-    expect(bundle).not.toMatch(/p_proposed_role\s*:=\s*'beneficiary'/);
-    expect(bundle).not.toMatch(/create or replace function public\.create_invitation/);
+  it("the column really is constrained the way that reasoning claims", () => {
+    // The justification above is only sound if the schema actually forbids a null or a third value.
+    // Asserting it here means the comment cannot drift away from the constraint it depends on.
+    const tbl = read("db/tables/invitations.sql");
+    expect(tbl).toMatch(/proposed_role\s+text\s+not null/);
+    expect(tbl).toMatch(/check \(proposed_role = any \(array\['beneficiary','professional_delegate'\]\)\)/);
   });
 });

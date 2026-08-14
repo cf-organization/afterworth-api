@@ -2252,26 +2252,85 @@ declare
   v_inv record;
   v_membership_id uuid;
   v_desig_id uuid;
+  v_is_fiduciary boolean;
 begin
   select * into v_inv from public.invitations where id = p_invitation_id;
   if not found then raise exception 'invitation_not_found' using errcode = 'P0002'; end if;
 
-  insert into public.estate_memberships
-    (id, estate_id, user_id, role, status, source_invitation_id, approved_at, created_at)
-  values
-    (gen_random_uuid(), v_inv.estate_id, p_user, v_inv.proposed_role, 'approved', v_inv.id, now(), now())
-  on conflict (estate_id, user_id) do nothing
-  returning id into v_membership_id;
-  if v_membership_id is null then
+  -- ════════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ PHASE 11-MC — A FIDUCIARY DESIGNATION NO LONGER MANUFACTURES A DISCLOSURE CLASS.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- Until now every acceptance inserted an `estate_memberships` row at the invitation's
+  -- `proposed_role`, and `create_invitation` forces that to `'beneficiary'` for executor/trustee. So
+  -- granting WORKFLOW capacity silently granted a DISCLOSURE access class as a side effect — the
+  -- authority-model defect 11-MA diagnosed.
+  --
+  -- ★ THE GATE IS `kind`, NOT `proposed_role`, AND THAT CHOICE IS THE WHOLE COMPATIBILITY STORY.
+  --
+  -- `proposed_role` is PERSISTED AT CREATE TIME (`create_invitation` writes it into the row). Every
+  -- executor/trustee invitation already in the table therefore carries a stored
+  -- `proposed_role = 'beneficiary'`, and an invitation created before this change but accepted after it
+  -- would still manufacture a membership if the provisioner keyed off that stale column. Correcting
+  -- `create_invitation` alone fixes NOTHING for outstanding invitations.
+  --
+  -- `kind` is the authoritative, immutable statement of what the invitation IS. Keying on it fixes new
+  -- and outstanding invitations in one place, with no data migration and no need to cancel anything.
+  --
+  -- ★ AND REMOVING THE FORCED ROLE ALONE WOULD HAVE BEEN WORSE THAN LEAVING IT. Without this gate, an
+  -- executor invitation minted with `p_proposed_role = 'professional_delegate'` would provision a
+  -- PROFESSIONAL DELEGATE membership instead of a beneficiary one — a different disclosure class,
+  -- manufactured just as silently. The defect was never the forced value; it was that a fiduciary
+  -- invitation created a membership at all.
+  -- ★ `coalesce(..., false)` IS LOAD-BEARING, AND A LAXER TEST SCHEMA IS WHAT PROVED IT.
+  --
+  -- `NULL in ('executor','trustee')` evaluates to NULL, not false — so `if not v_is_fiduciary` would be
+  -- `not NULL`, the membership branch would be SKIPPED, and an ordinary beneficiary acceptance would
+  -- silently provision nothing. Production's `invitations.kind` is `text NOT NULL` so it cannot be null
+  -- there; the test preamble declares it merely `text`, and an existing lifecycle fixture that omits
+  -- `kind` failed immediately on the first run of this correction.
+  --
+  -- That divergence caught a genuine fragility rather than exposing a harmless one, which is why the
+  -- preamble is NOT being tightened to match: a null kind must mean "not a fiduciary invitation" and
+  -- therefore "provision exactly as before", because the conservative default for an unrecognised
+  -- invitation is the path that existed before this change — never the one that creates no membership.
+  v_is_fiduciary := coalesce(v_inv.kind in ('executor', 'trustee'), false);
+
+  if not v_is_fiduciary then
+    insert into public.estate_memberships
+      (id, estate_id, user_id, role, status, source_invitation_id, approved_at, created_at)
+    values
+      (gen_random_uuid(), v_inv.estate_id, p_user, v_inv.proposed_role, 'approved', v_inv.id, now(), now())
+    on conflict (estate_id, user_id) do nothing
+    returning id into v_membership_id;
+    if v_membership_id is null then
+      select em.id into v_membership_id from public.estate_memberships em
+       where em.estate_id = v_inv.estate_id and em.user_id = p_user;
+    end if;
+
+    if v_inv.proposed_role::text = 'beneficiary' then
+      update public.beneficiaries set user_id = p_user
+       where estate_id = v_inv.estate_id and user_id is null
+         and ((v_inv.invitee_email is not null and lower(email) = lower(v_inv.invitee_email))
+              or (v_inv.invitee_phone is not null and phone = v_inv.invitee_phone));
+    end if;
+  else
+    /**
+     * ★ AN INDEPENDENTLY-HELD MEMBERSHIP IS REPORTED, NEVER CREATED, AND NEVER TOUCHED.
+     *
+     * A person may already be a beneficiary or professional delegate of this estate for reasons that
+     * have nothing to do with this invitation. Accepting a fiduciary invitation must leave that
+     * relationship exactly as it was — it is a separate authority on a separate axis. So this SELECTs
+     * an existing membership to report, and inserts none.
+     *
+     * ★ NULL IS A LEGITIMATE RETURN VALUE FROM HERE NOW. A fiduciary-only recipient has no membership,
+     * so there is no `estate_memberships.id` to hand back. Both callers were adjusted to tell the truth
+     * about that rather than assert an approved membership that does not exist, and the two BFF routes
+     * that read the result were adjusted to accept it — see `lib/invitations/accept.ts`. Deploying this
+     * routine BEFORE those callers would make every executor acceptance look like a 502.
+     */
     select em.id into v_membership_id from public.estate_memberships em
      where em.estate_id = v_inv.estate_id and em.user_id = p_user;
-  end if;
-
-  if v_inv.proposed_role::text = 'beneficiary' then
-    update public.beneficiaries set user_id = p_user
-     where estate_id = v_inv.estate_id and user_id is null
-       and ((v_inv.invitee_email is not null and lower(email) = lower(v_inv.invitee_email))
-            or (v_inv.invitee_phone is not null and phone = v_inv.invitee_phone));
   end if;
 
   if v_inv.kind in ('executor','trustee') then
@@ -2340,8 +2399,17 @@ begin
       perform public.provision_from_invitation(v_inv.id, v_user);   -- idempotent self-heal (re-stamps a missing designation)
       select em.id into v_membership_id from public.estate_memberships em
        where em.estate_id = v_inv.estate_id and em.user_id = v_user;
-      return query select v_membership_id, v_inv.estate_id,
-        (select e.name from public.estates e where e.id = v_inv.estate_id), v_inv.proposed_role::text, 'approved'::text;
+          -- ★ PHASE 11-MC: A FIDUCIARY ACCEPTANCE HAS NO MEMBERSHIP, SO IT REPORTS NONE.
+      -- `provision_from_invitation` no longer creates a membership for an executor/trustee invitation,
+      -- so `v_membership_id` is NULL for a recipient who holds no independent access class. Returning
+      -- the invitation's stale `proposed_role` and a hardcoded 'approved' would assert an approved
+      -- beneficiary membership that does not exist — the exact fiction this phase removes, restated on
+      -- the way out. Role and status are NULL together with the membership id; the fiduciary authority
+      -- is reported by `get_my_fiduciary_estates`, which is the surface that owns it.
+  return query select v_membership_id, v_inv.estate_id,
+        (select e.name from public.estates e where e.id = v_inv.estate_id),
+        case when v_membership_id is null then null else v_inv.proposed_role::text end,
+        case when v_membership_id is null then null else 'approved'::text end;
       return;
     else
       raise exception 'invitation_already_accepted' using errcode = 'P0005';
@@ -2369,7 +2437,9 @@ begin
     'afterworth://owner-invitations'
   );
   return query select v_membership_id, v_inv.estate_id,
-    (select e.name from public.estates e where e.id = v_inv.estate_id), v_inv.proposed_role::text, 'approved'::text;
+    (select e.name from public.estates e where e.id = v_inv.estate_id),
+    case when v_membership_id is null then null else v_inv.proposed_role::text end,
+    case when v_membership_id is null then null else 'approved'::text end;
 end;
 $function$;
 
