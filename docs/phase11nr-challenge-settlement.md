@@ -1,11 +1,13 @@
 # Phase 11-NR — the owner challenge settles the case it actually halted
 
-**STATUS: DEPLOYMENT_REQUIRED.** Nothing here is deployed. Claude does not execute production SQL.
+**STATUS: DEPLOYED_AND_VERIFIED** — pasted 2026-08-15 by the operator, verified read-only the same
+day. Evidence in §12. Claude did not execute production SQL.
 
 Remediates **FINDING 4** of the Branch A production fire drill
 (`afterworth-mobile/docs/phase11n-branch-a-report.md` §6). Branch A's verdict remains
-**`BRANCH_A_FAILED`** and is not changed by this work. Branch B remains **NOT STARTED** and stays
-blocked until this artifact is deployed and verified.
+**`BRANCH_A_FAILED`** and is not changed by this work. Branch B remains **NOT STARTED**: deployment
+and verification were a precondition, not the authorization — it additionally needs a **different**
+disposable estate and an explicit fresh drill decision (§11, §12.6).
 
 ---
 
@@ -365,3 +367,89 @@ is one nobody can rely on having happened.
 - It does **not** touch the standing fixture, the drill estate, or `afterworth-admin`.
 - It does **not** address FINDING 1 (no estate-rename path), FINDING 2 (no owner-driven fiduciary
   designation) or FINDING 3 (break-glass invitation copy). Those remain open product decisions.
+
+---
+
+## 12 · Post-deployment verification — DEPLOYED_AND_VERIFIED
+
+Pasted by the operator into the Supabase Web SQL Editor on 2026-08-15. Verified the same day.
+**No production state was mutated to obtain any of this evidence**: no estate was challenged, no case
+was repaired, no drain was triggered, and the historically diverged Branch A row was read only.
+
+### 12.1 · Provenance
+
+`db/bundles/challenge_settlement_bundle.sql` rebuilt from committed source at `a39098c` →
+`0f2f0bdfd5b4701365ab8ba9a3bb55a7a3c023e01b110d715667e904f42a4b42`, byte-identical to the artifact
+that was pasted, and the tree stayed clean across the rebuild.
+
+### 12.2 · The nine §9 verifiers, reconciled against source
+
+| # | Deployed answer | Committed source | Verdict |
+|---|---|---|---|
+| 1 | `widened_set_deployed=t`, `recipient_from_the_transition=t` | `release_safety.sql:497` — `and status in ('open', 'verified')`, one occurrence, with `returning initiated_by into v_initiator` | ✅ |
+| 2 | `narrow_predicate_absent=t` | `and status = 'open'` occurs **0** times in source | ✅ |
+| 3 | `owner_gated`, `replay_guarded`, `names_the_event`, `uses_the_catalog_emitter`, `composes_no_text` all `t` | all five present/absent as source declares | ✅ |
+| 4 | `auth=t`, `anon=f`, `client_can_emit=f`, `anon_can_emit=f` | `release_safety.sql:547-548` revoke from public/anon + grant to authenticated; migration 0050 revokes the emitter from public, anon **and** authenticated | ✅ |
+| 5 | `should_be_one=1` | `challenge_death_process(p_estate uuid)` — one parameter | ✅ |
+| 6 | `claimUpdate` / `Estate process halted` / `The estate process you initiated has been halted.` | catalog literal unchanged by this phase | ✅ |
+| 7 | `should_be_zero=0` | closed catalog preserved | ✅ |
+| 8 | `admits_halted=t`, `admits_verified=t` | migration 0054 CHECK — `('open','verified','rejected','cancelled','halted')` | ✅ |
+| 9 | `should_be_six=6` | `release_safety.sql` defines exactly six routines; the bundle carries six | ✅ |
+
+**Verifier 2 is precise only because of its `and ` prefix, and that is not incidental.** `prosrc`
+includes comments, and this phase's own remediation comment quotes the old predicate as
+`` `status = 'open'` ``. A check written without the prefix would have matched that documentation and
+reported the defect as still deployed — a false FAILED on a correct deployment. The prefix is what
+separates the predicate from the prose about the predicate.
+
+### 12.3 · Corroborating evidence (product paths, read-only)
+
+`verifySourceDeploymentDrift` exit 0 — 4 reconcilable contracts EXACT, `notification_event_copy`
+9/9 verbatim. `verifyDeployedContracts` exit 0 — `challenge_death_process` PRESENT with its own gate
+observed, `authorize_release` ADMIN-GATED, `release_estate` ABSENT, `estate_release_state` and both
+notification emitters LOCKED, `get_executor_workspace` / `get_my_fiduciary_estates` PRESENT.
+`fiduciaryFixtureSentinel` **23/23 exit 0** — the standing fixture never moved.
+
+**`release_authorization_authority` remains UNVERIFIABLE (stateful) in the drift reconciler and was
+not rounded up to EXACT.** The §9 body verifiers above are what carry that proof, which is exactly
+the division the reconciler documents for itself.
+
+### 12.4 · The Branch A forensic estate — unchanged, and deliberately so
+
+Read through the AAL2 operator case file and through product paths. Both agree:
+
+| Property | Value |
+|---|---|
+| `lifecycle.state` | `challenge_halted` |
+| `case.status` | `verified` |
+| `case.updated_at` | `2026-08-15T06:43:42.403419Z` — byte-identical to `decided_at` |
+| `lifecycle.halted_at` | `2026-08-15T06:47:15.534Z` |
+| `lifecycle.released_at` | `null` |
+| halt notifications | 0 |
+
+The divergence is **expected historical evidence, not a live remediation failure**. `challenge_halted`
+has no outbound transition and the routine's idempotent early return fires before the settlement
+statement, so no code path — corrected or not — can reach this row. The fix is forward-looking. It
+was not repaired, and repairing it would require exactly the manual write this programme forbids.
+
+### 12.5 · T2 — still outstanding
+
+`status=queued`, `dispatched_at=null`, `attempts=0`, `failure_class=null`, read at
+2026-08-15T08:04Z. The earliest scheduled drain after the 06:46:18Z enqueue is **2026-08-16T04:00Z**.
+`ENQUEUE_TO_DELIVERY_LATENCY` and `WINDOW_TO_DELIVERY_OFFSET` remain **NOT COMPUTABLE**. The drain
+was not triggered and no `CRON_SECRET` was used. `providerAccepted` will be provider acceptance, not
+inbox arrival.
+
+### 12.6 · Classification
+
+```
+FINDING 4 REMEDIATION:  DEPLOYED_AND_VERIFIED
+SUPABASE:               DEPLOYED_AND_VERIFIED
+BRANCH A:               BRANCH_A_FAILED   (unchanged — the remediation does not convert it)
+BRANCH B:               NOT STARTED
+```
+
+Branch A stays failed on its own terms: its Stage 12 produced no artifact and T2 was never observed.
+Branch B remains blocked pending a fresh, explicitly authorized drill on a **different** disposable
+estate — the corrected end-to-end path has not itself been exercised in production, and this
+verification does not claim otherwise.
