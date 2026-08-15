@@ -843,13 +843,46 @@ begin
      set halted_at = now()
    where estate_id = p_estate;
 
-  -- Any open case is halted — distinct from 'cancelled' (initiator withdrew): the owner said no.
-  -- ★ RETURNING gives us the initiator of the case actually halted HERE. At most one row can match:
-  -- `death_verification_cases_one_open_per_estate` is a partial unique index on (estate_id) where
-  -- status = 'open', so `into` is safe and there is structurally no set to broadcast to.
+  -- The live case is halted — distinct from 'cancelled' (initiator withdrew): the owner said no.
+  --
+  -- ★ PHASE 11-NR — THE SET IS ('open','verified'), AND 'open' ALONE WAS THE DEFECT. This predicate
+  -- read `status = 'open'`, which is the case status at exactly ONE of the four lifecycle states this
+  -- routine can be reached from. The Branch A production drill measured the consequence: on the
+  -- canonical operator-driven path the estate reached challenge_halted while its case row stayed
+  -- 'verified', `v_initiator` came back NULL, and the 11-L halt notification — the entire deliverable
+  -- of that phase — was never emitted to anybody. The case also stayed in the operator's `verified`
+  -- work queue, invisible to a `halted` filter, with the queue row stating the contradiction outright.
+  --
+  -- The set is CLOSED and derived from the transition map, never "every row for this estate":
+  --
+  --   death_verification_pending    → case is 'open'      (initiate)
+  --   death_verified                → case is 'verified'  (admin_decide 'verify')
+  --   owner_notification_dispatched → case is 'verified'  (dispatch requires a verified case)
+  --   challenge_window              → case is 'verified'  (begin_challenge_window requires one)
+  --
+  -- 'rejected' and 'cancelled' both return the lifecycle to `active`, where this routine has already
+  -- raised `nothing_to_challenge` — they are decided history and settling them would overwrite an
+  -- adjudication that did happen. 'halted' is excluded as a SECOND, independent guard against a
+  -- re-stamp: the idempotent return above already refuses to reach this statement.
+  --
+  -- ★ AND IT STILL MATCHES AT MOST ONE ROW, WHICH NO LONGER FOLLOWS FROM THE INDEX ALONE.
+  -- `death_verification_cases_one_open_per_estate` makes 'open' unique per estate; 'verified' is
+  -- unique per estate for a different reason, and it is the state machine that supplies it. A
+  -- verified case pins the lifecycle at death_verified or beyond, `initiate_death_verification_case`
+  -- refuses unless the lifecycle is `active`, and no edge returns there from death_verified — so a
+  -- second case cannot be opened once one is verified, and an 'open' case cannot coexist with a
+  -- 'verified' one. Historical 'rejected' / 'cancelled' rows DO coexist and are excluded by the
+  -- predicate. `into` therefore still has no set to choose from arbitrarily, and
+  -- `release_safety_authorization.sql` §8 proves it on an estate that actually carries a decided
+  -- historical case beside the live one.
+  --
+  -- ★ RETURNING gives us the initiator of the case actually settled HERE. A separate SELECT could
+  -- name a case this call did not touch — one already halted, one from a prior rejected attempt, or
+  -- one halted by a concurrent transaction — and would notify the wrong person, or notify twice
+  -- about a process that stopped once.
   update public.death_verification_cases
      set status = 'halted', updated_at = now()
-   where estate_id = p_estate and status = 'open'
+   where estate_id = p_estate and status in ('open', 'verified')
   returning initiated_by into v_initiator;
 
   -- ────────────────────────────────────────────────────────────────────────────────────────────

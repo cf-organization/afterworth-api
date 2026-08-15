@@ -1466,8 +1466,105 @@ const MUTATIONS = Object.freeze([
       + 'product and notifies every initiator — mass disclosure plus mass corruption of unrelated '
       + 'workflows, from a single authorized action on a single estate.',
     file: 'db/functions/release_safety.sql',
-    from: "   where estate_id = p_estate and status = 'open'\n  returning initiated_by into v_initiator;",
-    to: "   where status = 'open'\n  returning initiated_by into v_initiator;",
+    from: "   where estate_id = p_estate and status in ('open', 'verified')\n  returning initiated_by into v_initiator;",
+    to: "   where status in ('open', 'verified')\n  returning initiated_by into v_initiator;",
+  },
+
+  /* ══ PHASE 11-NR · the settlement predicate — the Branch A production defect ═══════════════════ */
+  {
+    /**
+     * ★ THE EXACT REGRESSION. This is the pre-11-NR source, character for character, and it is the
+     * defect the Branch A production fire drill measured on a real estate: lifecycle
+     * challenge_halted, case row still 'verified', v_initiator NULL, zero halt notifications, and
+     * the settled case still answering the operator's `verified` filter.
+     *
+     * ★ IT MUST BE KILLED BY §8 AND NOT BY §7. §7 halts from `death_verification_pending`, where the
+     * case IS 'open' — this mutation is invisible there, which is precisely why the defect shipped
+     * green and survived a whole phase sign-off.
+     */
+    id: 'p11nr-settlement-narrowed-to-open',
+    why: 'THE BRANCH A DEFECT, RESTORED. `status = \'open\'` is the case status at exactly ONE of the '
+      + 'four lifecycle states the owner challenge is reachable from. On every operator-driven '
+      + 'process — verify → dispatch → window → challenge — the case is \'verified\', the UPDATE '
+      + 'matches nothing, and the entire Phase 11-L halt notification is silently never emitted. The '
+      + 'estate halts while its case row and the operator queue both still say a death verification '
+      + 'is standing.',
+    file: 'db/functions/release_safety.sql',
+    from: "   where estate_id = p_estate and status in ('open', 'verified')",
+    to: "   where estate_id = p_estate and status = 'open'",
+  },
+  {
+    /**
+     * ★ THE OPPOSITE ERROR, AND THE REASON THE SET IS CLOSED RATHER THAN "ANY ROW". The obvious
+     * over-correction for the mutation above is to stop filtering on status at all. §8 carries a
+     * REJECTED historical case on the same estate, initiated by a different fiduciary, so this edit
+     * overwrites an operator adjudication that really happened AND makes two rows eligible to supply
+     * the recipient — which `into` then chooses between arbitrarily.
+     */
+    id: 'p11nr-settlement-widened-to-every-case',
+    why: 'THE SETTLEMENT SET, OPENED. Halting now overwrites REJECTED and CANCELLED historical cases '
+      + 'on the same estate — destroying the record that an operator rejected a prior claim, or that '
+      + 'a fiduciary withdrew one — and lets more than one row satisfy the RETURNING, so the '
+      + 'notification recipient becomes whichever row the executor happened to reach first.',
+    file: 'db/functions/release_safety.sql',
+    from: "   where estate_id = p_estate and status in ('open', 'verified')",
+    to: '   where estate_id = p_estate and status is not null',
+  },
+  {
+    /**
+     * ★ PROVENANCE RECOVERED BY A SECOND LOOKUP INSTEAD OF FROM THE TRANSITION. This is the shape
+     * the routine's own comment forbids, and §8 is the fixture that can finally see it: the estate
+     * carries an older REJECTED case whose initiator is a DIFFERENT person, and `order by created_at`
+     * reaches that one first. The halt then tells the wrong fiduciary their process stopped.
+     */
+    id: 'p11nr-recipient-from-a-later-select',
+    why: 'THE RECIPIENT, RE-DERIVED AFTER THE FACT. A SELECT that runs beside the UPDATE rather than '
+      + 'inside it can name a case this call did not settle — here, a prior REJECTED attempt by a '
+      + 'different fiduciary. The person owed the message gets nothing and a stranger to this '
+      + 'process is told a death process concerning them has halted.',
+    file: 'db/functions/release_safety.sql',
+    from: "   where estate_id = p_estate and status in ('open', 'verified')\n  returning initiated_by into v_initiator;",
+    to: "   where estate_id = p_estate and status in ('open', 'verified');\n  select initiated_by into v_initiator from public.death_verification_cases\n   where estate_id = p_estate order by created_at limit 1;",
+  },
+  {
+    /**
+     * ★ THE LIFECYCLE MOVES AND THE CASE DOES NOT — the divergence itself, injected directly rather
+     * than as a side effect of the predicate. The notification still fires (the row still matches,
+     * so RETURNING still yields the initiator), which is what makes this distinct from the narrowing
+     * above: it isolates the CASE-CLASSIFICATION half of the defect from the NOTIFICATION half.
+     */
+    id: 'p11nr-case-status-not-settled',
+    why: 'THE CASE IS NEVER SETTLED. The lifecycle reaches challenge_halted while the case row keeps '
+      + 'whatever status it had, so the operator queue continues to present a halted estate as live '
+      + 'verification work and a `halted` filter can never find it — the exact operational '
+      + 'consequence measured on the Branch A drill estate.',
+    file: 'db/functions/release_safety.sql',
+    from: "     set status = 'halted', updated_at = now()",
+    to: '     set updated_at = now()',
+  },
+  {
+    /**
+     * ★ THE REPLAY GUARD NEUTERED FROM THE INSIDE, AND THE SHAPE IS DELIBERATE. The obvious edit —
+     * replacing the `if` line with `if false` — is refused at BUILD time, because
+     * `buildHaltNotificationBundle.mjs` pins `if v_state = 'challenge_halted' then` as a standing
+     * artifact control. A mutation that dies there proves only that the builder is watching, which
+     * is the one thing this harness must never accept as evidence (the `p11b-legacy-fused` lesson,
+     * and the four 11-L needles removed for exactly this reason).
+     *
+     * So the pinned line is left EXACTLY as it is and the RETURN inside it becomes a no-op. The
+     * artifact still contains everything the builder asserts; the behaviour is gone; the runtime
+     * layer is what votes. Replay then falls through to a challenge_halted → challenge_halted
+     * transition, which the closed map has no edge for, so the owner's second halt RAISES.
+     */
+    id: 'p11nr-idempotent-replay-guard-neutered',
+    why: 'THE REPLAY GUARD, MADE UNREACHABLE FROM THE INSIDE. A second owner challenge stops '
+      + 'returning cleanly and falls into a transition the map does not have, so it raises. An owner '
+      + 'who taps halt twice — or whose client retries — is told their protective action failed on a '
+      + 'process that has in fact already been halted, which is the one message this surface must '
+      + 'never send.',
+    file: 'db/functions/release_safety.sql',
+    from: "    return 'challenge_halted'; -- idempotent replay: no re-stamp, no re-audit",
+    to: '    null; -- mutation: the replay falls through instead of returning',
   },
 
   /* ══ PHASE 11-MB · fiduciary estate discovery ═════════════════════════════════════════════════ */
