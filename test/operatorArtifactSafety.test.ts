@@ -57,7 +57,21 @@ describe("0 · the audit is reading something", () => {
     // module, and re-pasting the 17-part lifecycle bundle to ship one branch would put ~140KB of
     // unrelated DDL back through a hand-paste. A small artifact stays the cheaper thing to review and
     // the cheaper thing to roll back.
-    expect(artifacts.length).toBe(10);
+    //
+    // ★ 11-NR IS THE 11th, AND IT IS ONE PART. It remediates FINDING 4 from the Branch A production
+    // fire drill: `challenge_death_process` settled the case only from `status = 'open'`, which is
+    // the status at ONE of the four lifecycle states the owner challenge is reachable from — so on
+    // every operator-driven process the case row stayed `verified`, the halt notification was never
+    // emitted to anybody, and the settled case stayed in the operator's `verified` work queue.
+    //
+    // `halt_notification_bundle.sql` already carries the changed file, so this artifact could have
+    // been skipped entirely. It exists because that bundle ALSO re-pastes
+    // `lifecycle_notification_rpcs.sql`, and nothing in the notification catalog changed here.
+    // Shipping only the file that changed keeps the deployment diff and the blast radius the same
+    // set — re-pasting an unrelated DEFINER body is exactly what the `create_asset_grant` near-miss
+    // (Phase 10-E) cost. It adds no object, no migration and no grant: `'halted'` has been in the
+    // case-status CHECK since migration 0054, added for this very transition.
+    expect(artifacts.length).toBe(11);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

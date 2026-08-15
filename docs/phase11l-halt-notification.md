@@ -6,6 +6,33 @@ applied; what is missing until then is the message to the fiduciary.
 
 ---
 
+> ## ⚠ SUPERSEDED IN PART BY PHASE 11-NR — read `docs/phase11nr-challenge-settlement.md` first
+>
+> **This phase shipped, was proved green, and did not work on the path that matters.** The
+> Branch A production fire drill (2026-08-15) measured it: the notification described below is
+> **never emitted on any operator-driven process**.
+>
+> `challenge_death_process` settled the case with `where … and status = 'open'`. That is the case
+> status at exactly ONE of the four lifecycle states the owner challenge is reachable from. On the
+> canonical path — initiate → verify → dispatch → window → challenge — the case is `verified`, the
+> UPDATE matched no row, its `returning initiated_by` yielded NULL, and the emission was skipped.
+>
+> **Nothing below is retracted; the record stands as written.** Two things in it are, however,
+> narrower than they read, and a future operator should know which:
+>
+> - §5 verifier 6's note — *"the `'halted'` value is written by `challenge_death_process` on every
+>   halt **where a case is open**"* — is literally true and was the defect stated in passing. It was
+>   read at the time as a caveat about an edge case; it was in fact a description of the only branch
+>   that worked.
+> - §5 has **no verifier for the settlement predicate itself**, which is why a post-deployment
+>   check could pass on a database where the notification could never fire. 11-NR adds one.
+>
+> The 11-NR remediation widens the settlement set to `('open','verified')`, re-anchors the SQL suite
+> on the canonical path (`release_safety_authorization.sql` §8 — §7 here only ever halted from
+> `death_verification_pending`), and ships `db/bundles/challenge_settlement_bundle.sql`.
+
+---
+
 ## 1 · The artifact
 
 ```

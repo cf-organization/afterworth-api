@@ -133,6 +133,11 @@ export const SQL_BUNDLES = Object.freeze([
   ['scripts/buildFiduciaryDiscoveryBundle.mjs', 'db/bundles/fiduciary_discovery_bundle.sql'],
   // ★ PHASE 11-MC. Registered so the atomicity verifier and every rebuild-before-trust step cover it.
   ['scripts/buildProvisioningCorrectionBundle.mjs', 'db/bundles/provisioning_correction_bundle.sql'],
+  // ★ PHASE 11-NR. The FINDING 4 remediation: one part, `release_safety.sql`. Registered here so the
+  // atomicity verifier and every rebuild-before-trust step cover it — including the mutation runner,
+  // which rebuilds every registered artifact inside its worktree and would otherwise let a mutated
+  // body reach the suite through one bundle while this one still carried the unmutated text.
+  ['scripts/buildChallengeSettlementBundle.mjs', 'db/bundles/challenge_settlement_bundle.sql'],
 ]);
 
 /**

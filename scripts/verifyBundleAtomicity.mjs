@@ -166,6 +166,29 @@ const WITNESS = {
   'db/bundles/fiduciary_discovery_bundle.sql':
     "select to_regprocedure('public.get_my_fiduciary_estates()') is not null",
   /**
+   * ★ PHASE 11-NR. Like 11-L, this artifact CREATES NO NEW NAME — it replaces one file's worth of
+   * existing functions — so `to_regprocedure(...) is not null` cannot testify: every name exists
+   * before it runs and after. The only observable state delta is BODY CONTENT, and the body content
+   * that matters is the one the remediation changes: whether the deployed `challenge_death_process`
+   * settles the case from the widened set or only from 'open'.
+   *
+   * ★ AND IT WILL REPORT NO_STATE_DELTA, WHICH IS THE HONEST ANSWER AND NOT A DISAPPOINTING ONE.
+   * The harness seeds its baseline from current source, and `death_verification_bundle` — rebuilt
+   * from the same edited file — already carries the corrected body. So the witness is true before
+   * this artifact runs, exactly as it is for `halt_notification_bundle` and
+   * `estate_release_state_lockdown_bundle`, and the harness excludes it from the verdict rather
+   * than scoring it.
+   *
+   * The alternative was to hunt for some observable that happens to discriminate here, which is
+   * choosing an observable to make a number come out right. Atomicity for this artifact rests on
+   * structure instead — pure SQL, exactly one begin/commit, one transaction, all asserted above —
+   * and the corrupted-run injection still executes against it either way.
+   */
+  'db/bundles/challenge_settlement_bundle.sql':
+    "select exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
+    + "where n.nspname = 'public' and p.proname = 'challenge_death_process' "
+    + "and p.prosrc like '%status in (''open'', ''verified'')%')",
+  /**
    * ★ PHASE 11-MC. This artifact creates no new NAME — it replaces four existing bodies — so the witness
    * is BODY CONTENT: whether `provision_from_invitation` carries the `kind` gate.
    *

@@ -11,7 +11,9 @@
 --       D challenge_window · E challenge_halted), and `released` discloses only what an EXISTING
 --       owner-authored grant already authorized;
 --   2 · the owner challenge is owner-only, evidence-free, review-free, designation-free,
---       idempotent, terminal, and WINS THE EXACT BOUNDARY TIE;
+--       idempotent, terminal, and WINS THE EXACT BOUNDARY TIE — and it settles the case row and
+--       notifies the initiating fiduciary from EVERY lifecycle state it is reachable from, not only
+--       from `death_verification_pending` (§8, Phase 11-NR);
 --   3 · release refuses before the window elapses, without a committed owner notice, without a
 --       verified case, without configuration, from a halted process, and from any other state;
 --   4 · nothing anywhere manufactures a grant, tier, membership or designation.
@@ -1250,12 +1252,20 @@ begin
 end $rs6$;
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
--- 7 · PHASE 11-L — THE HALT NOTIFICATION REACHES THE INITIATING FIDUCIARY, AND NOBODY ELSE
+-- 7 · PHASE 11-L — THE HALT NOTIFICATION, HALTED FROM `death_verification_pending`
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 --
 -- Every assertion here is about a notification ROW, because that is the only artifact the recipient
 -- ever sees. The stage is built so each rule is observable: a fixture where the recipient is not the
 -- caller, a second estate with its OWN initiator, a revoked designation, and a failed halt.
+--
+-- ★ SCOPE, CORRECTED IN PHASE 11-NR. Every estate in this section halts IMMEDIATELY AFTER
+-- `initiate`, so every case here is 'open' and the section speaks only for that entry state. It was
+-- previously read — by its own title, and by 11-M §14 — as evidence that the halt notification works
+-- generally. It is not: the Branch A production drill walked verify → dispatch → window → halt and
+-- found the notification could not fire there at all. The claim this section is entitled to make is
+-- "halting a PENDING process notifies its initiator". The canonical operator-driven path is §8, and
+-- neither section is a substitute for the other.
 do $rs7$
 declare
   OWNER_H uuid; EXEC_H uuid; BEN_H uuid; H uuid; v_case_h uuid;
@@ -1534,6 +1544,322 @@ begin
   end if;
   raise notice '  ok   exactly 2 halt notifications: one on H, one on R, none on X (4 halt attempts)';
 end $rs7$;
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 8 · PHASE 11-NR — THE CANONICAL OPERATOR-DRIVEN PATH, WHICH §7 NEVER TRAVERSED
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- ★ WHY THIS SECTION EXISTS, STATED AS THE DEFECT IT WOULD HAVE CAUGHT. Every halt in §2, §3 and §7
+-- fires IMMEDIATELY AFTER `initiate`, from `death_verification_pending`, where the case status is
+-- 'open'. That is one of FOUR lifecycle states the challenge is reachable from, and it is the only
+-- one where the pre-11-NR predicate `status = 'open'` matched anything. The suite did not merely
+-- lack a test for the other three — it encoded the one working branch as THE representative branch,
+-- which is why 11-L shipped, was proved green, and was dead on every operator-driven process.
+--
+-- The Branch A production fire drill found it by walking the real path:
+--   lifecycle challenge_halted · case row still 'verified' · v_initiator NULL · zero notifications ·
+--   the halted case still sitting in the operator's `verified` queue.
+--
+-- ★ THE FIXTURE IS BUILT SO THE TRANSFORMATION IS OBSERVABLE, which is the whole rule §7 broke:
+--
+--   · the case reaching the challenge is 'verified', so the OLD predicate matches NOTHING — asserted
+--     explicitly below, so later fixture drift cannot quietly make this section tautological again;
+--   · a DECOY case is present — a prior attempt on the same estate, initiated by a DIFFERENT
+--     fiduciary and REJECTED by an operator — so a predicate that settles "every row for the estate"
+--     is detectable, and so is a recipient recovered from the wrong row;
+--   · both case rows are AGED before the challenge, because `now()` is transaction-constant and an
+--     `updated_at` assertion written against it is a control that cannot fail.
+do $rs8$
+declare
+  OWNER_V uuid; EXEC_V uuid; EXEC_P uuid; BEN_V uuid; ADMIN_V uuid; V uuid;
+  OWNER_Z uuid; Z uuid;
+  v_case_v uuid; v_case_p uuid;
+  v_aged_v timestamptz; v_aged_p timestamptz;
+  v_decided_by uuid; v_decided_at timestamptz;
+  v_res text; n int;
+  cat_title text; cat_body text; cat_kind text;
+  row_user uuid; row_title text; row_body text; row_link text;
+  q_verified jsonb; q_halted jsonb;
+begin
+  raise notice ' ';
+  raise notice '8 · the canonical operator-driven path (Phase 11-NR)';
+
+  insert into auth.users default values returning id into OWNER_V;
+  insert into auth.users default values returning id into EXEC_V;
+  insert into auth.users default values returning id into EXEC_P;
+  insert into auth.users default values returning id into BEN_V;
+  insert into auth.users default values returning id into ADMIN_V;
+  -- D4: dispatch REFUSES without an independently reachable owner address.
+  update auth.users set email = 'rs-owner-v@example.invalid' where id = OWNER_V;
+  insert into public.estates (owner_id, name) values (OWNER_V, 'RS Estate V') returning id into V;
+  insert into public.estate_memberships (estate_id, user_id, role, status) values
+    (V, OWNER_V, 'primary_user', 'approved'),
+    (V, BEN_V,   'beneficiary',  'approved');
+  -- TWO active fiduciaries: the decoy's initiator and the live case's initiator must be different
+  -- people, or "the recipient came from the right row" is unobservable.
+  insert into public.estate_designations (estate_id, user_id, designation_type, status) values
+    (V, EXEC_P, 'executor', 'active'),
+    (V, EXEC_V, 'trustee',  'active');
+  insert into public.admins (user_id) values (ADMIN_V) on conflict do nothing;
+
+  select category, title, body into cat_kind, cat_title, cat_body
+    from public.notification_event_copy('death_process.halted');
+  if cat_title is null then
+    raise exception 'FAIL[control]: the catalog has no death_process.halted entry';
+  end if;
+
+  -- ── THE DECOY: a prior attempt, by a DIFFERENT fiduciary, REJECTED through the real door ───────
+  if harness_rs.attempt(EXEC_P, format('select public.initiate_death_verification_case(%L)', V)) <> 'OK' then
+    raise exception 'FAIL[precondition]: EXEC_P could not open the decoy case on V';
+  end if;
+  select id into v_case_p from public.death_verification_cases where estate_id = V and status = 'open';
+  v_res := harness_rs.as_admin(ADMIN_V,
+    format('select public.admin_decide_death_verification_case(%L, ''reject'')', v_case_p));
+  if v_res <> 'OK' then raise exception 'FAIL[precondition]: rejecting the decoy refused: %', v_res; end if;
+  if public.estate_lifecycle_state(V) <> 'active' then
+    raise exception 'FAIL[precondition]: a rejected case did not return the lifecycle to active';
+  end if;
+  raise notice '  ok   a prior case exists on V, initiated by a DIFFERENT fiduciary and REJECTED';
+
+  -- ── THE LIVE CASE, WALKED THROUGH EVERY REAL DOOR ──────────────────────────────────────────────
+  if harness_rs.attempt(EXEC_V, format('select public.initiate_death_verification_case(%L)', V)) <> 'OK' then
+    raise exception 'FAIL[precondition]: EXEC_V could not initiate the live case on V';
+  end if;
+  select id into v_case_v from public.death_verification_cases where estate_id = V and status = 'open';
+  if v_case_v = v_case_p then
+    raise exception 'FAIL[precondition]: the live case and the decoy are the same row';
+  end if;
+
+  v_res := harness_rs.as_admin(ADMIN_V,
+    format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case_v));
+  if v_res <> 'OK' then raise exception 'FAIL[precondition]: attained level refused: %', v_res; end if;
+  v_res := harness_rs.as_admin(ADMIN_V,
+    format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case_v));
+  if v_res <> 'OK' then raise exception 'FAIL[precondition]: verify refused: %', v_res; end if;
+  v_res := harness_rs.as_admin(ADMIN_V, format('select public.dispatch_owner_safety_notice(%L)', V));
+  if v_res <> 'OK' then raise exception 'FAIL[precondition]: dispatch refused: %', v_res; end if;
+  v_res := harness_rs.as_admin(ADMIN_V, format('select public.begin_challenge_window(%L)', V));
+  if v_res <> 'OK' then raise exception 'FAIL[precondition]: opening the window refused: %', v_res; end if;
+
+  -- ── THE ANCHOR. These four assertions are what make this section a control that CAN fail. ──────
+  if public.estate_lifecycle_state(V) <> 'challenge_window' then
+    raise exception 'FAIL[anchor]: the lifecycle is %, not challenge_window', public.estate_lifecycle_state(V);
+  end if;
+  if (select status from public.death_verification_cases where id = v_case_v) <> 'verified' then
+    raise exception 'FAIL[anchor]: the live case is %, not verified — this fixture is no longer on '
+      'the canonical path', (select status from public.death_verification_cases where id = v_case_v);
+  end if;
+  -- ★ THE PRE-11-NR PREDICATE MATCHES NOTHING HERE, AND THAT IS ASSERTED RATHER THAN ASSUMED. If a
+  -- future edit reintroduces an open case at this point, every assertion below would pass under the
+  -- OLD implementation and this section would silently stop testing the widening.
+  if exists (select 1 from public.death_verification_cases where estate_id = V and status = 'open') then
+    raise exception 'FAIL[anchor]: an OPEN case exists on V at challenge time — the pre-11-NR '
+      'predicate (status = ''open'') would match, so this fixture can no longer observe the widening';
+  end if;
+  if (select status from public.death_verification_cases where id = v_case_p) <> 'rejected' then
+    raise exception 'FAIL[anchor]: the decoy is not rejected';
+  end if;
+  raise notice '  ok   ANCHOR: lifecycle challenge_window · live case VERIFIED · no open case exists';
+
+  -- The verification decision is a recorded fact that the halt must PRESERVE, not erase.
+  select decided_by, decided_at into v_decided_by, v_decided_at
+    from public.death_verification_cases where id = v_case_v;
+  if v_decided_by is null or v_decided_at is null then
+    raise exception 'FAIL[precondition]: the verified case carries no decision to preserve';
+  end if;
+
+  -- ★ AGED, BECAUSE now() IS TRANSACTION-CONSTANT. Without this, "the halt touched the row" and "the
+  -- halt did not touch the decoy" are both trivially true and neither can fail.
+  update public.death_verification_cases set updated_at = now() - interval '1 hour'
+   where estate_id = V;
+  select updated_at into v_aged_v from public.death_verification_cases where id = v_case_v;
+  select updated_at into v_aged_p from public.death_verification_cases where id = v_case_p;
+
+  -- ── NEGATIVE CONTROL, BEFORE THE HALT: an unauthorized challenge emits nothing ─────────────────
+  select count(*) into n from public.notifications where estate_id = V and kind = 'claimUpdate';
+  if n <> 0 then raise exception 'FAIL[precondition]: V already carries a claimUpdate row'; end if;
+  v_res := harness_rs.attempt(BEN_V, format('select public.challenge_death_process(%L)', V));
+  if v_res <> 'ERR:not_authorized' then
+    raise exception 'FAIL: a beneficiary challenge on the canonical path got %', v_res;
+  end if;
+  if (select count(*) from public.notifications where estate_id = V and kind = 'claimUpdate') <> 0 then
+    raise exception 'FAIL: a REFUSED challenge emitted a halt notification';
+  end if;
+  if (select status from public.death_verification_cases where id = v_case_v) <> 'verified' then
+    raise exception 'FAIL: a REFUSED challenge settled the case';
+  end if;
+  raise notice '  ok   NEGATIVE: an unauthorized challenge settles nothing and emits nothing';
+
+  -- ── THE OWNER CHALLENGES, FROM challenge_window ────────────────────────────────────────────────
+  if harness_rs.attempt(OWNER_V, format('select public.challenge_death_process(%L)', V)) <> 'OK' then
+    raise exception 'FAIL: the owner could not halt from challenge_window on the canonical path';
+  end if;
+
+  if public.estate_lifecycle_state(V) <> 'challenge_halted' then
+    raise exception 'FAIL: the canonical-path challenge did not halt the lifecycle';
+  end if;
+  -- ★ THE ASSERTION THE WHOLE SECTION EXISTS FOR.
+  if (select status from public.death_verification_cases where id = v_case_v) <> 'halted' then
+    raise exception 'FAIL[11-NR]: the VERIFIED case reads % after an owner challenge, not halted — '
+      'the lifecycle says challenge_halted while the case row says otherwise, which is exactly the '
+      'divergence the Branch A drill measured in production',
+      (select status from public.death_verification_cases where id = v_case_v);
+  end if;
+  if (select updated_at from public.death_verification_cases where id = v_case_v) <= v_aged_v then
+    raise exception 'FAIL[11-NR]: the halt did not touch the live case row (updated_at unmoved)';
+  end if;
+  raise notice '  ok   the VERIFIED case settles to halted, and the row was actually written';
+
+  -- ── THE DECOY IS UNTOUCHED: the settlement set is closed, not "every row for this estate" ──────
+  if (select status from public.death_verification_cases where id = v_case_p) <> 'rejected' then
+    raise exception 'FAIL: the halt overwrote a REJECTED historical case — an operator adjudication '
+      'that did happen was erased by a settlement predicate that is too wide';
+  end if;
+  if (select updated_at from public.death_verification_cases where id = v_case_p) <> v_aged_p then
+    raise exception 'FAIL: the halt wrote to the rejected historical case row';
+  end if;
+  -- Exactly ONE row on this estate was settled by this call.
+  select count(*) into n from public.death_verification_cases where estate_id = V and status = 'halted';
+  if n <> 1 then
+    raise exception 'FAIL: % cases on V read halted, expected exactly 1 — more than one row supplied '
+      'the recipient and `into` chose between them arbitrarily', n;
+  end if;
+  raise notice '  ok   exactly ONE case settled; the rejected historical case is byte-unchanged';
+
+  -- ── THE VERIFICATION DECISION SURVIVES THE HALT ────────────────────────────────────────────────
+  -- §2 asserts a halted case carries no decision — TRUE for a case halted from `pending`, which was
+  -- never decided. On this path the decision is a real recorded fact about an operator's act, and a
+  -- halt that erased it would be destroying the case file, not settling it.
+  if (select decided_by from public.death_verification_cases where id = v_case_v) is distinct from v_decided_by
+     or (select decided_at from public.death_verification_cases where id = v_case_v) is distinct from v_decided_at then
+    raise exception 'FAIL: the halt overwrote the verification decision (decided_by / decided_at)';
+  end if;
+  raise notice '  ok   the operator''s verification decision is preserved, not erased';
+
+  -- ── THE NOTIFICATION: exactly one, to the initiator of the case ACTUALLY SETTLED ───────────────
+  select count(*) into n from public.notifications where estate_id = V and kind = 'claimUpdate';
+  if n <> 1 then
+    raise exception 'FAIL[11-NR]: the canonical-path halt produced % halt notification(s), expected '
+      'exactly 1 — this is the artifact Branch A Stage 12 could not observe', n;
+  end if;
+  select user_id, title, body, action_deep_link
+    into row_user, row_title, row_body, row_link
+    from public.notifications where estate_id = V and kind = 'claimUpdate';
+  if row_user <> EXEC_V then
+    raise exception 'FAIL: the halt notification went to the wrong person — expected the initiator '
+      'of the SETTLED case, got %', (case when row_user = EXEC_P then 'the initiator of the REJECTED '
+      'historical case' else 'someone who initiated nothing here' end);
+  end if;
+  if row_title is distinct from cat_title or row_body is distinct from cat_body then
+    raise exception 'FAIL: the emitted copy differs from the catalog — text was composed at the '
+      'emission site';
+  end if;
+  if row_link is not null then
+    raise exception 'FAIL: the halt notification carries a deep link (%)', row_link;
+  end if;
+  -- No owner-liveness or provenance disclosure, on the path where the owner demonstrably responded.
+  if row_body ilike '%@%' or row_body ilike '%email%' or row_body ilike '%owner%'
+     or row_body ilike '%alive%' or row_body ilike '%responded%' or row_body ilike '%channel%' then
+    raise exception 'FAIL: the halt copy discloses owner liveness or channel: %', row_body;
+  end if;
+  if row_body like ('%' || V::text || '%') or row_body like ('%' || OWNER_V::text || '%')
+     or row_body ilike '%RS Estate V%' then
+    raise exception 'FAIL: the halt copy interpolates an identifier or the estate name: %', row_body;
+  end if;
+  -- The OWNER, who performed the halt, must not receive claimant-facing copy about it; nor may the
+  -- decoy's initiator, nor a beneficiary.
+  if exists (select 1 from public.notifications where estate_id = V and kind = 'claimUpdate'
+              and user_id in (OWNER_V, EXEC_P, BEN_V)) then
+    raise exception 'FAIL: the halt notification reached the owner, the decoy initiator or a beneficiary';
+  end if;
+  raise notice '  ok   ONE notification, to the SETTLED case''s initiator, catalog copy, no deep link';
+
+  -- ── POSITIVE CONTROL: the owner notice from Stage D still exists and still reaches the owner ───
+  -- Without this, "the fiduciary got exactly one row" could equally describe a notification layer
+  -- that had stopped working for everyone on this estate.
+  if (select count(*) from public.notifications
+       where estate_id = V and user_id = OWNER_V and title = 'A release process is waiting') <> 1 then
+    raise exception 'FAIL[control]: the owner safety notice is missing — the notification layer is '
+      'broken on this estate, so the fiduciary assertions above prove nothing';
+  end if;
+  raise notice '  ok   CONTROL: the owner safety notice still exists (the layer works on V)';
+
+  -- ── STAGE 5 · THE OPERATOR QUEUE, THROUGH THE REAL RPC ─────────────────────────────────────────
+  -- ★ THE PREDICATE IS THE PRODUCT'S, NOT A HAND-WRITTEN APPROXIMATION. `p_status` is the filter an
+  -- operator actually selects in the console, and the measured Branch A consequence was that a
+  -- halted estate's case answered the `verified` filter and was invisible to `halted`.
+  q_verified := harness_rs.as_admin_json(ADMIN_V, format(
+    'select coalesce(jsonb_agg(jsonb_build_object(''case_id'', q.case_id, ''case_status'', q.case_status, '
+    || '''lifecycle_state'', q.lifecycle_state) order by q.case_id), ''[]''::jsonb) '
+    || 'from public.admin_list_death_verification_cases(''verified'') q where q.estate_id = %L', V));
+  q_halted := harness_rs.as_admin_json(ADMIN_V, format(
+    'select coalesce(jsonb_agg(jsonb_build_object(''case_id'', q.case_id, ''case_status'', q.case_status, '
+    || '''lifecycle_state'', q.lifecycle_state) order by q.case_id), ''[]''::jsonb) '
+    || 'from public.admin_list_death_verification_cases(''halted'') q where q.estate_id = %L', V));
+
+  if jsonb_array_length(q_verified) <> 0 then
+    raise exception 'FAIL[queue]: the halted estate''s case is STILL in the operator verified queue: %',
+      q_verified;
+  end if;
+  if jsonb_array_length(q_halted) <> 1 then
+    raise exception 'FAIL[queue]: the halted filter returns % row(s) for V, expected 1 — an operator '
+      'cannot find the case they just watched stop', jsonb_array_length(q_halted);
+  end if;
+  if (q_halted -> 0 ->> 'case_id') <> v_case_v::text then
+    raise exception 'FAIL[queue]: the halted filter returned the wrong case';
+  end if;
+  -- ★ THE INVARIANT: the two authorities cannot disagree. The queue projects both, side by side,
+  -- which is precisely how the drill saw `case_status: verified` beside `lifecycle_state:
+  -- challenge_halted` in one row.
+  if (q_halted -> 0 ->> 'case_status') <> 'halted'
+     or (q_halted -> 0 ->> 'lifecycle_state') <> 'challenge_halted' then
+    raise exception 'FAIL[queue]: case classification and lifecycle disagree in the operator queue: %',
+      q_halted;
+  end if;
+  raise notice '  ok   OPERATOR QUEUE: absent from `verified`, present in `halted`, both authorities agree';
+
+  -- ── IDEMPOTENT REPLAY ON THE CANONICAL PATH ────────────────────────────────────────────────────
+  if harness_rs.attempt(OWNER_V, format('select public.challenge_death_process(%L)', V)) <> 'OK' then
+    raise exception 'FAIL: the idempotent replay was refused on the canonical path';
+  end if;
+  if (select count(*) from public.notifications where estate_id = V and kind = 'claimUpdate') <> 1 then
+    raise exception 'FAIL: the replay emitted a second halt notification';
+  end if;
+  if (select status from public.death_verification_cases where id = v_case_v) <> 'halted'
+     or (select count(*) from public.death_verification_cases where estate_id = V and status = 'halted') <> 1 then
+    raise exception 'FAIL: the replay re-settled or duplicated a halted case';
+  end if;
+  if public.estate_lifecycle_state(V) <> 'challenge_halted' then
+    raise exception 'FAIL: the replay moved the terminal lifecycle state';
+  end if;
+  raise notice '  ok   replay: no second notification, no re-settlement, terminal state unmoved';
+
+  -- ── NEGATIVE CONTROL: a FOREIGN estate is not settled and its initiator is not told ────────────
+  insert into auth.users default values returning id into OWNER_Z;
+  insert into public.estates (owner_id, name) values (OWNER_Z, 'RS Estate Z') returning id into Z;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (Z, OWNER_Z, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (Z, EXEC_P, 'executor', 'active');
+  if harness_rs.attempt(EXEC_P, format('select public.initiate_death_verification_case(%L)', Z)) <> 'OK' then
+    raise exception 'FAIL[precondition]: EXEC_P could not initiate on the foreign estate Z';
+  end if;
+  if (select status from public.death_verification_cases where estate_id = Z) <> 'open' then
+    raise exception 'FAIL: halting V settled a case on an unrelated estate';
+  end if;
+  if exists (select 1 from public.notifications where estate_id = Z and kind = 'claimUpdate') then
+    raise exception 'FAIL: an unrelated estate received a halt notification';
+  end if;
+  raise notice '  ok   NEGATIVE: the foreign estate Z is unsettled and unnotified';
+
+  -- ── STAGE TOTAL, SCOPED TO THIS SECTION'S ESTATES ──────────────────────────────────────────────
+  -- Three halt attempts happened here: BEN_V refused, OWNER_V succeeded, OWNER_V replayed. One row.
+  select count(*) into n from public.notifications where kind = 'claimUpdate' and estate_id in (V, Z);
+  if n <> 1 then
+    raise exception 'FAIL: % claimUpdate rows across this section''s estates, expected exactly 1', n;
+  end if;
+  raise notice '  ok   exactly 1 halt notification across V and Z (3 halt attempts)';
+end $rs8$;
 
 do $$
 begin
