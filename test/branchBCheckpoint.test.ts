@@ -60,9 +60,21 @@ const CHECKPOINT = Object.freeze({
   admin_sha: "fd7ef03587d06b4c4a182575c5e7717412d82e2a",
 });
 
+/**
+ * ★ NO MODULE-LEVEL `throw`, AND THAT IS A MUTATION-TESTING REQUIREMENT RATHER THAN A STYLE CHOICE.
+ *
+ * The first version threw here when the fixture failed to decode. The mutation "drop `case_uuid`
+ * from the schema" then made the whole FILE unloadable, and the mutation runner reported
+ * HARNESS_FAILURE instead of a detection. A suite that cannot load cannot distinguish "the rule I
+ * deleted was load-bearing" from "I broke the build", and letting the second stand in for the first
+ * is how a mutation gets scored as caught when nothing caught it.
+ *
+ * So the fixture falls back to the undecoded object and its decodability is an ASSERTION below.
+ * Measured: with this shape the mutation fails 10 assertions; with the `throw`, it fails none,
+ * because the suite never runs.
+ */
 const decoded = decodeCheckpoint({ ...CHECKPOINT });
-if (!decoded.ok) throw new Error(`fixture does not decode: ${decoded.errors.join("; ")}`);
-const CP = decoded.checkpoint;
+const CP = (decoded.ok ? decoded.checkpoint : CHECKPOINT) as typeof CHECKPOINT;
 
 const OBSERVED = Object.freeze({
   estate_uuid: CP.estate_uuid,
@@ -91,6 +103,10 @@ const resume = (over: Record<string, unknown> = {}, now: string = READY_NOW) =>
   evaluateResume({ checkpoint: CP, observed: { ...OBSERVED, ...over }, now });
 
 describe("★ 0 · the fixtures are controls, not decoration", () => {
+  it("★ the fixture decodes — asserted, not thrown, so a schema mutation is a detection", () => {
+    expect(decoded.ok, JSON.stringify((decoded as { errors?: string[] }).errors)).toBe(true);
+  });
+
   it("the all-pass fixture resumes — every refusal below depends on this", () => {
     const r = resume();
     expect(r.failed).toEqual([]);
