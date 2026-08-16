@@ -184,6 +184,21 @@ const WITNESS = {
    * structure instead — pure SQL, exactly one begin/commit, one transaction, all asserted above —
    * and the corrupted-run injection still executes against it either way.
    */
+  /**
+   * ★ PHASE 11-OBR / OB-1. Unlike its neighbours this artifact DOES create a new observable — the
+   * `claimed_at` column — so the witness discriminates properly rather than reporting NO_STATE_DELTA:
+   * the column does not exist at baseline, so `applies` and `rollback` are both real observations.
+   *
+   * The column is the right witness rather than the routine body: it is what the migration half
+   * adds, it is the thing without which the reclaim predicate cannot even parse, and a half-applied
+   * bundle that created the column but not the routine would still be caught by the SQL suite's own
+   * control. A function-body probe would instead be true both before and after on any database where
+   * `outbox_safety.sql` had ever been pasted.
+   */
+  'db/bundles/owner_notice_claim_visibility_bundle.sql':
+    "select exists (select 1 from information_schema.columns "
+    + "where table_schema = 'public' and table_name = 'owner_notice_outbox' "
+    + "and column_name = 'claimed_at')",
   'db/bundles/challenge_settlement_bundle.sql':
     "select exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
     + "where n.nspname = 'public' and p.proname = 'challenge_death_process' "

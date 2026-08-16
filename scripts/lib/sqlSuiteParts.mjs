@@ -54,6 +54,12 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // owner_notice_outbox status CHECK and adds the delivery recorder plus the two operator
   // projections — all of which read objects the death bundle creates above.
   'db/bundles/operator_console_bundle.sql',
+  // ★ PHASE 11-OBR / OB-1, AFTER the operator console bundle that first ships `outbox_safety.sql`.
+  // It adds `owner_notice_outbox.claimed_at` and re-pastes the file with the reclaim predicate that
+  // reads it. Loaded here because §9 of the release-safety suite tests the reclaim contract against
+  // a real database, and without this part the column does not exist and §9's own control fails
+  // loudly rather than passing vacuously.
+  'db/bundles/owner_notice_claim_visibility_bundle.sql',
   // ★ PHASE 11-L, LAST AMONG THE BUNDLES. It re-pastes `release_safety.sql` and
   // `lifecycle_notification_rpcs.sql` with the halt notification, so it must load AFTER
   // `release_conditions_bundle` (its functions call `release_condition_satisfied`, and
@@ -138,6 +144,12 @@ export const SQL_BUNDLES = Object.freeze([
   // which rebuilds every registered artifact inside its worktree and would otherwise let a mutated
   // body reach the suite through one bundle while this one still carried the unmutated text.
   ['scripts/buildChallengeSettlementBundle.mjs', 'db/bundles/challenge_settlement_bundle.sql'],
+  // ★ PHASE 11-OBR / OB-1. Registered so the atomicity verifier and every rebuild-before-trust step
+  // cover it — including the mutation runner, which rebuilds every registered artifact inside its
+  // worktree and would otherwise let a mutated body reach the suite through one bundle while this
+  // one still carried the unmutated text.
+  ['scripts/buildOwnerNoticeClaimVisibilityBundle.mjs',
+    'db/bundles/owner_notice_claim_visibility_bundle.sql'],
 ]);
 
 /**

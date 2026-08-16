@@ -1861,6 +1861,332 @@ begin
   raise notice '  ok   exactly 1 halt notification across V and Z (3 halt attempts)';
 end $rs8$;
 
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 9 · PHASE 11-OBR / OB-1 — AN ABANDONED CLAIM IS RECOVERABLE
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- ★ THE DEFECT THIS SECTION EXISTS FOR WAS MEASURED IN PRODUCTION, NOT IMAGINED. The Branch A
+-- owner-safety notice was observed at `processing` / `attempts = 1` / `dispatched_at = null` a full
+-- day after the drain claimed it. `claim_owner_notices` selected `status = 'queued'` only, so no
+-- future drain could ever hand it out again: the owner's one independent warning was lost, and the
+-- only remaining transition was a stale sweep that would mark it failed a DAY AFTER the release
+-- window it protects had already elapsed.
+--
+-- ★ THE CRASH-WINDOW TEST IS THE LOAD-BEARING ONE. Everything else here bounds the predicate; the
+-- crash-window case reproduces the actual production failure — claim succeeds, worker dies before
+-- settling, clock advances — and requires a later drain to recover it. The pre-OB-1 implementation
+-- must fail that case, and the `p11obr-*` mutations prove it does.
+--
+-- ★ CLAIM AGE IS MOVED BY AGEING `claimed_at`, WHICH IS THE DETERMINISTIC EQUIVALENT OF WAITING —
+-- the same technique §1 uses to elapse the challenge window. `now()` is transaction-constant, so a
+-- test that did not move the clock could not distinguish "inside the timeout" from "outside" it.
+do $rs9$
+declare
+  OWNER_W uuid; W uuid; ADMIN_W uuid; OTHER_W uuid; X2 uuid;
+  v_id uuid; v_other uuid;
+  n int; v_claimed_before timestamptz; v_claimed_after timestamptz; v_attempts int;
+  TIMEOUT constant interval := interval '1 hour';   -- mirrors c_claim_visibility
+begin
+  raise notice ' ';
+  raise notice '9 · OB-1: an abandoned claim is recoverable (Phase 11-OBR)';
+
+  insert into auth.users default values returning id into OWNER_W;
+  insert into auth.users default values returning id into OTHER_W;
+  insert into auth.users default values returning id into ADMIN_W;
+  update auth.users set email = 'rs-owner-w@example.invalid' where id = OWNER_W;
+  insert into public.estates (owner_id, name) values (OWNER_W, 'RS Estate W2') returning id into W;
+  insert into public.estates (owner_id, name) values (OTHER_W, 'RS Estate X2') returning id into X2;
+  insert into public.admins (user_id) values (ADMIN_W) on conflict do nothing;
+
+  -- ── CONTROL: the column the whole fix rests on must exist, or every assertion below is vacuous ──
+  if not exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public' and table_name = 'owner_notice_outbox' and column_name = 'claimed_at'
+  ) then
+    raise exception 'FAIL[control]: owner_notice_outbox.claimed_at does not exist — migration 0057 '
+      'did not load, and nothing below tests the reclaim contract';
+  end if;
+  raise notice '  ok   CONTROL: claimed_at exists';
+
+  -- A helper row per case. `recipient` is required by the claim projection.
+  create temporary table rs9_case (label text primary key, id uuid) on commit drop;
+
+  -- ── 1 · A QUEUED ROW IS CLAIMED (the positive control the whole section needs) ─────────────────
+  insert into public.owner_notice_outbox (estate_id, user_id, channel, recipient, notice_kind, status)
+  values (W, OWNER_W, 'email', 'rs-w@example.invalid', 'death_process.window_opened', 'queued')
+  returning id into v_id;
+  select count(*) into n from public.claim_owner_notices(25) c where c.id = v_id;
+  if n <> 1 then
+    raise exception 'FAIL[control]: a QUEUED row was not claimed — the instrument claims nothing and '
+      'every "not reclaimed" assertion below would pass vacuously';
+  end if;
+  select claimed_at, attempts into v_claimed_before, v_attempts
+    from public.owner_notice_outbox where id = v_id;
+  if v_claimed_before is null then
+    raise exception 'FAIL: the claim did not stamp claimed_at — no timeout can ever be computed';
+  end if;
+  if v_attempts <> 1 then
+    raise exception 'FAIL: the first claim set attempts to %, expected 1', v_attempts;
+  end if;
+  raise notice '  ok   1 · a queued row is claimed, claimed_at stamped, attempts = 1';
+
+  -- ── 2 · A FRESHLY PROCESSING ROW IS NOT RECLAIMED ─────────────────────────────────────────────
+  -- The row above is now `processing` with claimed_at = now(). A live worker still holds it.
+  select count(*) into n from public.claim_owner_notices(25) c where c.id = v_id;
+  if n <> 0 then
+    raise exception 'FAIL: a row claimed moments ago was reclaimed — a live worker would be sending '
+      'the same notice twice';
+  end if;
+  raise notice '  ok   2 · a freshly claimed row is NOT reclaimed';
+
+  -- ── 3 · JUST INSIDE THE TIMEOUT IS NOT RECLAIMED ──────────────────────────────────────────────
+  update public.owner_notice_outbox set claimed_at = now() - (TIMEOUT - interval '1 minute')
+   where id = v_id;
+  select count(*) into n from public.claim_owner_notices(25) c where c.id = v_id;
+  if n <> 0 then
+    raise exception 'FAIL: a claim 59 minutes old was reclaimed — the timeout is shorter than declared';
+  end if;
+  raise notice '  ok   3 · a claim just INSIDE the timeout is NOT reclaimed';
+
+  -- ── 4 · THE BOUNDARY IS STRICT, AND THAT IS ASSERTED RATHER THAN ASSUMED ──────────────────────
+  -- The predicate is `claimed_at < now() - timeout`. At EXACTLY the boundary it is false, so the row
+  -- is not reclaimed. Ties go to the worker that already holds the claim — the same direction the
+  -- release guard resolves its tie, where the owner keeps the benefit of the doubt.
+  update public.owner_notice_outbox set claimed_at = now() - TIMEOUT where id = v_id;
+  select count(*) into n from public.claim_owner_notices(25) c where c.id = v_id;
+  if n <> 0 then
+    raise exception 'FAIL: a claim EXACTLY at the boundary was reclaimed — the comparison is '
+      'inclusive where the contract says strict';
+  end if;
+  raise notice '  ok   4 · the boundary is STRICT: exactly-at-timeout is NOT reclaimed';
+
+  -- ── 5/6/7 · PAST THE TIMEOUT IT IS RECLAIMED, attempts INCREMENTS, claimed_at REFRESHES ───────
+  update public.owner_notice_outbox set claimed_at = now() - (TIMEOUT + interval '1 minute')
+   where id = v_id;
+  select claimed_at into v_claimed_before from public.owner_notice_outbox where id = v_id;
+  select count(*) into n from public.claim_owner_notices(25) c where c.id = v_id;
+  if n <> 1 then
+    raise exception 'FAIL[OB-1]: an abandoned claim past the visibility timeout was NOT reclaimed — '
+      'this is the production defect, unfixed';
+  end if;
+  select claimed_at, attempts into v_claimed_after, v_attempts
+    from public.owner_notice_outbox where id = v_id;
+  if v_attempts <> 2 then
+    raise exception 'FAIL: reclaim left attempts at %, expected 2 — an unbounded reclaim loop would '
+      'never reach the retry cap', v_attempts;
+  end if;
+  if v_claimed_after <= v_claimed_before then
+    raise exception 'FAIL: reclaim did not refresh claimed_at — the row is instantly reclaimable '
+      'again and two concurrent drains would both take it';
+  end if;
+  raise notice '  ok   5/6/7 · past the timeout it IS reclaimed; attempts=2; claimed_at refreshed';
+
+  -- ── 14 · A LEGACY `processing` ROW WITH claimed_at NULL IS RECLAIMABLE ────────────────────────
+  -- This is the class the Branch A forensic row belongs to: claimed before the column existed. It is
+  -- handled as a CLASS, never by id.
+  insert into public.owner_notice_outbox (estate_id, user_id, channel, recipient, notice_kind, status, attempts)
+  values (W, OWNER_W, 'email', 'rs-w2@example.invalid', 'death_process.window_opened', 'processing', 1)
+  returning id into v_other;
+  update public.owner_notice_outbox set claimed_at = null where id = v_other;
+  select count(*) into n from public.claim_owner_notices(25) c where c.id = v_other;
+  if n <> 1 then
+    raise exception 'FAIL[OB-1]: a legacy processing row with claimed_at NULL was not reclaimed — '
+      'the rows the defect already stranded stay stranded after deployment';
+  end if;
+  raise notice '  ok   14 · a legacy processing row (claimed_at NULL) IS reclaimed';
+
+  -- ── 10/11/12 · SETTLED STATES ARE NEVER RECLAIMED, EACH ASSERTED BY NAME ──────────────────────
+  -- Named individually rather than swept up by a `status <> terminal` test: two of these are terminal
+  -- precisely because the message may already be in the owner's inbox.
+  for n in 1..1 loop end loop;
+  declare
+    st text;
+    v_settled uuid;
+  begin
+    foreach st in array array['dispatched', 'outcomeUncertain', 'failedPermanent', 'cancelled'] loop
+      insert into public.owner_notice_outbox
+        (estate_id, user_id, channel, recipient, notice_kind, status, claimed_at)
+      values (W, OWNER_W, 'email', 'rs-w3@example.invalid', 'death_process.window_opened', st,
+              now() - interval '30 days')
+      returning id into v_settled;
+      if exists (select 1 from public.claim_owner_notices(25) c where c.id = v_settled) then
+        raise exception 'FAIL: a % row was reclaimed — a settled notice must never be re-sent', st;
+      end if;
+    end loop;
+  end;
+  raise notice '  ok   10/11/12 · dispatched / outcomeUncertain / failedPermanent / cancelled never reclaimed';
+
+  -- ── 9 · THE AGE GATE STILL WINS OVER THE RECLAIM ──────────────────────────────────────────────
+  -- A processing row that is BOTH abandoned and beyond the age gate must settle as stale, not be
+  -- re-sent. The sweep runs first inside the routine, and this proves the order still holds.
+  insert into public.owner_notice_outbox
+    (estate_id, user_id, channel, recipient, notice_kind, status, claimed_at, requested_at)
+  values (W, OWNER_W, 'email', 'rs-w4@example.invalid', 'death_process.window_opened', 'processing',
+          now() - interval '30 days', now() - interval '30 days')
+  returning id into v_other;
+  if exists (select 1 from public.claim_owner_notices(25) c where c.id = v_other) then
+    raise exception 'FAIL: a notice beyond the age gate was RECLAIMED and re-sent instead of being '
+      'settled stale — the reclaim overtook the age gate';
+  end if;
+  if (select status from public.owner_notice_outbox where id = v_other) <> 'failedPermanent'
+     or (select failure_class from public.owner_notice_outbox where id = v_other) <> 'stale_beyond_age_gate' then
+    raise exception 'FAIL: the stale sweep no longer settles an abandoned over-age notice';
+  end if;
+  raise notice '  ok   9 · the age gate still beats the reclaim (stale, not re-sent)';
+
+  -- ── 13 · AN UNRELATED ESTATE'S ROW IS UNTOUCHED ───────────────────────────────────────────────
+  insert into public.owner_notice_outbox (estate_id, user_id, channel, recipient, notice_kind, status, claimed_at)
+  values (X2, OTHER_W, 'email', 'rs-x2@example.invalid', 'death_process.window_opened', 'processing',
+          now() - interval '10 minutes')
+  returning id into v_other;
+  perform public.claim_owner_notices(25);
+  if (select status from public.owner_notice_outbox where id = v_other) <> 'processing'
+     or (select attempts from public.owner_notice_outbox where id = v_other) <> 0 then
+    raise exception 'FAIL: an unrelated estate''s freshly claimed row was disturbed';
+  end if;
+  raise notice '  ok   13 · an unrelated estate''s in-flight row is untouched';
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ 6 · THE CRASH WINDOW — the exact production failure, reproduced end to end.
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- dispatch → claim → worker dies before recordOutcome → clock advances → a later drain recovers it.
+  -- This is the case the pre-OB-1 implementation cannot pass, and it is what `p11obr-reclaim-removed`
+  -- must be killed by.
+  declare
+    CRASH uuid;
+    v_before text;
+  begin
+    insert into public.owner_notice_outbox (estate_id, user_id, channel, recipient, notice_kind, status)
+    values (W, OWNER_W, 'email', 'rs-crash@example.invalid', 'death_process.window_opened', 'queued')
+    returning id into CRASH;
+
+    -- The drain claims it...
+    if not exists (select 1 from public.claim_owner_notices(25) c where c.id = CRASH) then
+      raise exception 'FAIL[crash precondition]: the notice was not claimed in the first place';
+    end if;
+    -- ...and the worker dies here. record_owner_notice_outcome is never called. Nothing else runs.
+    select status into v_before from public.owner_notice_outbox where id = CRASH;
+    if v_before <> 'processing' then
+      raise exception 'FAIL[crash precondition]: the abandoned row reads %, expected processing', v_before;
+    end if;
+
+    -- A later drain, before the timeout: still nobody else's to take.
+    if exists (select 1 from public.claim_owner_notices(25) c where c.id = CRASH) then
+      raise exception 'FAIL: the abandoned row was reclaimed before the visibility timeout elapsed';
+    end if;
+
+    -- Time passes (deterministically).
+    update public.owner_notice_outbox set claimed_at = now() - (TIMEOUT + interval '5 minutes')
+     where id = CRASH;
+
+    if not exists (select 1 from public.claim_owner_notices(25) c where c.id = CRASH) then
+      raise exception 'FAIL[OB-1 CRASH WINDOW]: a notice abandoned by a dead worker was never handed '
+        'to another one. This is the measured Branch A defect: the owner is never warned and nothing '
+        'reports it.';
+    end if;
+    -- And it can now be settled normally, which is what makes the recovery complete rather than a
+    -- second strand.
+    if public.record_owner_notice_outcome(CRASH, 'providerAccepted') <> 'dispatched' then
+      raise exception 'FAIL: the reclaimed notice could not be settled';
+    end if;
+    raise notice '  ok   6 · CRASH WINDOW: abandoned claim recovered by a later drain and settled';
+
+    -- ══════════════════════════════════════════════════════════════════════════════════════════
+    -- ★ OB-4 — THE SETTLE PATH MUST BE ABLE TO WRITE ITS OWN AUDIT ROW.
+    -- ══════════════════════════════════════════════════════════════════════════════════════════
+    --
+    -- This is the ROOT CAUSE of the observed Branch A strand, and it is asserted here because the
+    -- settle above would otherwise "pass" for the wrong reason if the audit insert were ever made
+    -- conditional or swallowed inside the routine.
+    --
+    -- `record_owner_notice_outcome` closes by writing `source = 'worker'`.
+    -- `audit_logs_source_check` admitted only ('server','ios_forward','admin') from migration 0014
+    -- until 0057, so that insert raised `check_violation` on EVERY call — and the drain's
+    -- `recordOutcome` catches the RPC error and only logs it. Every claimed notice therefore
+    -- stranded in `processing`, which is exactly the state the Branch A row was found in.
+    --
+    -- The settle is asserted by its AUDIT ROW, not by the returned status: a future edit that made
+    -- the audit best-effort would restore the silence this defect lived in.
+    if not exists (
+      select 1 from public.audit_logs
+       where target_table = 'owner_notice_outbox' and target_id = CRASH
+         and action = 'death_process.owner_notice_outcome' and source = 'worker'
+    ) then
+      raise exception 'FAIL[OB-4]: settling a notice wrote no worker-sourced audit row — either the '
+        'audit source vocabulary still refuses ''worker'' (the production defect) or the settle '
+        'stopped auditing, and a lost owner notice becomes unattributable';
+    end if;
+    -- The actor is a scheduled worker, not a person: NULL actor_id is the contract, not an omission.
+    if exists (
+      select 1 from public.audit_logs
+       where target_id = CRASH and action = 'death_process.owner_notice_outcome'
+         and actor_id is not null
+    ) then
+      raise exception 'FAIL: the worker audit invented a synthetic operator identity';
+    end if;
+    raise notice '  ok   OB-4 · the settle writes a worker-sourced audit row (actor NULL)';
+  end;
+
+  -- ── 10 (STAGE) · THE CENSUS CAN SEE A STUCK CLAIM ─────────────────────────────────────────────
+  --
+  -- ★ ASSERTED AGAINST A DELIBERATELY STALE FIXTURE, NEVER AGAINST ZERO. A census that reports
+  -- `processing_stale: 0` on a database with nothing stuck is indistinguishable from one that cannot
+  -- count at all — and "nothing is stuck" is precisely the false reassurance this defect hid behind
+  -- for a day. So the fixture creates one abandoned claim and one live one, and the census must
+  -- separate them.
+  declare
+    v_census jsonb;
+    STALE uuid; LIVE uuid;
+  begin
+    insert into public.owner_notice_outbox
+      (estate_id, user_id, channel, recipient, notice_kind, status, claimed_at)
+    values (W, OWNER_W, 'email', 'rs-stale@example.invalid', 'death_process.window_opened',
+            'processing', now() - interval '6 hours')
+    returning id into STALE;
+    insert into public.owner_notice_outbox
+      (estate_id, user_id, channel, recipient, notice_kind, status, claimed_at)
+    values (W, OWNER_W, 'email', 'rs-live@example.invalid', 'death_process.window_opened',
+            'processing', now())
+    returning id into LIVE;
+
+    v_census := harness_rs.as_admin_json(ADMIN_W, 'select public.owner_notice_census()');
+
+    if (v_census ->> 'processing_total')::int < 2 then
+      raise exception 'FAIL[census]: processing_total is %, expected at least the 2 rows just '
+        'created — the census cannot see in-flight work at all', v_census ->> 'processing_total';
+    end if;
+    if (v_census ->> 'processing_stale')::int < 1 then
+      raise exception 'FAIL[census]: processing_stale is %, but a claim 6 hours old exists — an '
+        'abandoned owner notice is invisible to the only surface that could report it',
+        v_census ->> 'processing_stale';
+    end if;
+    -- ★ THE DISCRIMINATION CONTROL: stale must be STRICTLY FEWER than total, or the key is just
+    -- counting `processing` under another name and would "detect" a healthy queue as stuck.
+    if (v_census ->> 'processing_stale')::int >= (v_census ->> 'processing_total')::int then
+      raise exception 'FAIL[census]: processing_stale (%) is not fewer than processing_total (%) — '
+        'the live claim was counted as stale, so the key does not discriminate',
+        v_census ->> 'processing_stale', v_census ->> 'processing_total';
+    end if;
+    if v_census ->> 'oldest_processing_age' is null then
+      raise exception 'FAIL[census]: oldest_processing_age is null while rows are processing';
+    end if;
+    -- Counts and ages only: no address may appear anywhere in the projection.
+    if v_census::text ilike '%@%' then
+      raise exception 'FAIL[census]: the census projection contains an address shape';
+    end if;
+    raise notice '  ok   10 · census separates stale claims from live ones, and discloses no address';
+  end;
+
+  -- ── 8 · CONCURRENCY, TO THE EXTENT ONE SESSION CAN OBSERVE IT ─────────────────────────────────
+  -- ★ STATED HONESTLY: `for update skip locked` is what stops two SIMULTANEOUS drains taking one row,
+  -- and a single psql session cannot hold two concurrent transactions to prove it. What IS provable
+  -- here is the property that makes the race rare rather than routine — a claim refreshes claimed_at,
+  -- so a second drain arriving immediately after finds nothing eligible. Case 2 above is that proof.
+  -- The `skip locked` clause itself is asserted structurally by the deployment verifiers.
+  raise notice '  ok   8 · re-claim is not immediately repeatable (skip-locked itself: see verifiers)';
+end $rs9$;
+
 do $$
 begin
   raise notice ' ';
