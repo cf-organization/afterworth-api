@@ -71,7 +71,18 @@ describe("0 · the audit is reading something", () => {
     // set — re-pasting an unrelated DEFINER body is exactly what the `create_asset_grant` near-miss
     // (Phase 10-E) cost. It adds no object, no migration and no grant: `'halted'` has been in the
     // case-status CHECK since migration 0054, added for this very transition.
-    expect(artifacts.length).toBe(11);
+    //
+    // ★ 11-OBR IS THE 12th, AND IT CARRIES A MIGRATION — the first artifact since 11-K to change a
+    // table. It closes OB-1/OB-4: `owner_notice_outbox` gains `claimed_at` so an abandoned claim can
+    // be timed out and reclaimed, and `audit_logs_source_check` finally admits the `'worker'` source
+    // that `record_owner_notice_outcome` has written since 11-K — a value the constraint never
+    // allowed, so EVERY settle raised check_violation and every claimed owner notice stranded in
+    // `processing`. That is the measured Branch A state.
+    //
+    // The two ship together deliberately: a reclaim without the audit fix turns one silently lost
+    // notice into a daily resend loop that still cannot settle, which is strictly worse than either
+    // defect alone.
+    expect(artifacts.length).toBe(12);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

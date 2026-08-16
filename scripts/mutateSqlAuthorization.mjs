@@ -1567,6 +1567,109 @@ const MUTATIONS = Object.freeze([
     to: '    null; -- mutation: the replay falls through instead of returning',
   },
 
+  /* ══ PHASE 11-OBR · OB-1 claim visibility + OB-4 the settle audit ═════════════════════════════ */
+  {
+    /**
+     * ★ THE PRODUCTION DEFECT, RESTORED. This is the pre-OB-1 claim set, character for character.
+     * It is killed by §9's crash-window case and by nothing else in the suite — every other outbox
+     * assertion works on `queued` rows, which is exactly why the defect shipped.
+     */
+    id: 'p11obr-reclaim-removed',
+    why: 'THE BRANCH A DEFECT, RESTORED. Claiming only `queued` rows means a notice whose worker '
+      + 'died between claim and settle is never handed out again. The owner\'s single independent '
+      + 'warning that their estate is being released is lost silently, and the only remaining '
+      + 'transition marks it failed a DAY AFTER the release window it protects has elapsed.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "       and (\n         -- A · the ordinary queue\n         (o.status = 'queued'\n          and (o.next_attempt_at is null or o.next_attempt_at <= now()))\n         -- B · an abandoned claim\n         or (o.status = 'processing'\n             and (o.claimed_at is null or o.claimed_at < now() - v_visibility))\n       )",
+    to: "       and o.status = 'queued'\n       and (o.next_attempt_at is null or o.next_attempt_at <= now())",
+  },
+  {
+    id: 'p11obr-claimed-at-not-stamped',
+    why: 'THE CLAIM CLOCK, NEVER STARTED. Without the stamp every reclaimed row keeps a NULL '
+      + 'claimed_at, which the contract reads as infinitely stale — so the row becomes eligible '
+      + 'again on the very next drain and the owner is mailed once per drain until the age gate.',
+    file: 'db/functions/outbox_safety.sql',
+    from: '         claimed_at = now()',
+    to: '         claimed_at = o.claimed_at',
+  },
+  {
+    id: 'p11obr-timeout-predicate-removed',
+    why: 'THE VISIBILITY TIMEOUT, DELETED. Every `processing` row becomes claimable immediately, so '
+      + 'a second drain reclaims a notice a LIVE worker is still sending — manufacturing exactly the '
+      + 'duplicate mail about a living owner\'s death process that this module exists to avoid.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "         or (o.status = 'processing'\n             and (o.claimed_at is null or o.claimed_at < now() - v_visibility))",
+    to: "         or o.status = 'processing'",
+  },
+  {
+    id: 'p11obr-timeout-direction-reversed',
+    why: 'THE COMPARISON, INVERTED. Fresh claims are reclaimed and genuinely abandoned ones are not '
+      + '— the worst of both: duplicates for live work, permanent strands for dead work. A reversed '
+      + 'inequality is the single most likely typo in this predicate, which is why it is on trial.',
+    file: 'db/functions/outbox_safety.sql',
+    from: 'o.claimed_at < now() - v_visibility',
+    to: 'o.claimed_at > now() - v_visibility',
+  },
+  {
+    id: 'p11obr-attempts-not-incremented',
+    why: 'THE ATTEMPT COUNTER, FROZEN ON RECLAIM. `record_owner_notice_outcome` gives up after three '
+      + 'attempts; a reclaim that does not count means the cap can never be reached, so a '
+      + 'permanently undeliverable notice is retried every drain until the age gate instead of '
+      + 'settling as failed.',
+    file: 'db/functions/outbox_safety.sql',
+    from: '         attempts   = o.attempts + 1,',
+    to: '         attempts   = o.attempts,',
+  },
+  {
+    id: 'p11obr-settled-row-reclaimed',
+    why: 'A SETTLED NOTICE, MADE RE-SENDABLE. `outcomeUncertain` and `dispatched` are terminal '
+      + 'precisely because the message may already be in the owner\'s inbox. Admitting them to the '
+      + 'claim set sends a second copy of a notice about someone\'s own death on the strength of a '
+      + 'lost HTTP response — the exact trade 11-K refused to make.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "         (o.status = 'queued'\n          and (o.next_attempt_at is null or o.next_attempt_at <= now()))",
+    to: "         (o.status in ('queued', 'outcomeUncertain', 'failedPermanent')\n          and (o.next_attempt_at is null or o.next_attempt_at <= now()))",
+  },
+  {
+    /**
+     * ★ OB-4, CAUGHT BY THE MIGRATION'S OWN EXECUTION PROBE. Narrowing the vocabulary back to three
+     * values is refused by 0057's probe, which does not read the constraint text — it INSERTS a
+     * worker-sourced row and catches `check_violation`. That is a database-layer detection, not a
+     * static one: the regression is caught by the same mechanism that would catch it at paste time
+     * against production, which is where it matters most.
+     *
+     * It is deliberately NOT the only voter. `p11obr-settle-audit-source-unwritable` below reaches
+     * the same defect by a route the migration cannot see, so the RUNTIME assertion in §9 has to
+     * carry it alone — the two together stop either layer from taking the credit for the other.
+     */
+    id: 'p11obr-audit-source-narrowed',
+    why: 'THE ROOT CAUSE OF THE BRANCH A STRAND, RESTORED. `record_owner_notice_outcome` writes '
+      + '`source = \'worker\'`; with the constraint back at three values that insert raises '
+      + 'check_violation on EVERY call, the drain swallows the error, and every claimed owner notice '
+      + 'strands in `processing` forever. The delivery pipeline cannot settle anything at all.',
+    file: 'db/migrations/0057_20260816_owner_notice_claim_visibility.sql',
+    from: "  check (source in ('server', 'ios_forward', 'admin', 'worker'));",
+    to: "  check (source in ('server', 'ios_forward', 'admin'));",
+  },
+  {
+    /**
+     * ★ THE SAME DEFECT, BY A ROUTE THE MIGRATION CANNOT SEE — so §9 is the sole voter.
+     *
+     * The constraint keeps all four values and 0057's probe still inserts `'worker'` successfully,
+     * so the migration passes cleanly. What changes is the value the SETTLE writes: `'cron'`, which
+     * the constraint refuses. The failure is therefore invisible to every static and migration-time
+     * check and shows up only where the production defect showed up — a notice that cannot settle.
+     */
+    id: 'p11obr-settle-audit-source-unwritable',
+    why: 'THE SETTLE WRITES AN UNSTORABLE AUDIT SOURCE. Exactly the Branch A failure with a '
+      + 'different spelling: record_owner_notice_outcome raises check_violation on its final '
+      + 'statement, drain.ts swallows the RPC error, and the notice strands in `processing` with '
+      + 'attempts incremented and nothing recorded. The owner is never confirmed reached.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "          'worker');",
+    to: "          'cron');",
+  },
+
   /* ══ PHASE 11-MB · fiduciary estate discovery ═════════════════════════════════════════════════ */
   {
     id: 'p11mb-discovery-enumerates-other-users',

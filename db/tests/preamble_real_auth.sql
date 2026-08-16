@@ -168,8 +168,13 @@ create table if not exists public.audit_logs (
 );
 alter table public.audit_logs add column if not exists source text not null default 'server';
 alter table public.audit_logs drop constraint if exists audit_logs_source_check;
+-- ★ 'worker' ADDED BY MIGRATION 0057 (Phase 11-OBR / OB-4), and this preamble mirrors production
+-- verbatim BY DESIGN — which is exactly why the harness reproduced the defect. Before 0057 the
+-- constraint admitted only three values while `record_owner_notice_outcome` wrote a fourth, so every
+-- settle raised `check_violation` in the test database for the same reason it did in production.
+-- Do NOT widen this ahead of a migration: the preamble's job is to be as narrow as the real thing.
 alter table public.audit_logs add constraint audit_logs_source_check
-  check (source in ('server', 'ios_forward', 'admin'));
+  check (source in ('server', 'ios_forward', 'admin', 'worker'));
 alter table public.audit_logs enable row level security;
 
 -- ★ `admins`, VERBATIM SHAPE FROM MIGRATION 0014 — deny-all RLS, zero policies, zero grants; the
