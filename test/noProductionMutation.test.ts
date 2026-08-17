@@ -68,6 +68,26 @@ const READ_ONLY_FILES = [
    * keeps it that way.
    */
   "scripts/verifyPhaseCDeployment.mjs",
+  /**
+   * ★ PHASE 11-OC / PHASE D. The Phase D deployment verifier, and the sharpest case yet.
+   *
+   * The routine it verifies is `authorize_release`, whose side effect is not an email — it is the
+   * IRREVERSIBLE DISCLOSURE OF AN ESTATE. There is no probe of it that this audit could ever be
+   * argued into permitting, and the script does not attempt one: it never names the routine in a
+   * call position at all.
+   *
+   * Deployment is established from the READ side, and Phase D's architecture is what makes that a
+   * real proof rather than a proxy. `admin_get_death_verification_case` and `authorize_release`
+   * consume the SAME `owner_notice_release_authority`, so the projection is not standing in for the
+   * door's rule — it IS the door's rule, evaluated on the same row. The verifier reads that verdict,
+   * checks its refusal vocabulary is the Phase D set, and proves the CLOCK moved arithmetically
+   * (`release_eligible_at` NULL exactly when there is no acceptance fact, which a Phase C server
+   * cannot produce on a dispatched case because `owner_notified_at` is never null there).
+   *
+   * This list is what keeps it that way. Adding a "harmless" probe of the release door would fail
+   * here rather than be discovered after an estate had been disclosed.
+   */
+  "scripts/verifyPhaseDDeployment.mjs",
   "scripts/lib/t2Classification.mjs",
   "scripts/lib/branchBCheckpoint.mjs",
   "scripts/lib/branchBBaseline.mjs",
