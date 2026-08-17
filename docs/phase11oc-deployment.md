@@ -204,17 +204,19 @@ before that class can ever be remediated.
 
 ## Not implemented, and deliberately so
 
-~~**Phase C** (`reissue_owner_safety_notice`)~~ **is now BUILT** — see
-`docs/phase11oc-phase-c-owner-notice-reissue.md`. It is merged and **NOT DEPLOYED**; the artifact is
-`db/bundles/owner_notice_reissue_bundle.sql` and it is pasted after the Phase A bundle.
+~~**Phase C** (`reissue_owner_safety_notice`)~~ **is BUILT and DEPLOYED** — see
+`docs/phase11oc-phase-c-owner-notice-reissue.md`, whose §14 carries the production verification
+record (2026-08-17, verifier exit 0, artifact SHA256 exact, 0 legitimate live re-notice targets).
 
 **Phase D** (the release-door cutover, the `release_eligible_at()` derivation and the clock re-anchor)
 is specified in `docs/phase11oc-release-acceptance-authority.md` §5–§8 but is **not built**.
 
 Phase B is complete and **Phase C is now built**, so the ordering constraint §B.6 stated —
 **Phase C must precede Phase D**, on operability grounds rather than on today's legacy count — is
-satisfied in the repository. It is NOT yet satisfied in production: Phase C must also be DEPLOYED
-before Phase D is, because a cutover that lands ahead of its own remedy is the state §B.6 forbids.
+satisfied in the repository **and now in production**: Phase C was pasted and verified on
+2026-08-17. The §B.6 ordering constraint — a cutover must never land ahead of its own remedy — is
+therefore discharged, and Phase D DEVELOPMENT is unblocked. Phase D **deployment** remains closed
+pending R13 resolution, the release-predicate and clock cutover, full replay and mutation proof.
 
 **R13 remains PENDING.** Phase D will break the historical self-checks in migrations **0056** (two
 guards) and **0057** (one), plus four mutation fixtures — seven pinning sites, enumerated in
