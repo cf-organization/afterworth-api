@@ -1,6 +1,7 @@
 # Phase 11-OC · PHASE C — the operator re-notice
 
-**Status:** implemented, merged, **NOT DEPLOYED**.
+**Status:** implemented, merged, and **DEPLOYED_AND_VERIFIED in production** (2026-08-17).
+See §14 for the deployment verification record.
 **Artifact:** `db/bundles/owner_notice_reissue_bundle.sql`.
 **Phase D:** not built. **R13:** pending Phase D. **Branch B:** not started.
 
@@ -264,9 +265,28 @@ be added without first widening the type — which is the loud step that should 
 | `failedPermanent` | Notice failed |
 | superseded generation | Historical notice generation |
 
-**"Delivered" appears nowhere** and is asserted absent across all 24 status × acceptance × currency
-combinations, and across the estate-summary copy map. Mailbox delivery is not something this product
-observes.
+**No notice state is ever labelled "Delivered."** `noticeStateLabel()` and
+`historicalNoticeDetail()` — the two functions that name a row's state — contain no form of the word,
+asserted across all 24 status × acceptance × currency combinations, and the rendered values of
+`DISPATCH_SUMMARY_COPY` carry none either. `dispatched` + acceptance renders **Provider accepted
+notice**, which is the strongest honest claim: the provider took the message, and mailbox delivery is
+not something this product observes.
+
+★ **THE BOUNDARY, STATED EXACTLY — an earlier draft of this section overclaimed.** It said the word
+"appears nowhere", which is broader than what is enforced and broader than what is true. Two
+occurrences survive, and both are correct:
+
+- `DISPATCH_SUMMARY_COPY`'s **keys** `delivery_failed` / `delivery_uncertain` are internal union
+  members, never rendered; their values are "Notice failed — it will not be retried" and "Provider
+  outcome uncertain — it will not be retried".
+- `REISSUE_REFUSAL_COPY.owner_channel_unreachable` renders *"…so a re-sent notice could not be
+  delivered to anyone."* That is a **counterfactual about impossibility**, not a claim that anything
+  was delivered, and it is true whenever it is shown.
+
+The enforced rule is therefore *"no notice STATE is ever described with the word"*, not *"the token
+never occurs"*. Found by a control run during production verification, and corrected here rather than
+left standing — a claim wider than its instrument is the failure this repository has a standing rule
+about.
 
 ---
 
@@ -340,3 +360,168 @@ currently holds zero challenge-window estates and no live remediation target, so
   separately authorized.
 
 Conflating the two would be faking evidence.
+
+---
+
+## 14 · PRODUCTION DEPLOYMENT VERIFICATION — 2026-08-17
+
+Christ pasted `db/bundles/owner_notice_reissue_bundle.sql` into the Supabase Web SQL Editor. This
+section records what was then established, and — as importantly — what was **not**.
+
+### 14.1 Identity of what was deployed
+
+| | |
+|---|---|
+| API merge | `e01d422bcafb5020225b009c45384530a78a1f5d` (PR #81) |
+| Admin merge | `4611d37d942f3234faaec431ebcfa6b1f3f56281` (PR #8) |
+| Artifact SHA256 | `128db113fef5e44f4339b22f45c75c8764c84ea55e4520ff2b85e005e3818a32` — **exact** |
+| Artifact bytes | `129195` — **exact** |
+| Rebuild | byte-identical to the committed file, twice, tree clean afterwards |
+| Verifier | `node scripts/verifyPhaseCDeployment.mjs` → **exit 0** at 21:17:53Z |
+
+### 14.2 What is live, and how each claim was established
+
+The distinction matters more than the verdict, so it is written per routine rather than as one line.
+
+| Routine | Established by |
+|---|---|
+| `owner_notice_reissue_assessment` | **EXECUTION** — the case file carries its verdict, on 7/7 production cases, with the full designed shape |
+| `owner_notice_episode_kinds` | **EXECUTION** — `owner_notice_release_readiness_census` calls it and returned 200; a missing function is a plpgsql runtime error, so the 200 cannot have happened without it |
+| `owner_notice_reissue_kind` | **TRANSACTIONAL CO-LOCATION** — same part, same single-`begin;`/`commit;` artifact as the assessment observed live. An inference, labelled as one |
+| `reissue_owner_safety_notice` | **TRANSACTIONAL CO-LOCATION** — as above. **Never called** |
+| migration 0059 | **TRANSACTIONAL PRECEDENCE** — it runs first in the same transaction; parts 2–4 being live means the transaction committed, and 0059's own §3 self-checks would otherwise have aborted it |
+
+**Two instruments were tried and rejected, and the rejections bound what the table above may claim.**
+
+1. **PostgREST's per-role OpenAPI document** (`GET /rest/v1/`) would have listed every routine each
+   role may execute — existence *and* privilege, without dispatching to anything. This instance
+   answers `401 {"message":"Secret API key required"}`. A secret key is refused by this session and by
+   the committed verifier, because running an operator assertion as `service_role` bypasses
+   `admin_require_gate()` — the very thing under test. **UNAVAILABLE, not merely unused.**
+2. **An `OPTIONS` preflight** would have been pure metadata. It **failed its own negative control**:
+   PostgREST answered `200` for `definitely_not_a_function_xyz` and `another_absent_routine_qqq`
+   exactly as for `owner_notice_census`. It was discarded *before* being pointed at the writer.
+
+So the writer's presence is an **inference from atomicity**, not a catalog read. That is weaker than
+the evidence for the other routines and is recorded as such.
+
+### 14.3 Privilege posture — probed on the SHARED gate, via READ doors only
+
+`reissue_owner_safety_notice` runs the same `admin_require_gate()` that `owner_notice_census` runs, so
+probing it through a read door is evidence about that gate without entering a routine that writes. The
+gate's order (auth → is_admin → aal2 → freshness) means a non-admin is refused at `admin_required`
+*before* the factor check, so an AAL1 persona still proves the identity half.
+
+| Caller | Result |
+|---|---|
+| anon | `permission_denied` |
+| a real ADMIN at AAL1 | `mfa_required` |
+| an ordinary authenticated **owner** persona | `admin_required` |
+| an ordinary authenticated **fiduciary** persona | `admin_required` |
+| the operator at fresh AAL2 | admitted |
+
+No projection returned a recipient (0 leaks across 7 cases); no address shape appeared in any
+`owner_notice` row, any re-notice verdict, or either census.
+
+### 14.4 Phase A regression — intact, and every split reconciles
+
+```
+total 1 · by_status {dispatched: 1} · age_gate 8 days
+accepted_total 0 + unaccepted_total 1 = 1
+superseded_total 0 + current_total 1 = 1
+by_generation {1: 1} sums to 1 · by_status sums to 1
+legacy_unaccepted 1 ⊆ unaccepted_total 1
+no_episode 1
+```
+
+`accepted_total` is still **0** — no acceptance was backfilled by the Phase C paste, which is the one
+number that would have exposed a guessed backfill. The single historical row remains
+`dispatched` + `notice_accepted_at NULL` + `case_id NULL`, exactly as Phase A left it, and it was not
+mutated.
+
+Readiness census: `estates_at_door 0`, `by_readiness {}`, refused 0, admitted 0,
+`would_be_admitted_by_current_predicate 0`. Admitted + refused = estates_at_door; buckets sum; no
+`unclassified`.
+
+### 14.5 Phase C remediation classification
+
+Across all 7 operator cases — aggregated, never enumerated:
+
+```
+lifecycle          {challenge_halted: 1, active: 6}
+re-notice verdicts {no_verified_case: 6, invalid_reissue_state: 1}
+notice rows        1  (current 1, superseded 0)
+rows naming an episode  0 / 1   (the legacy row's case_id is NULL)
+generations beyond 1    0
+notice state       {dispatched + NO-ACCEPTANCE (legacy): 1}
+```
+
+```
+PHASE_C_LIVE_TARGET: NONE
+```
+
+Every case is refused for a lifecycle or currency reason, not for a notice-state reason. **No estate
+in production is eligible for a re-notice**, which is the expected consequence of a zero
+challenge-window population.
+
+### 14.6 Phase D has NOT landed — and the proof executed IN production
+
+The strongest evidence is not a static grep. **Migration 0059 §3.3 ran inside the production paste.**
+It reads the deployed `authorize_release` and raises if the pre-Phase-D predicate is missing or if the
+body already reads `notice_accepted_at`. The artifact carries exactly one `begin;` and one `commit;`,
+so a raise would have aborted the entire paste and Phase C would not be deployed.
+
+Phase C **is** deployed. Therefore, at paste time, production's `authorize_release` still carried
+`status <> 'cancelled'` and did not read the acceptance fact. Nothing has been deployed since.
+
+Corroborating, statically at `origin/main`:
+
+- all seven R13 pins remain in pre-Phase-D posture — `0056` ×2 (lines 168, 176), `0057` ×1 (line 143),
+  and the four mutation anchors `p11e-release-without-owner-notice`,
+  `p11f-release-skips-dispatch-check`, `p11e-release-before-window-elapses`,
+  `p11e-challenge-loses-the-tie`;
+- `authorize_release` carries `o.status <> 'cancelled'` and **zero** occurrences of
+  `notice_accepted_at` in its body;
+- `owner_notified_at` retains its release-clock role;
+- `notice_never_accepted` exists in no function and no migration — only in a NOTICE string and
+  comments.
+
+**Stated honestly:** the readiness census's `current_predicate ≥ phase_d` check is *vacuous today*
+(0 ≥ 0) because no estate stands at the door. It is reported, not counted as evidence.
+
+### 14.7 Standing fixture, drift, freshness
+
+| | |
+|---|---|
+| Standing fixture | **23/23**, 0 failures, exit 0 |
+| Fixture lock | **FREE** (`.aw-fixture-lock` absent) |
+| Branch B | `BRANCH_B_FIXTURE_ABSENT` — the expected answer |
+| Source/deployment drift | exit 0 — agree on all 4 reconcilable contracts |
+| Registered-artifact freshness | 66/66 — every one of the 14 artifacts byte-identical to a fresh rebuild |
+| Full clean replay | exit 0, **451 assertions**; `0057 OK`, `0058 OK`, `0059 OK`, both 0056 guards passed |
+
+No challenge-window estate was manufactured, no disclosure changed, no owner notice was queued, and
+no estate was modified during verification.
+
+### 14.8 Admin production surface
+
+Vercel **Production** deployment of `4611d37` — the Phase-C admin merge — state `success`,
+2026-08-17T20:00:49Z. The deployed application therefore corresponds to the Phase-C merge.
+
+Production data exercises exactly **one** label branch: the single outbox row is
+`dispatched` + `notice_accepted_at NULL` + current, which the deployed logic renders **"Legacy
+acceptance fact unavailable"** — the branch this phase exists to stop reading as an acceptance.
+
+The other six branches have no production data. They are **`LOCAL_RENDER_PROOF_ONLY`**, covered by
+101 admin tests and 6/6 console mutations, and were **not** synthesized in production.
+
+### 14.9 Runtime proof
+
+```
+PHASE_C_RUNTIME_PROOF: PENDING — NO LEGITIMATE PRODUCTION TARGET
+```
+
+`reissue_owner_safety_notice` was **not invoked**. No production target satisfies the eligibility
+rule, and manufacturing one would mean queueing an email to a living person about their own death
+process. The absence of a production mutation here is **intentional and is the correct outcome**, not
+a gap in the verification.
