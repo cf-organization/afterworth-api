@@ -896,8 +896,12 @@ const MUTATIONS = Object.freeze([
     why: 'THE WINDOW IS THE PROTECTION (matrix #5). Dropping the elapsed check releases the instant '
       + 'the window opens — the owner is notified and disclosed in the same breath.',
     file: 'db/functions/release_safety.sql',
-    from: "  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then\n    raise exception 'release_window_not_elapsed' using errcode = 'P0001';\n  end if;",
-    to: "  if false then\n    raise exception 'release_window_not_elapsed' using errcode = 'P0001';\n  end if;",
+    // ★ RETARGETED BY PHASE 11-OC / PHASE D (R13). The clock left `authorize_release` entirely: it
+    // now lives in `owner_notice_release_authority`, anchored on `notice_accepted_at` rather than on
+    // `owner_notified_at`. The old anchor text no longer exists, so this mutation would have applied
+    // to nothing and reported HARNESS_FAILURE. It is aimed at the same DECISION in its new home.
+    from: "  elsif not v_elapsed then\n    v_refusal := 'release_window_not_elapsed';\n  end if;",
+    to: "  end if;",
   },
   {
     id: 'p11e-challenge-loses-the-tie',
@@ -906,8 +910,11 @@ const MUTATIONS = Object.freeze([
       + 'test that samples times either side of the boundary can see it; only the exact-instant '
       + 'fixture can.',
     file: 'db/functions/release_safety.sql',
-    from: "  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then",
-    to: "  if not coalesce(now() >= v_row.owner_notified_at + v_duration, false) then",
+    // ★ RETARGETED BY PHASE D (R13). Same one-character edit, at the comparison's new home in
+    // `owner_notice_release_authority`. Still invisible to any fixture that samples times either
+    // side of the boundary; still visible only to the exact-instant fixture (§3 and §12.5c).
+    from: "    v_elapsed  := coalesce(now() > v_eligible, false);",
+    to: "    v_elapsed  := coalesce(now() >= v_eligible, false);",
   },
   {
     id: 'p11e-release-without-owner-notice',
@@ -915,8 +922,11 @@ const MUTATIONS = Object.freeze([
       + 'lets a window that never reached the owner still elapse into disclosure — the safety '
       + 'precondition becomes decorative.',
     file: 'db/functions/release_safety.sql',
-    from: "  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;\n  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by",
-    to: "  if false then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;\n  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by",
+    // ★ RETARGETED BY PHASE D (R13). The anchor used to span the estate-scoped
+    // `status <> 'cancelled'` predicate, which no longer exists. The dispatch-provenance guard it
+    // was really aiming at survives Phase D unchanged, so the mutation is aimed at that alone.
+    from: "  if v_row.owner_notified_at is null or v_row.safety_notification_id is null then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by",
+    to: "  if false then\n    raise exception 'owner_not_notified' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by",
   },
   {
     id: 'p11e-window-opens-without-notifying',
@@ -1257,8 +1267,12 @@ const MUTATIONS = Object.freeze([
     why: 'D4 AT THE RELEASE DOOR. Dropping the email-channel precondition lets an estate whose '
       + 'notice was cancelled — or never really addressed — elapse into disclosure anyway.',
     file: 'db/functions/release_safety.sql',
-    from: "  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n\n  select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified",
-    to: "  select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified",
+    // ★ RETARGETED BY PHASE D (R13). D4's precondition at the release door is no longer an
+    // estate-scoped status test — it is the acceptance authority. Dropping the CONSULTATION is the
+    // same defect the original aimed at, one layer up: an estate whose notice was never accepted
+    // (or belongs to a prior episode) elapses into disclosure anyway.
+    from: "  v_auth := public.owner_notice_release_authority(v_case);\n  if not (v_auth ->> 'ready')::boolean then\n    raise exception '%', v_auth ->> 'refusal_code' using errcode = 'P0001';\n  end if;",
+    to: "  v_auth := public.owner_notice_release_authority(v_case);",
   },
   {
     id: 'p11f-window-opens-without-dispatch',
@@ -1928,8 +1942,13 @@ const MUTATIONS = Object.freeze([
       + 'which is precisely the staged-rollout gate. 0058 §5.4 and §10.7 must both object — and so '
       + 'must the historical guards in 0056 and 0057, which is the R13 hazard proven in Stage 2.',
     file: 'db/functions/release_safety.sql',
-    from: "     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'",
-    to: "     where o.estate_id = p_estate and o.channel = 'email' and o.notice_accepted_at is not null",
+    // ★ RETARGETED BY PHASE D (R13), AND THE HAZARD IT GUARDS IS NOW THE MIRROR IMAGE. The original
+    // smuggled the Phase D predicate into Phase A, AHEAD of the migration that certifies it. Post
+    // cutover the equivalent mistake is a HALF-cutover in the other direction: the authority is
+    // deployed and the door quietly stops consulting it, reverting to an existence test. 0058 and
+    // 0059's post-cutover branches and 0060 §2.1 must all object.
+    from: "  v_auth := public.owner_notice_release_authority(v_case);",
+    to: "  v_auth := jsonb_build_object('ready', exists (select 1 from public.owner_notice_outbox o where o.estate_id = p_estate and o.channel = 'email'), 'window_duration', public.challenge_window_duration()::text);",
   },
   // ══════════════════════════════════════════════════════════════════════════════════════════════
   // PHASE 11-OC / PHASE C — the operator re-notice
@@ -2237,6 +2256,271 @@ const MUTATIONS = Object.freeze([
     file: 'db/migrations/0059_20260817_owner_notice_reissue.sql',
     from: "create unique index if not exists owner_notice_outbox_one_current_per_episode_idx\n  on public.owner_notice_outbox (case_id, channel)\n  where superseded_by is null;",
     to: "create unique index if not exists owner_notice_outbox_one_current_per_episode_idx\n  on public.owner_notice_outbox (case_id, channel, notice_kind)\n  where superseded_by is null;",
+  },
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // PHASE 11-OC / PHASE D — the release door re-anchored on provider acceptance
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // ★ EVERY ONE OF THESE IS AIMED AT A RUNTIME FIXTURE, NOT AT A BUILD CONTROL. The Phase D bundle
+  // deliberately carries no needle for the refusal ladder, the episode key, the generation test, the
+  // clock or the strict boundary — precisely so these mutations reach Postgres rather than being
+  // refused by the builder. A builder that rejects a mutated input converts DETECTED into
+  // HARNESS_FAILURE, which this programme has now done to itself eight times.
+  //
+  // ★ THE MIGRATION SELF-CHECKS ARE A SECOND, INDEPENDENT VOTER, AND THAT IS DELIBERATE. Several of
+  // these are caught by migration 0060's behavioural block (§4) as well as by the SQL suite §12. Two
+  // voters on one property is not redundancy here: 0060 runs at PASTE time in production, where the
+  // suite does not, so a mutation caught only by the suite would ship silently to an operator.
+  {
+    id: 'p11ocd-status-cancelled-restored',
+    why: 'THE SUPERSEDED PREDICATE, PUT BACK. The single most likely regression: a reviewer who has '
+      + 'not read Phase D "restores" the owner-notice check that Phase D removed, and the door is '
+      + 'back to admitting queued, processing, outcomeUncertain and failedPermanent. 0056, 0057, '
+      + '0058, 0059 and 0060 must ALL object (never-neither/never-both), and §12.3 must too.',
+    file: 'db/functions/release_safety.sql',
+    from: "  v_auth := public.owner_notice_release_authority(v_case);\n  if not (v_auth ->> 'ready')::boolean then",
+    to: "  if not exists (\n    select 1 from public.owner_notice_outbox o\n     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'\n  ) then\n    raise exception 'owner_channel_unreachable' using errcode = 'P0001';\n  end if;\n  v_auth := public.owner_notice_release_authority(v_case);\n  if false then",
+  },
+  {
+    id: 'p11ocd-release-on-row-existence',
+    why: 'AUTHORITY BY EXISTENCE. The acceptance test replaced by "a notice row exists", which is '
+      + 'the vacuous predicate Phase D exists to remove, wearing the new function name as cover.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif false then",
+  },
+  {
+    id: 'p11ocd-release-on-queued',
+    why: 'A NEVER-SENT NOTICE QUALIFIES. `queued` means the drain has not tried yet — the message '
+      + 'has not left the building — and admitting it releases an estate whose owner was told '
+      + 'nothing. §12.3 walks all six statuses precisely so this cannot pass on one of them.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif v_row.notice_accepted_at is null and v_row.status <> 'queued' then",
+  },
+  {
+    id: 'p11ocd-release-on-processing',
+    why: 'AN IN-FLIGHT NOTICE QUALIFIES. `processing` means a worker claimed it and nothing has '
+      + 'settled; the provider may still reject it outright.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif v_row.notice_accepted_at is null and v_row.status <> 'processing' then",
+  },
+  {
+    id: 'p11ocd-release-on-failed-permanent',
+    why: 'A DEFINITIVELY FAILED NOTICE QUALIFIES. The worst of the six: the provider told us the '
+      + 'message could not be delivered, and the door treats that as the owner having been warned.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif v_row.notice_accepted_at is null and v_row.status <> 'failedPermanent' then",
+  },
+  {
+    id: 'p11ocd-release-on-outcome-uncertain',
+    why: 'AN UNKNOWN OUTCOME QUALIFIES (D11). `outcomeUncertain` is the honest record that nobody '
+      + 'knows what happened, and treating it as acceptance is exactly the fabricated-stronger-fact '
+      + 'failure this phase was built to stop.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif v_row.notice_accepted_at is null and v_row.status <> 'outcomeUncertain' then",
+  },
+  {
+    id: 'p11ocd-release-on-legacy-dispatched',
+    why: 'THE LEGACY CLASS QUALIFIES. `dispatched` with a NULL stamp is a pre-Phase-A row whose '
+      + 'acceptance was never recorded — the whole population Phase D blocks and Phase C remedies. '
+      + 'This is the most PLAUSIBLE of the set: `dispatched` reads like success.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif v_row.notice_accepted_at is null and v_row.status <> 'dispatched' then",
+  },
+  {
+    id: 'p11ocd-clock-uses-owner-notified-at',
+    why: 'THE DEFECTIVE CLOCK, RESTORED. The seven days run from the instant the row was QUEUED '
+      + 'again, so the window elapses while the message sits unsent. §1 ages provenance to 8 days '
+      + 'with a fresh acceptance and §12.5b re-proves it 30 days out; both must object.',
+    file: 'db/functions/release_safety.sql',
+    from: "    v_eligible := v_row.notice_accepted_at + v_duration;",
+    to: "    v_eligible := (select l.owner_notified_at from public.estate_lifecycle l\n                    where l.estate_id = v_c.estate_id) + v_duration;",
+  },
+  {
+    id: 'p11ocd-acceptance-coalesced-to-provenance',
+    why: 'THE SILENT FALLBACK. The most seductive edit in the phase: it looks like defensive '
+      + 'null-handling and it re-admits the ENTIRE legacy population, because every one of those '
+      + 'rows has a non-null owner_notified_at. Authority is decided by SOURCE, and provenance was '
+      + 'written by a path that could not have been telling the truth about acceptance.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_row.notice_accepted_at is not null and v_duration is not null then",
+    to: "  if coalesce(v_row.notice_accepted_at, (select l.owner_notified_at from public.estate_lifecycle l where l.estate_id = v_c.estate_id)) is not null and v_duration is not null then",
+  },
+  {
+    id: 'p11ocd-clock-uses-dispatched-at',
+    why: 'A THIRD WRONG ANCHOR. `dispatched_at` is stamped by the settle path on every branch that '
+      + 'reaches `dispatched`, so it is present on rows whose acceptance is unknown, and it starts '
+      + 'the clock at a moment the provider had said nothing.',
+    file: 'db/functions/release_safety.sql',
+    from: "    v_eligible := v_row.notice_accepted_at + v_duration;",
+    to: "    v_eligible := coalesce(v_row.dispatched_at, v_row.notice_accepted_at) + v_duration;",
+  },
+  {
+    id: 'p11ocd-boundary-becomes-inclusive',
+    why: 'THE TIE GOES TO RELEASE (R14). One character, at the authority. Invisible to any fixture '
+      + 'sampling times either side of the boundary; only the exact-instant fixtures see it.',
+    file: 'db/functions/release_safety.sql',
+    from: "    v_elapsed  := coalesce(now() > v_eligible, false);",
+    to: "    v_elapsed  := coalesce(now() >= v_eligible, false);",
+  },
+  {
+    id: 'p11ocd-prior-case-authorizes',
+    why: 'EPISODE SCOPE DELETED (D3). An accepted notice from a PRIOR, REJECTED death process '
+      + 'authorizes a release under a NEW case whose own notice never went out. §12.2 is built on an '
+      + 'estate that interleaves precisely so this cannot pass.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_canonical <> p_case then",
+    to: "  elsif false then",
+  },
+  {
+    id: 'p11ocd-episode-authority-is-estate',
+    why: 'THE EPISODE KEY BECOMES THE ESTATE. The same defect by a different route: the current '
+      + 'generation is looked up by estate, so ANY episode the estate ever ran can supply the '
+      + 'qualifying notice.',
+    file: 'db/functions/release_safety.sql',
+    from: "   where o.case_id = p_case\n     and o.channel = 'email'\n     and o.notice_kind = any (public.owner_notice_episode_kinds())\n     and o.superseded_by is null\n   limit 1;\n\n  v_duration := public.challenge_window_duration();",
+    to: "   where o.estate_id = v_c.estate_id\n     and o.channel = 'email'\n     and o.notice_kind = any (public.owner_notice_episode_kinds())\n     and o.superseded_by is null\n   limit 1;\n\n  v_duration := public.challenge_window_duration();",
+  },
+  {
+    id: 'p11ocd-superseded-generation-authorizes',
+    why: 'A RETIRED GENERATION AUTHORIZES (D4). Dropping the structural current-generation test lets '
+      + 'a superseded row carrying an old acceptance qualify. §12.5a and 0060 §4.4 both construct '
+      + 'that row by hand — it is unreachable through the deployed doors — exactly so the door does '
+      + 'not have to depend on two other routines never changing.',
+    file: 'db/functions/release_safety.sql',
+    from: "     and o.superseded_by is null\n   limit 1;\n\n  v_duration := public.challenge_window_duration();",
+    to: "   limit 1;\n\n  v_duration := public.challenge_window_duration();",
+  },
+  {
+    id: 'p11ocd-current-generation-becomes-max',
+    why: 'THE DERIVED MAX (D4). `max(generation)` instead of the structural `superseded_by is null`. '
+      + 'A derived-max invariant cannot be expressed as a constraint, so the release door would rest '
+      + 'on an invariant only the writer maintains — and a concurrent double-reissue produces two '
+      + 'rows that both believe they are latest.',
+    file: 'db/functions/release_safety.sql',
+    from: "     and o.superseded_by is null\n   limit 1;\n\n  v_duration := public.challenge_window_duration();",
+    to: "   order by o.generation desc\n   limit 1;\n\n  v_duration := public.challenge_window_duration();",
+  },
+  {
+    id: 'p11ocd-acceptance-existential-over-episode',
+    why: 'ANY GENERATION SUFFICES. Reads acceptance as an existential over the whole episode instead '
+      + 'of the current generation. It looks like the readiness census (which is deliberately '
+      + 'existential) and is WRONG at the door: a hand-written acceptance on a retired row would '
+      + 'authorize a release the current generation cannot.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_row.notice_accepted_at is null then",
+    to: "  elsif not exists (select 1 from public.owner_notice_outbox a where a.case_id = p_case and a.notice_accepted_at is not null) then",
+  },
+  {
+    id: 'p11ocd-lifecycle-guard-dropped-in-authority',
+    why: 'THE AUTHORITY STOPS CHECKING THE LIFECYCLE. It would then report READY for a '
+      + 'challenge_halted estate, so the console offers AUTHORIZE RELEASE on a process the owner '
+      + 'stopped. The door still refuses (its own state guard is preserved), which is exactly why '
+      + 'this must be caught: a console that disagrees with the door is the Phase D failure mode.',
+    file: 'db/functions/release_safety.sql',
+    from: "  elsif v_state is distinct from 'challenge_window' then",
+    to: "  elsif false then",
+  },
+  {
+    id: 'p11ocd-projection-recomputes-the-clock',
+    why: 'THE CONSOLE GROWS A SECOND CLOCK. The projection computes eligibility from '
+      + 'owner_notified_at again while the door uses acceptance, so an operator is shown a date days '
+      + 'early and offered a release the server refuses. This is the drift Phase D removed by '
+      + 'construction, reintroduced by hand.',
+    file: 'db/functions/operator_console.sql',
+    from: "      'release_eligible_at', v_auth -> 'release_eligible_at',\n      'elapsed',             coalesce((v_auth ->> 'elapsed')::boolean, false)",
+    to: "      'release_eligible_at', to_jsonb(case when v_l.owner_notified_at is not null and v_duration is not null then v_l.owner_notified_at + v_duration end),\n      'elapsed',             coalesce(now() > v_l.owner_notified_at + v_duration, false)",
+  },
+  {
+    id: 'p11ocd-console-available-while-server-refuses',
+    why: 'THE CONSOLE SAYS READY WHILE THE DOOR SAYS NO. The projection reports readiness from the '
+      + 'lifecycle state alone, so every challenge_window estate shows AUTHORIZE RELEASE — including '
+      + 'the legacy population with no acceptance fact at all. §12.4 pins the three-way agreement.',
+    file: 'db/functions/operator_console.sql',
+    from: "    'release_authority', v_auth,",
+    to: "    'release_authority', v_auth || jsonb_build_object('ready', coalesce(v_l.state, 'active') = 'challenge_window', 'refusal_code', null),",
+  },
+  {
+    id: 'p11ocd-window-door-requires-acceptance',
+    why: 'THE PROTECTIVE ACT MADE HARDER THAN THE HARMFUL ONE (D7). Tightening '
+      + 'begin_challenge_window to the release door\'s rule READS LIKE CONSISTENCY and is the '
+      + 'inversion Phase D refuses: the drain is asynchronous, so the initial notice is still queued, '
+      + 'and the owner\'s own challenge window becomes unopenable until a worker has run. 0060 §2.2 '
+      + 'and §1 of the suite must both object.',
+    file: 'db/functions/release_safety.sql',
+    from: "       and o.notice_kind = any (public.owner_notice_episode_kinds())\n       and o.superseded_by is null\n  ) then\n    raise exception 'no_current_notice' using errcode = 'P0001';",
+    to: "       and o.notice_kind = any (public.owner_notice_episode_kinds())\n       and o.superseded_by is null\n       and o.notice_accepted_at is not null\n  ) then\n    raise exception 'no_current_notice' using errcode = 'P0001';",
+  },
+  {
+    id: 'p11ocd-window-door-accepts-prior-episode',
+    why: 'THE WINDOW DOOR LOSES ITS EPISODE SCOPE (Stage 6). Scoped to the estate again, a notice '
+      + 'from a PRIOR death process satisfies the precondition for a NEW one — the same defect as at '
+      + 'the release door, at the door that starts the clock.',
+    file: 'db/functions/release_safety.sql',
+    from: "     where o.case_id = v_case\n       and o.channel = 'email'",
+    to: "     where o.estate_id = p_estate\n       and o.channel = 'email'",
+  },
+  {
+    id: 'p11ocd-phase-c-blind-to-legacy-class',
+    why: 'THE REMEDY DISAPPEARS FOR THE POPULATION PHASE D BLOCKS. Removing the legacy branch from '
+      + 'the reissue assessment leaves every dispatched-with-no-acceptance-fact estate permanently '
+      + 'unreleasable, with no route back but hand-written SQL against a safety table. Phase D '
+      + 'without Phase C is a trap, and §12.4 proves the three-way agreement rather than assuming it.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_row.status = 'dispatched' and v_row.notice_accepted_at is null then",
+    to: "  elsif false then",
+  },
+  {
+    id: 'p11ocd-two-person-rule-dropped-in-cutover',
+    why: 'THE CUTOVER TAKES A GUARD WITH IT. Phase D rewrote this routine, which is exactly when an '
+      + 'unrelated guard gets lost in the diff. Phase D ADDS owner-notice authority; it replaces no '
+      + 'existing release guard. 0060 §2.1 asserts every pre-Phase-D sentinel is still present and '
+      + '§12.6 re-runs the matrix on the new door.',
+    file: 'db/functions/release_safety.sql',
+    from: "  if v_uid = v_reviewer_a then\n    raise exception 'two_person_rule_violated' using errcode = 'P0001';\n  end if;",
+    to: "  if false then\n    raise exception 'two_person_rule_violated' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11ocd-authority-reachable-by-clients',
+    why: 'THE INTERNAL AUTHORITY GRANTED TO CLIENTS. It reads owner_notice_outbox and '
+      + 'death_verification_cases through a DEFINER, so a client role holding EXECUTE could '
+      + 'enumerate release readiness — and case existence — without passing a gated door. 0060 §1 '
+      + 'and §12.9 must both object.',
+    file: 'db/functions/release_safety.sql',
+    from: "revoke execute on function public.owner_notice_release_authority(uuid)\n  from public, anon, authenticated;",
+    to: "grant execute on function public.owner_notice_release_authority(uuid) to authenticated;",
+  },
+  {
+    id: 'p11ocd-r13-amendment-reverted-to-the-old-pin',
+    why: 'THE R13 AMENDMENT UNDONE — AND THIS IS THE MUTATION THAT PROVES THE AMENDED GUARD IS LIVE '
+      + 'RATHER THAN A DECORATION. Reverting 0057 to its original unconditional pin demands text the '
+      + 'Phase D door no longer contains, so a clean replay MUST fail here. That failure is the '
+      + 'evidence: it shows the guard is genuinely reached during replay, that it can still fail, '
+      + 'and that the suite passes because of the SUPERSESSION rather than because anybody taught '
+      + 'the harness to look away. Without it, an amendment that had quietly become unreachable '
+      + 'would be indistinguishable from one doing its job.',
+    file: 'db/migrations/0057_20260816_owner_notice_claim_visibility.sql',
+    from: "  v_old := v_def like '%o.status <> ''cancelled''%';",
+    to: "  v_old := v_def like '%o.status <> ''cancelled''%';\n  if not v_old then\n    raise exception '0057 FAILED: authorize_release no longer carries the OB-2 precondition this '\n      'migration is required to leave alone';\n  end if;",
+  },
+  {
+    id: 'p11ocd-r13-comment-stripping-removed',
+    why: 'THE REFUSED R13 "FIX", ATTEMPTED — prose allowed to vote again. Deleting the '
+      + 'comment-stripping step restores the state in which a plpgsql body\'s COMMENTS satisfy a '
+      + 'text guard, which is the "plant the literal in a comment" option this programme recorded as '
+      + 'the worst available and refused. It is detectable in the OTHER direction, which is what '
+      + 'makes it a usable mutation: the Phase D banner QUOTES the superseded predicate in order to '
+      + 'state that it is gone, so without stripping the guard sees BOTH postures and fires its '
+      + 'half-cutover branch on a perfectly correct tree. Aimed at the INSTRUMENT: this '
+      + 'preprocessing must not be droppable in silence.',
+    file: 'db/migrations/0058_20260817_owner_notice_acceptance_episode.sql',
+    from: "    v_def := regexp_replace(v_def, E'--[^\\n]*', '', 'g');\n    if v_def not like '%raise exception%' then\n      raise exception '0058 FAILED: the stripped authorize_release body contains no code — the '\n        'preprocessing has eaten the routine and this guard is inspecting an empty string';\n    end if;\n",
+    to: "",
   },
 ]);
 
