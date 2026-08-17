@@ -2018,6 +2018,45 @@ as $function$
 $function$;
 revoke execute on function public.owner_notice_age_gate() from public, anon, authenticated;
 
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- owner_notice_claim_visibility() → interval                                          [INTERNAL]
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- ★ PHASE 11-OBR / OB-1. How long a claim is believed before the row is handed to another worker.
+--
+-- Derived from measured ceilings, not chosen for roundness: the provider request timeout is 10s
+-- (`REQUEST_TIMEOUT_MS`), retried at most once on an ambiguous answer, so one row can legitimately
+-- occupy a worker for ~20s; the drain runs on a serverless function whose execution ceiling is at
+-- most 300s. One hour is therefore 12× the highest possible platform ceiling and ~180× the real
+-- per-row cost — a row still `processing` an hour later is not slow, it is abandoned.
+--
+-- The upper bound matters as much: the stale sweep settles rows at `age_gate` (window + 1 day) and
+-- the cron runs daily, so one hour leaves every one of those daily drains available as a recovery
+-- opportunity instead of spending the gate waiting.
+--
+-- ★ IT IS A FUNCTION SO THERE IS EXACTLY ONE COPY. `claim_owner_notices` decides what to reclaim and
+-- `owner_notice_census` reports how much is reclaimable; two literals would be two opinions about
+-- the same bytes, and the first time they drifted the census would quietly stop describing what the
+-- drain actually does. Not a policy table: the challenge window is a PRODUCT decision an operator
+-- must be able to state, whereas this is an operational property of this worker whose only failure
+-- mode is being set below the platform ceiling — which would reclaim rows out from under live
+-- workers and manufacture the duplicate sends this module exists to avoid.
+create or replace function public.owner_notice_claim_visibility()
+ returns interval
+ language sql
+ immutable
+ set search_path to 'public'
+as $function$
+  select interval '1 hour';
+$function$;
+revoke execute on function public.owner_notice_claim_visibility() from public, anon, authenticated;
+
+comment on function public.owner_notice_claim_visibility() is
+  'How long an owner-notice claim is believed before the row may be reclaimed (Phase 11-OBR). One '
+  'hour: 12x the highest serverless execution ceiling and ~180x the real per-row send cost, and far '
+  'inside the age gate so every daily drain remains a recovery opportunity. Single-sourced so the '
+  'claim routine and the census cannot disagree about what is stale.';
+
 comment on function public.owner_notice_age_gate() is
   'How old an owner safety notice may be and still be worth sending (Phase 11-F): the challenge '
   'window plus one day of queue slack, DERIVED so the two cannot drift apart. NULL when the window '
@@ -2060,6 +2099,10 @@ as $function$
 declare
   v_gate interval;
   v_max  int;
+  -- ★ PHASE 11-OBR / OB-1 — the claim visibility timeout, read from the ONE place that defines it
+  -- (`owner_notice_claim_visibility()`), so this routine and `owner_notice_census` can never
+  -- disagree about which rows are stale.
+  v_visibility interval := public.owner_notice_claim_visibility();
 begin
   v_gate := public.owner_notice_age_gate();
   if v_gate is null then
@@ -2077,19 +2120,57 @@ begin
    where o.status in ('queued', 'processing')
      and o.requested_at < now() - v_gate;
 
+  -- ────────────────────────────────────────────────────────────────────────────────────────────
+  -- ★ THE CLAIM SET IS CLOSED AND WRITTEN OUT AS TWO NAMED BRANCHES (OB-1).
+  -- ────────────────────────────────────────────────────────────────────────────────────────────
+  --
+  --   A · queued           — claimable immediately, subject to its backoff. Unchanged.
+  --   B · processing, stale — claimed by a worker that never settled it. Reclaimable ONLY once the
+  --                           claim is older than the visibility timeout.
+  --
+  -- Every other status is excluded, and excluded BY NAME rather than by falling through a
+  -- `status <> terminal` predicate. `dispatched`, `outcomeUncertain`, `failedPermanent` and
+  -- `cancelled` are all settled: two of them are terminal precisely because the message may already
+  -- be in the owner's inbox, and a broad "not terminal" test is exactly how a future status added to
+  -- the CHECK constraint would silently become re-sendable.
+  --
+  -- ★ `claimed_at IS NULL` ON A `processing` ROW IS RECLAIMABLE, AND THAT IS A DECISION.
+  -- Such a row was claimed before `claimed_at` existed (migration 0057), which means it has been
+  -- sitting in `processing` since at least the deployment — already far beyond any timeout. Treating
+  -- NULL as "infinitely stale" is what lets the DEPLOYED mechanism recover the rows the defect
+  -- already stranded, rather than requiring a hand-written repair for each one. It is a class rule;
+  -- no row is named.
+  --
+  -- ★ WHAT A RECLAIM COSTS, STATED HONESTLY. A reclaimed row is re-sent under the SAME deterministic
+  -- `Idempotency-Key` (`afterworth/owner-notice/<row id>`, built in `lib/ownerNotices/drain.ts` from
+  -- the row id with no generation counter), so the provider is asked to no-op a repeat. That is the
+  -- same operation the worker ALREADY performs when it retries an ambiguous first attempt — this
+  -- does not re-mint a message, it replays one. It is nevertheless AT-LEAST-ONCE, not exactly-once:
+  -- the provider's dedupe retention is a vendor property this repository does not pin, and a reclaim
+  -- that lands outside it could produce a second copy. See docs/phase11ob-owner-notice-delivery-defect.md.
   return query
   with candidate as (
     select o.id
       from public.owner_notice_outbox o
-     where o.status = 'queued'
-       and o.requested_at >= now() - v_gate
-       and (o.next_attempt_at is null or o.next_attempt_at <= now())
+     where o.requested_at >= now() - v_gate
+       and (
+         -- A · the ordinary queue
+         (o.status = 'queued'
+          and (o.next_attempt_at is null or o.next_attempt_at <= now()))
+         -- B · an abandoned claim
+         or (o.status = 'processing'
+             and (o.claimed_at is null or o.claimed_at < now() - v_visibility))
+       )
      order by o.requested_at
      limit v_max
      for update skip locked
   )
   update public.owner_notice_outbox o
-     set status = 'processing', attempts = o.attempts + 1
+     set status     = 'processing',
+         attempts   = o.attempts + 1,
+         -- Stamped on EVERY claim, first or repeat: the timeout must run from THIS claim, or a
+         -- reclaimed row would be instantly reclaimable again by the next concurrent drain.
+         claimed_at = now()
     from candidate c
    where o.id = c.id
   returning o.id, o.estate_id, o.recipient, o.notice_kind;
@@ -2336,7 +2417,7 @@ begin
   -- while the headline number was triple the truth. A census whose total is wrong is worse than no
   -- census — it is the number an operator would quote when deciding whether to purge.
   with rows as (
-    select o.status, o.requested_at from public.owner_notice_outbox o
+    select o.status, o.requested_at, o.claimed_at from public.owner_notice_outbox o
   ),
   by_status as (
     select coalesce(jsonb_object_agg(t.status, t.n), '{}'::jsonb) as m
@@ -2361,7 +2442,27 @@ begin
     -- into `purgeable` because it is deliberately NOT purgeable.
     'uncertain', (select count(*) from rows r where r.status = 'outcomeUncertain'),
     'purgeable', (select count(*) from rows r
-                   where r.status in ('dispatched', 'failedPermanent', 'cancelled'))
+                   where r.status in ('dispatched', 'failedPermanent', 'cancelled')),
+    -- ★ PHASE 11-OBR / OB-1 — THE STUCK-CLAIM SPLIT, WITHOUT WHICH THIS DEFECT IS INVISIBLE.
+    --
+    -- The Branch A notice sat at `processing` for a day and nothing anywhere said so: `by_status`
+    -- carried a `processing: 1` that reads as healthy in-flight work, and there was no way to ask
+    -- how long it had been in flight. These three keys are what turn "a notice is being sent" into
+    -- "a notice has been abandoned", which is a different operational fact entirely.
+    --
+    -- `processing_stale` uses the SAME predicate the drain reclaims by — including its NULL branch —
+    -- read from `owner_notice_claim_visibility()` rather than restated, so this number is exactly
+    -- "rows the next drain will pick up" and not an approximation of it.
+    'processing_total', (select count(*) from rows r where r.status = 'processing'),
+    'processing_stale', (select count(*) from rows r
+                          where r.status = 'processing'
+                            and (r.claimed_at is null
+                                 or r.claimed_at < now() - public.owner_notice_claim_visibility())),
+    -- Age of the OLDEST claim still in flight, as an interval string. NULL when nothing is
+    -- processing. A legacy row with no claimed_at cannot have an age computed, so it reports NULL
+    -- here and is counted in `processing_stale` above — the count is the alarm, this is the detail.
+    'oldest_processing_age', (select (now() - min(r.claimed_at))::text from rows r
+                               where r.status = 'processing' and r.claimed_at is not null)
   ) into v_out;
 
   return v_out;

@@ -32,9 +32,14 @@
  *   FAILED                  yes           status = 'failedPermanent' + failure_class
  *   STALE                   yes           failure_class = 'stale_beyond_age_gate'
  *
- * A `claimed_at` column DOES NOT EXIST. `claim_owner_notices` moves the row to `processing` and
- * increments `attempts`; it stamps no timestamp. The observer reports `claimed_at: null` with that
- * reason attached rather than substituting a nearby timestamp that would read as one.
+ * `claimed_at` EXISTS since migration 0057 (Phase 11-OBR / OB-1) — `claim_owner_notices` stamps it
+ * on every claim, and the reclaim predicate times out against it. It is NOT readable from here:
+ * `admin_get_death_verification_case` does not select the column, so the observer prints the
+ * sentinel `NOT_OBSERVABLE_HERE` rather than a value. This comment previously asserted the column
+ * did not exist and the observer printed a hard-coded `null` — after the OB-1 recovery that would
+ * have read as a failed claim stamp on a row that had just been re-claimed successfully.
+ *
+ * Classification never depended on it, and still must not: `attempts` is what proves a claim.
  *
  * ════════════════════════════════════════════════════════════════════════════════════════════════
  * ★ THE DRAIN OPPORTUNITY IS READ FROM `vercel.json`, NEVER REMEMBERED.

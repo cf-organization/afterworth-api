@@ -195,3 +195,63 @@ describe("3 · the bundler's guarantees are structural, not incidental", () => {
     expect(proof).toMatch(/witnessTrue/);
   });
 });
+
+/**
+ * ★ PHASE 11-OBR — EVERY GENERATED ARTIFACT MUST MATCH ITS SOURCES, NOT JUST ONE OF THEM.
+ *
+ * `releaseConditionCentralization` already asserted this, for exactly ONE bundle and three named
+ * parts. That scope is why it did not fire when 11-OBR edited `db/functions/outbox_safety.sql`:
+ * THREE bundles carry that file — the new `owner_notice_claim_visibility_bundle`, plus
+ * `death_verification_bundle` and `operator_console_bundle` — and only the new one was rebuilt. Both
+ * others sat on disk claiming to carry a version of the file that no longer existed.
+ *
+ * ★ WHY THAT IS A DEPLOYMENT HAZARD AND NOT UNTIDINESS. These artifacts exist to be pasted into
+ * production by hand. A stale one is a file that, applied on a DB reset, would silently reinstate the
+ * pre-remediation `claim_owner_notices` and re-open OB-1/OB-4 — the `create_asset_grant` near-miss of
+ * Phase 10-E, which this repository has already come within one paste of.
+ *
+ * ★ IT REBUILDS RATHER THAN PATTERN-MATCHES. Comparing `bundle.includes(source)` cannot work for a
+ * part the bundler transforms (migrations have their `\set` and `begin;/commit;` neutralised), so a
+ * text check would either miss those files or reimplement the stripper — a second opinion about the
+ * same bytes. Regenerating to a temp path and comparing digests asks the only question that matters:
+ * would rebuilding change the committed file?
+ */
+describe("6 · every generated artifact is current", () => {
+  const os = require("node:os") as typeof import("node:os");
+  const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+
+  const registry = fs.readFileSync(path.join(ROOT, "scripts/lib/sqlSuiteParts.mjs"), "utf8");
+  const pairs = [...registry.matchAll(/\[\s*'(scripts\/build[^']+)'\s*,\s*'(db\/bundles\/[^']+)'\s*\]/g)]
+    .map((m) => ({ script: m[1], out: m[2] }));
+
+  const digest = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+
+  it("the registry itself is non-empty and names real builders", () => {
+    // Assert the scan set before evaluating any rule: a regex that matched nothing would make every
+    // freshness assertion below pass against zero artifacts.
+    expect(pairs.length).toBeGreaterThanOrEqual(10);
+    for (const { script, out } of pairs) {
+      expect(fs.existsSync(path.join(ROOT, script)), `${script} missing`).toBe(true);
+      expect(fs.existsSync(path.join(ROOT, out)), `${out} missing`).toBe(true);
+    }
+  });
+
+  it.each(pairs.map((p) => [p.out, p.script] as const))(
+    "%s is byte-identical to a fresh rebuild",
+    (out, script) => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aw-bundle-fresh-"));
+      try {
+        const regenerated = path.join(tmp, path.basename(out));
+        // --out keeps the rebuild OUT of db/bundles, so running the suite never dirties the tree.
+        execFileSync("node", [path.join(ROOT, script), "--out", regenerated], { cwd: ROOT, stdio: "pipe" });
+        expect(
+          digest(regenerated),
+          `${out} differs from a fresh build — run \`node ${script}\` and commit the result`
+        ).toBe(digest(path.join(ROOT, out)));
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+  );
+});

@@ -65,6 +65,12 @@ import {
 } from './lib/t2Classification.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * ★ THE SENTINEL FOR A COLUMN THAT EXISTS BUT IS NOT EXPOSED BY THE PROJECTION THIS INSTRUMENT READS.
+ * Deliberately not `null`: a null printed in a data column reads as a measurement, and this one
+ * would have contradicted a working reclaim. See the `claimed_at` field construction below.
+ */
+const CLAIMED_AT_NOT_OBSERVABLE = 'NOT_OBSERVABLE_HERE';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_SHAPED = /[\w.+-]+@[\w-]+\.[\w-]+/;
 
@@ -296,11 +302,34 @@ const report = {
         status: selected.status,
         attempts: selected.attempts,
         requested_at: selected.requested_at,
-        // ★ NOT AVAILABLE, AND SAID SO. `claim_owner_notices` stamps no claim timestamp; there is no
-        //   column. Substituting a nearby value would fabricate a fact about when a safety message
-        //   was picked up.
-        claimed_at: null,
-        claimed_at_note: 'owner_notice_outbox records no claim timestamp — the schema has no column',
+        /**
+         * ★ NOT OBSERVABLE THROUGH THIS INTERFACE — WHICH IS NOT THE SAME AS "NULL", AND THE FIRST
+         * VERSION OF THIS FIELD CONFLATED THE TWO.
+         *
+         * It emitted a hard-coded `claimed_at: null` alongside the real columns, explained as "the
+         * schema has no column". That was true when written and became false the moment migration
+         * 0057 added `owner_notice_outbox.claimed_at` for OB-1. The value was never read from
+         * anywhere: `admin_get_death_verification_case` — the one routine this instrument calls —
+         * does not select the column, so it cannot be seen from here at all.
+         *
+         * ★ WHY THAT WAS WORSE THAN A STALE COMMENT. A fabricated `null` printed in the same column
+         * as measured data reads as an observation. After the 11-OBR recovery it would have said
+         * `claimed_at null` on a row that had just been re-claimed and stamped — indistinguishable
+         * from the `p11obr-claimed-at-not-stamped` mutation, and grounds for classifying a working
+         * recovery as a new defect.
+         *
+         * So the field now carries an explicit sentinel rather than a value. Three states are kept
+         * distinct, and this instrument can only distinguish the first from the others:
+         *   · NOT_OBSERVABLE_HERE — the projection does not expose the column (this case)
+         *   · a timestamp          — the row was claimed at that moment
+         *   · genuinely NULL       — a legacy claim predating 0057, never re-claimed since
+         * Reading it requires either the SQL editor or widening the operator projection, and
+         * widening a projection that deliberately omits recipient data is a decision, not a fix.
+         */
+        claimed_at: CLAIMED_AT_NOT_OBSERVABLE,
+        claimed_at_note:
+          'not selected by admin_get_death_verification_case — the column EXISTS (migration 0057); '
+          + 'its value is not visible through this interface',
         dispatched_at: selected.dispatched_at ?? null,
         failure_class: selected.failure_class ?? null,
         provider_result: selected.status === 'dispatched' ? 'providerAccepted' : null,
@@ -348,7 +377,8 @@ if (JSON_OUT) {
     console.log(`    status          ${n.status}`);
     console.log(`    attempts        ${n.attempts}`);
     console.log(`    requested_at    ${n.requested_at}`);
-    console.log(`    claimed_at      ${n.claimed_at}  (${n.claimed_at_note})`);
+    console.log(`    claimed_at      ${n.claimed_at}`);
+    console.log(`                    (${n.claimed_at_note})`);
     console.log(`    dispatched_at   ${n.dispatched_at}`);
     console.log(`    failure_class   ${n.failure_class}`);
     console.log(`    provider_result ${n.provider_result}`);
