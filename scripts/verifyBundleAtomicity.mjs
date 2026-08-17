@@ -262,6 +262,41 @@ const WITNESS = {
   'db/bundles/owner_notice_reissue_bundle.sql':
     "select exists (select 1 from pg_indexes where schemaname = 'public' "
     + "and indexname = 'owner_notice_outbox_one_current_per_episode_idx')",
+
+  /**
+   * ★ PHASE 11-OC / PHASE D. The witness is `owner_notice_release_authority`, and this artifact is
+   * classified NO_STATE_DELTA — which is the HONEST result, not a gap that was papered over.
+   *
+   * ★ THE FIRST DRAFT OF THIS ENTRY CLAIMED THE WITNESS DISCRIMINATES. IT DOES NOT, AND THE HARNESS
+   * SAID SO ON THE FIRST RUN. The reasoning was that no artifact before Phase D defines this
+   * function, so it cannot exist at baseline. That is true of the BUNDLES and irrelevant here: the
+   * harness seeds its baseline from SOURCE, and the authority is defined in `release_safety.sql` —
+   * one of the files this very bundle carries. So it is present before the artifact runs, both
+   * `applies` and `rollback` are trivially true, and scoring it would be a pass that observed
+   * nothing. Recorded rather than quietly replaced, because the mistake is the instructive part:
+   * "no earlier artifact ships it" and "it is absent from the baseline" are different claims.
+   *
+   * ★ AND NO OBSERVABLE WITNESS EXISTS FOR THIS ARTIFACT, WHICH FOLLOWS FROM WHAT PHASE D IS.
+   * It carries NO DDL — 0058 added every column and 0059 added the episode wall — so the entire
+   * cutover is function bodies, and every one of them lives in a file the baseline already seeds.
+   * There is no column, index, constraint or catalog row that appears only after this paste. Hunting
+   * for a witness that appeared to discriminate would mean inventing one, and this harness already
+   * refuses that trade for `provisioning_correction_bundle` and `challenge_settlement_bundle` for
+   * the same reason.
+   *
+   * The witness is kept — rather than the entry being deleted — because it is the correct object to
+   * probe the moment this artifact is applied to a database that has NOT been seeded from Phase D
+   * source, which is exactly the production case. It also keeps the harness failing closed: an
+   * artifact with no entry at all aborts with CANNOT VERIFY.
+   *
+   * ★ SO ATOMICITY FOR THIS ARTIFACT RESTS ON STRUCTURE PLUS ITS OWN SELF-CHECKS, AND THAT IS
+   * STATED RATHER THAN IMPLIED: one `begin;`/`commit;` (asserted by the exactly-one check above),
+   * pure SQL with no psql meta-commands, and migration 0060's assertions — which include a
+   * BEHAVIOURAL proof (§4) that aborts the transaction if the authority misbehaves. That is a
+   * stronger guarantee than a state-delta probe, and it is the one Phase D actually ships.
+   */
+  'db/bundles/owner_notice_release_authority_bundle.sql':
+    "select to_regprocedure('public.owner_notice_release_authority(uuid)') is not null",
 };
 
 const witnessTrue = (q) => {
