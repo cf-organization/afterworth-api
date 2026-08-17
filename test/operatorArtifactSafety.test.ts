@@ -82,7 +82,20 @@ describe("0 · the audit is reading something", () => {
     // The two ship together deliberately: a reclaim without the audit fix turns one silently lost
     // notice into a daily resend loop that still cannot settle, which is strictly worse than either
     // defect alone.
-    expect(artifacts.length).toBe(12);
+    //
+    // ★ 11-OC / PHASE A IS THE 13th, AND ITS SEPARATENESS IS THE WHOLE POINT OF THE ROLLOUT.
+    // It carries migration 0058 plus `outbox_safety.sql` and `release_safety.sql`: the acceptance
+    // fact (`notice_accepted_at`), the case-episode columns, the INSERT wall that keeps them honest,
+    // and two read-only censuses. It changes NO release behaviour, and 0058 asserts that inversion
+    // about itself by requiring `authorize_release` to still carry the pre-Phase-D predicate.
+    //
+    // The Phase D cutover — the acceptance predicate and the clock re-anchor — is a SEPARATE artifact
+    // that does not exist yet, and it must stay separate. Pasting Phase A tells an operator how many
+    // live estates the stricter door would refuse; folding the two together would deploy the cutover
+    // before anyone had that number, and before the re-notice remedy those estates depend on exists.
+    // The staged rollout IS the safety property here, and one artifact per phase is how it is
+    // enforced rather than remembered.
+    expect(artifacts.length).toBe(13);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

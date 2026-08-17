@@ -520,11 +520,30 @@ begin
     end if;
   end if;
 
+  -- ★ PHASE 11-OC — ACCEPTANCE IS STAMPED IN THIS ONE STATEMENT, BESIDE THE STATUS IT AGREES WITH.
+  --
+  -- `notice_accepted_at` is the fact Phase D makes release-authoritative, and it is written here and
+  -- nowhere else. One UPDATE, so `dispatched` + NULL acceptance is structurally unreachable for any
+  -- row written after Phase A — which is what lets the re-notice routine treat that combination as
+  -- an unambiguous LEGACY marker rather than as a state it might have produced itself.
+  --
+  -- ★ IT IS KEYED ON `p_outcome`, NOT ON `v_status`. They agree today: `providerAccepted` is the only
+  -- branch that yields `dispatched`. Keying on the OUTCOME ties the stamp to what the provider
+  -- actually reported, so if a future branch ever reaches `dispatched` by another route it does not
+  -- silently inherit an acceptance fact nobody established. `outcomeUncertain`, `retryPending` and
+  -- `failedPermanent` all leave it NULL — an unknown outcome must never be recorded as an acceptance,
+  -- which is the whole reason this column exists rather than a status list.
+  --
+  -- First-write-wins needs no `where notice_accepted_at is null` guard: the settled-status no-op
+  -- above already makes a second settle unreachable, and a redundant guard here would mask a future
+  -- change to that no-op instead of failing beside it.
   update public.owner_notice_outbox
-     set status          = v_status,
-         failure_class   = v_class,
-         next_attempt_at = v_next,
-         dispatched_at   = case when v_status = 'dispatched' then now() else dispatched_at end
+     set status             = v_status,
+         failure_class      = v_class,
+         next_attempt_at    = v_next,
+         dispatched_at      = case when v_status = 'dispatched' then now() else dispatched_at end,
+         notice_accepted_at = case when p_outcome = 'providerAccepted' then now()
+                                   else notice_accepted_at end
    where id = p_id;
 
   -- ★ THE AUDIT NAMES THE OUTCOME AND THE CHANNEL CLASS, NEVER THE ADDRESS — the same discipline as
@@ -666,7 +685,14 @@ begin
   -- while the headline number was triple the truth. A census whose total is wrong is worse than no
   -- census — it is the number an operator would quote when deciding whether to purge.
   with rows as (
-    select o.status, o.requested_at, o.claimed_at from public.owner_notice_outbox o
+    select o.status, o.requested_at, o.claimed_at,
+           -- ★ PHASE 11-OC. The three facts that make the Phase D blast radius countable.
+           o.notice_accepted_at, o.case_id, o.superseded_by, o.generation
+      from public.owner_notice_outbox o
+  ),
+  by_gen as (
+    select coalesce(jsonb_object_agg(t.generation::text, t.n), '{}'::jsonb) as m
+      from (select r.generation, count(*) as n from rows r group by r.generation) t
   ),
   by_status as (
     select coalesce(jsonb_object_agg(t.status, t.n), '{}'::jsonb) as m
@@ -711,7 +737,37 @@ begin
     -- processing. A legacy row with no claimed_at cannot have an age computed, so it reports NULL
     -- here and is counted in `processing_stale` above — the count is the alarm, this is the detail.
     'oldest_processing_age', (select (now() - min(r.claimed_at))::text from rows r
-                               where r.status = 'processing' and r.claimed_at is not null)
+                               where r.status = 'processing' and r.claimed_at is not null),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC — THE ACCEPTANCE AND EPISODE SPLITS.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- These four keys are what make the Phase D blast radius a NUMBER instead of an argument. They
+    -- follow the `uncertain` key's discipline exactly: every row must land in a NAMED split, because
+    -- a nameless gap in a safety queue is the number someone eventually explains away.
+    --
+    -- The reconciliation an operator can perform, and which the suite asserts:
+    --
+    --   accepted_total + unaccepted_total            = total
+    --   legacy_unaccepted ⊆ unaccepted_total         (it is the `dispatched` slice of it)
+    --   sum(by_generation values)                    = total
+    --
+    -- `accepted_total` counts the FACT, not the status: a row is accepted because a provider
+    -- acceptance was stamped on it, never because it reached some status.
+    'accepted_total',   (select count(*) from rows r where r.notice_accepted_at is not null),
+    'unaccepted_total', (select count(*) from rows r where r.notice_accepted_at is null),
+    -- ★ THE LEGACY POPULATION, PRECISELY. `dispatched` with no acceptance fact is the shape that
+    -- existed before Phase A and is structurally unreachable after it (status and acceptance are
+    -- written in one UPDATE). A non-zero count here is therefore a count of PRE-PHASE-A rows, which
+    -- is exactly the population Phase D would refuse and Phase C must remediate.
+    'legacy_unaccepted', (select count(*) from rows r
+                           where r.status = 'dispatched' and r.notice_accepted_at is null),
+    -- Rows that belong to no episode. Also strictly pre-Phase-A: the INSERT trigger refuses a NULL
+    -- case_id, so this can only shrink.
+    'no_episode',       (select count(*) from rows r where r.case_id is null),
+    'superseded_total', (select count(*) from rows r where r.superseded_by is not null),
+    'current_total',    (select count(*) from rows r where r.superseded_by is null),
+    'by_generation',    (select m from by_gen)
   ) into v_out;
 
   return v_out;
@@ -721,8 +777,177 @@ grant  execute on function public.owner_notice_census() to authenticated;
 
 comment on function public.owner_notice_census() is
   'Read-only owner-notice outbox classification (Phase 11-F, Stage 3): totals, status and age '
-  'distribution, and the actionable/stale/purgeable split against the CURRENT age gate. Counts '
+  'distribution, and the actionable/stale/purgeable split against the CURRENT age gate. Phase 11-OC '
+  'adds the acceptance and episode splits (accepted_total, legacy_unaccepted, no_episode, '
+  'superseded_total, by_generation), each reconciling against total with no nameless gap. Counts '
   'only — never a recipient address. Admin-gated.';
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- owner_notice_release_readiness_census() → jsonb                            [admin, AAL2+fresh]
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- ★ PHASE 11-OC · THE BLAST RADIUS, AS A NUMBER, BEFORE THE POLICY THAT CREATES IT.
+--
+-- `owner_notice_census` counts ROWS. This counts ESTATES AT THE DOOR — the population Phase D's
+-- stricter release predicate will actually judge — classified by the state of the CURRENT generation
+-- of the CURRENT case episode. It exists so the Phase D cutover decision is made against a measured
+-- count rather than an assumption, and so the class that needs the Phase C remedy is named before it
+-- is blocked.
+--
+-- ★ IT IS SCOPED EXACTLY AS THE PHASE D PREDICATE WILL BE, OR IT WOULD BE MEASURING SOMETHING ELSE.
+-- Current case episode (`status = 'verified'`, newest `decided_at`), current generation
+-- (`superseded_by is null`), email channel, window-opened kind. A census that aggregated by estate
+-- would count an accepted notice from a prior REJECTED case as readiness for a new one — which is
+-- the exact defect Phase D exists to close, reproduced in the instrument built to measure it.
+--
+-- ★ EVERY ESTATE LANDS IN EXACTLY ONE NAMED BUCKET, AND THE BUCKETS RECONCILE AGAINST THE TOTAL.
+-- The `uncertain` discipline again: a nameless remainder is the number someone explains away. The
+-- suite asserts the sum, so a future status that fell through would break the reconciliation rather
+-- than hide in it.
+--
+-- ★ TWO ABSENCES ARE DISTINGUISHED, BECAUSE THE OPERATOR'S NEXT ACTION DIFFERS.
+--   · `no_current_notice`            — no notice row names this case at all. Needs dispatch, not
+--                                      re-notice. Fail-closed either way.
+--   · `ambiguous_historical_linkage` — the estate HAS notice rows but they carry a NULL case_id, so
+--                                      which episode they belong to is unprovable. These are
+--                                      pre-Phase-A rows and are NEVER guessed into an episode; the
+--                                      remedy is a re-notice that produces a fact, never a backfill
+--                                      that invents one.
+--
+-- ★ PRIVACY-MINIMIZED BY CONSTRUCTION. Counts only. No estate id, no estate name, no case id, no
+-- user id, no recipient address — on any branch. There is nothing here to correlate back to a living
+-- owner, which is the point: an operator deciding a rollout needs a distribution, not a roster.
+create or replace function public.owner_notice_release_readiness_census()
+ returns jsonb
+ language plpgsql
+ security definer
+ stable
+ set search_path to 'public'
+as $function$
+declare v_out jsonb;
+begin
+  perform public.admin_require_gate();
+
+  with door as (
+    -- Every estate standing at the release door. `challenge_window` is the ONLY state Phase D's
+    -- predicate governs; a released estate is past the door and an earlier one has not reached it.
+    --
+    -- ★ THE TABLE, NOT `estate_lifecycle_state()`, AND THE CHOICE IS FORCED RATHER THAN CASUAL.
+    --
+    -- `deathVerificationFoundation.test.ts` keeps two lists with two different privileges, and this
+    -- read had to land in one of them. Going through the reader looks stricter and violates the OTHER
+    -- rule in the same audit: outside the death module the reader may appear only as an argument to
+    -- `release_condition_satisfied`, never in a local comparison — because
+    -- `if estate_lifecycle_state(e) = '…'` is release policy leaking back out of the canonical module
+    -- one `if` at a time, which that audit calls the single most likely accident here. A
+    -- `where estate_lifecycle_state(e.id) = 'challenge_window'` scan is exactly that shape.
+    --
+    -- So this file joins `LIFECYCLE_TABLE_READERS`, the list `operator_console.sql` already occupies
+    -- for the same reason: an operator PROJECTION that reports where the machine stands. Membership
+    -- carries a proof obligation the other lists do not — the audit asserts every member is READ-ONLY
+    -- against the lifecycle — and this file satisfies it: the census is `stable`, selects only, and
+    -- names no transition, no lifecycle UPDATE and no INSERT.
+    select l.estate_id
+      from public.estate_lifecycle l
+     where l.state = 'challenge_window'
+  ),
+  cur_case as (
+    -- The CURRENT episode key, resolved exactly as authorize_release resolves it.
+    select d.estate_id,
+           (select c.id from public.death_verification_cases c
+             where c.estate_id = d.estate_id and c.status = 'verified'
+             order by c.decided_at desc limit 1) as case_id
+      from door d
+  ),
+  cur_gen as (
+    select cc.estate_id,
+           cc.case_id,
+           o.status,
+           -- ★ ACCEPTANCE IS AN EXISTENTIAL OVER THE WHOLE EPISODE, NEVER A PROPERTY OF THE CURRENT
+           -- GENERATION — and this census got that wrong on its first draft, which its own direction-1
+           -- positive control caught.
+           --
+           -- The door asks "did ANY generation of this episode reach provider acceptance?". Reading
+           -- only the current generation implements "latest generation only", which the architecture
+           -- rejects explicitly: an already-accepted generation 1 would STOP qualifying the moment a
+           -- generation 2 was created, so issuing a notice would REMOVE release authority and hand an
+           -- operator a lever that suppresses a release. Authority is monotone — creating a generation
+           -- can only ever ADD it — which is the same property that makes the MIN anchor immutable.
+           --
+           -- This must match the Phase D predicate exactly, or the console and the door disagree about
+           -- the same estate.
+           exists (
+             select 1 from public.owner_notice_outbox a
+              where a.case_id = cc.case_id
+                and a.channel = 'email'
+                and a.notice_kind = 'death_process.window_opened'
+                and a.notice_accepted_at is not null
+           ) as accepted_any,
+           -- Does the estate carry any unlinkable pre-Phase-A row? Only consulted when no current
+           -- generation was found, to separate "never dispatched" from "cannot be proven".
+           (select count(*) from public.owner_notice_outbox z
+             where z.estate_id = cc.estate_id and z.case_id is null) as orphan_rows
+      from cur_case cc
+      left join public.owner_notice_outbox o
+        on o.case_id = cc.case_id
+       and o.channel = 'email'
+       and o.notice_kind = 'death_process.window_opened'
+       and o.superseded_by is null
+  ),
+  classified as (
+    select case
+             when case_id is null                              then 'no_verified_case'
+             -- ★ THE ACCEPTANCE TEST COMES FIRST, and it is the ONLY bucket that decides admission.
+             -- Everything below it describes what the CURRENT generation is doing, which is
+             -- diagnostic information for an operator — useful, and not the release question.
+             when accepted_any                                 then 'accepted'
+             when status is null and orphan_rows > 0           then 'ambiguous_historical_linkage'
+             when status is null                               then 'no_current_notice'
+             when status = 'dispatched'                        then 'legacy_dispatched_unaccepted'
+             when status = 'outcomeUncertain'                  then 'outcome_uncertain'
+             when status = 'failedPermanent'                   then 'failed_permanent'
+             when status = 'queued'                            then 'queued'
+             when status = 'processing'                        then 'processing'
+             when status = 'cancelled'                         then 'cancelled'
+             -- ★ NOT A FALL-THROUGH. A status outside the six lands HERE, by name, so a widened
+             -- CHECK constraint shows up as an unclassified count instead of silently joining a
+             -- neighbouring bucket. The reconciliation assertion in the suite then fails loudly.
+             else 'unclassified'
+           end as bucket
+      from cur_gen
+  )
+  select jsonb_build_object(
+    'estates_at_door', (select count(*) from classified),
+    'by_readiness',    coalesce((select jsonb_object_agg(t.bucket, t.n)
+                                   from (select bucket, count(*) as n from classified group by bucket) t),
+                                '{}'::jsonb),
+    -- ★ THE ONE NUMBER THE PHASE D GATE TURNS ON. Estates at the door whose current episode carries
+    -- NO provable provider acceptance — i.e. exactly those Phase D would refuse with
+    -- `notice_never_accepted`. If this is non-zero, Phase D must not activate for that class until
+    -- the Phase C re-notice remedy is deployed and operational.
+    'would_be_refused_by_phase_d',
+      (select count(*) from classified where bucket <> 'accepted'),
+    'would_be_admitted_by_phase_d',
+      (select count(*) from classified where bucket = 'accepted'),
+    -- Retained so a reader can see that the strict policy is strictly narrower than today's, without
+    -- having to reason about it: today's predicate admits every estate with any non-cancelled row.
+    'would_be_admitted_by_current_predicate',
+      (select count(*) from classified where bucket not in ('no_verified_case', 'no_current_notice',
+                                                            'cancelled'))
+  ) into v_out;
+
+  return v_out;
+end $function$;
+revoke execute on function public.owner_notice_release_readiness_census() from public, anon;
+grant  execute on function public.owner_notice_release_readiness_census() to authenticated;
+
+comment on function public.owner_notice_release_readiness_census() is
+  'Read-only Phase 11-OC blast-radius projection: how many estates standing at the release door '
+  'would be admitted or refused by the Phase D acceptance predicate, classified by the state of the '
+  'CURRENT generation of the CURRENT case episode. Scoped by case exactly as the Phase D predicate '
+  'is, so it cannot credit an accepted notice from a prior rejected process. Every estate lands in '
+  'one NAMED bucket and the buckets reconcile against the total. Counts ONLY — no estate id, no '
+  'case id, no user id, no recipient address, on any branch. Admin-gated.';
 
 
 -- ==== db/functions/operator_console.sql ===========================================================

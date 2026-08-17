@@ -167,9 +167,24 @@ begin
 
   -- EMAIL FIRST: the row whose existence is the dispatch. Same transaction as the transition, so a
   -- rollback anywhere below un-dispatches it and the window never opened.
+  -- ★ PHASE 11-OC — THE ROW NAMES ITS EPISODE, AND `v_case` WAS ALREADY IN HAND.
+  --
+  -- `v_case` is resolved above and, until this phase, was discarded into the audit metadata only. It
+  -- is the EPISODE key: one estate may legitimately experience several independent death processes
+  -- over time (`rejected` and `cancelled` both return the lifecycle to `active`), so an accepted
+  -- notice from a prior, rejected process must never authorize a release under a later case. Scoping
+  -- the release predicate to the estate would do exactly that; scoping it to the case cannot.
+  --
+  -- `generation` is the literal 1 here and only ever incremented by the re-notice routine, under the
+  -- predecessor's row lock — never from an unlocked max().
+  --
+  -- A BEFORE INSERT trigger (migration 0058) refuses any owner-notice row with a NULL case_id, so
+  -- this is a wall rather than a promise this routine makes. Legacy rows keep their NULL and stay
+  -- updatable, because the trigger fires on INSERT only.
   insert into public.owner_notice_outbox
-    (estate_id, user_id, channel, recipient, notice_kind, status)
-  values (p_estate, v_owner, 'email', v_recipient, 'death_process.window_opened', 'queued')
+    (estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation)
+  values (p_estate, v_owner, 'email', v_recipient, 'death_process.window_opened', 'queued',
+          v_case, 1)
   returning id into v_outbox;
   if v_outbox is null then
     raise exception 'owner_notification_failed' using errcode = 'P0001';

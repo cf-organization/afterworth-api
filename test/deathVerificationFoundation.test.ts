@@ -108,7 +108,23 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
    * every member is READ-ONLY against the table. A file may read process facts here; it may not
    * quietly acquire the ability to move the machine.
    */
-  const LIFECYCLE_TABLE_READERS = ["operator_console.sql"];
+  /**
+   * ★ PHASE 11-OC ADDS THE SECOND MEMBER, AND IT BELONGS HERE RATHER THAN ABOVE FOR THE SAME REASON
+   * `operator_console.sql` DOES.
+   *
+   * `owner_notice_release_readiness_census()` answers one operator question — how many estates
+   * standing at the release door would the Phase D acceptance predicate admit, and how many would it
+   * refuse — so it must ENUMERATE estates by lifecycle state. `estate_lifecycle_state()` answers for
+   * one estate at a time, so reaching the same set through the reader means writing
+   * `where estate_lifecycle_state(e.id) = 'challenge_window'` — a LOCAL COMPARISON, which the rule
+   * above forbids precisely because it is how release policy leaks back out of the canonical module.
+   * The stricter-looking route violates the stricter rule.
+   *
+   * It is READ-ONLY against the lifecycle and the next test proves it: the census is `stable`, selects
+   * only, and names no transition, no lifecycle UPDATE and no INSERT. It reads the state word to
+   * COUNT, never to decide anything — the release decision itself stays in `release_safety.sql`.
+   */
+  const LIFECYCLE_TABLE_READERS = ["operator_console.sql", "outbox_safety.sql"];
 
   const namesTheReader = (code: string) => /\bpublic\.estate_lifecycle_state\s*\(/.test(code);
   const namesTheTable = (code: string) => /\bpublic\.estate_lifecycle\b(?!_state)/.test(code);

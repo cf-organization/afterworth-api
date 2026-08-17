@@ -74,6 +74,17 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // an overlapping module is also the established pattern — `operator_console_bundle` re-pastes
   // `outbox_safety.sql` after `death_verification_bundle` already loaded it.
   'db/bundles/halt_notification_bundle.sql',
+  // ★ PHASE 11-OC / PHASE A, LAST AMONG THE BUNDLES — the newest artifact, applied onto a database
+  // the others have shaped, which is the order an operator uses. It adds the acceptance fact and the
+  // case-episode columns, re-pastes `outbox_safety.sql` with the acceptance stamp and both censuses,
+  // and re-pastes `release_safety.sql` with the episode key on dispatch.
+  //
+  // ★ IT MUST LOAD AFTER `halt_notification_bundle`, NOT BEFORE. Both carry `release_safety.sql`, and
+  // whichever loads last is the body the suite actually exercises. Loading Phase A first would leave
+  // the halt bundle's copy deployed — the same file, so identical today, and a trap the moment the two
+  // diverge. Last also means migration 0058's inversion self-check reads the `authorize_release` that
+  // every earlier bundle has finished installing.
+  'db/bundles/owner_notice_acceptance_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
@@ -150,6 +161,12 @@ export const SQL_BUNDLES = Object.freeze([
   // one still carried the unmutated text.
   ['scripts/buildOwnerNoticeClaimVisibilityBundle.mjs',
     'db/bundles/owner_notice_claim_visibility_bundle.sql'],
+  // ★ PHASE 11-OC / PHASE A. Registered so the atomicity verifier and every rebuild-before-trust step
+  // cover it — including the mutation runner, which rebuilds every registered artifact inside its
+  // worktree and would otherwise let a mutated body reach the suite through one bundle while this one
+  // still carried the unmutated text.
+  ['scripts/buildOwnerNoticeAcceptanceBundle.mjs',
+    'db/bundles/owner_notice_acceptance_bundle.sql'],
 ]);
 
 /**
