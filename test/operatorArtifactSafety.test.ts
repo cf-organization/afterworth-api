@@ -95,7 +95,26 @@ describe("0 · the audit is reading something", () => {
     // before anyone had that number, and before the re-notice remedy those estates depend on exists.
     // The staged rollout IS the safety property here, and one artifact per phase is how it is
     // enforced rather than remembered.
-    expect(artifacts.length).toBe(13);
+    //
+    // ★ 11-OC / PHASE C IS THE 14th, AND IT SHIPS BEFORE THE PHASE IT EXISTS TO SERVE.
+    // It carries migration 0059 plus `owner_notice_reissue.sql`, `outbox_safety.sql` and
+    // `operator_console.sql`: the re-notice `notice_kind`, the per-EPISODE one-current-generation
+    // index that replaces Phase A's per-KIND one, the operator door that APPENDS a generation, and
+    // the two surfaces that have to be able to see a re-notice at all.
+    //
+    // ★ IT IS NOT AN EDIT TO THE PHASE A ARTIFACT, AND THAT ORDERING IS THE SAFETY PROPERTY AGAIN.
+    // Phase A is already deployed in production. Folding Phase C into it would mean re-pasting a
+    // migration that has already run — including its own execution self-checks — to ship a change
+    // that must be separately reviewable and separately rollbackable. It also has to remain possible
+    // to state, on the record, that Phase C changed no release behaviour: 0059 asserts that inversion
+    // about itself exactly as 0058 does, and an artifact that carried both phases could not.
+    //
+    // Phase C precedes Phase D on OPERABILITY grounds rather than on today's legacy count, which is
+    // zero. Phase D creates new legitimate refusal states — `failedPermanent`, `outcomeUncertain` —
+    // that a running system reaches on its own, and the drain will never re-send a terminal row. With
+    // no remedy, the first post-cutover provider failure produces a permanently unreleasable estate
+    // whose only recovery is hand-written SQL against a safety table.
+    expect(artifacts.length).toBe(14);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

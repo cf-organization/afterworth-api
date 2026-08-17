@@ -424,6 +424,82 @@ begin
   raise notice '  ok   the queue lists the case once, counts its evidence, and carries no address';
 
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  raise notice '7b · Phase 11-OC — the case file projects the EPISODE and the re-notice verdict';
+
+  -- ★ WITHOUT THESE FIELDS THE CONSOLE CAN RENDER ONLY A STATUS, AND THIS PHASE PROVED A STATUS IS
+  -- NOT ENOUGH. `dispatched` means "the provider accepted" on a row written after Phase A and means
+  -- "nobody knows" on a row written before it. A console that labelled both the same way would state,
+  -- on the one screen where it matters, that a living owner was reached when nobody knows.
+  v_json := harness_op.as_admin_json(ADMIN_A,
+    format('select public.admin_get_death_verification_case(%L)', CASE_K));
+
+  -- POSITIVE CONTROL FIRST: the fixture really does carry a notice row, or every field assertion
+  -- below would be reading an empty array and passing vacuously.
+  if jsonb_array_length(v_json -> 'owner_notice') < 1 then
+    raise exception 'FAIL[control]: the case file carries no owner_notice rows, so the episode field '
+      'assertions below inspect nothing';
+  end if;
+  declare
+    v_n0 jsonb := (v_json -> 'owner_notice' -> 0);
+    v_key text;
+  begin
+    foreach v_key in array array['case_id', 'generation', 'superseded_by', 'is_current',
+                                 'notice_accepted_at', 'claimed_at'] loop
+      if not (v_n0 ? v_key) then
+        raise exception 'FAIL[OC]: the case file omits owner_notice.% — the console cannot tell a '
+          'live generation from a retired one, nor an accepted notice from a legacy row', v_key;
+      end if;
+    end loop;
+    -- The fixture's notice is the only generation, so it must be the CURRENT one.
+    if (v_n0 ->> 'is_current') <> 'true' then
+      raise exception 'FAIL[OC]: the only generation of this episode is not marked current';
+    end if;
+    if (v_n0 ->> 'generation')::int <> 1 then
+      raise exception 'FAIL[OC]: an original dispatch is projected as generation %',
+        v_n0 ->> 'generation';
+    end if;
+    -- ★ AND STILL NO ADDRESS. The row the projection reads HAS a recipient; the payload must not.
+    if v_n0 ? 'recipient' then
+      raise exception 'FAIL[OC]: the case file projects the owner-notice recipient';
+    end if;
+  end;
+
+  -- ★ THE ACTION VERDICT COMES FROM THE SERVER, AND IT IS THE SAME FUNCTION THE DOOR CONSULTS.
+  -- Asserted by comparing the projection's embedded verdict against a direct call: a console reading
+  -- one and a door applying the other is exactly the divergence this field exists to prevent.
+  if not (v_json ? 'owner_notice_reissue') then
+    raise exception 'FAIL[C]: the case file carries no owner_notice_reissue verdict, so the console '
+      'would have to reimplement the eligibility policy in TypeScript';
+  end if;
+  if not ((v_json -> 'owner_notice_reissue') ? 'eligible')
+     or not ((v_json -> 'owner_notice_reissue') ? 'refusal_code') then
+    raise exception 'FAIL[C]: the re-notice verdict lacks eligible/refusal_code: %',
+      v_json -> 'owner_notice_reissue';
+  end if;
+  declare
+    v_direct jsonb;
+  begin
+    perform set_config('request.jwt.claim.sub', ADMIN_A::text, true);
+    perform set_config('request.jwt.claims', harness_op.aal2(ADMIN_A)::text, true);
+    select public.owner_notice_reissue_assessment(CASE_K) into v_direct;
+    if (v_json -> 'owner_notice_reissue' ->> 'eligible')
+       is distinct from (v_direct ->> 'eligible')
+       or (v_json -> 'owner_notice_reissue' ->> 'refusal_code')
+       is distinct from (v_direct ->> 'refusal_code') then
+      raise exception 'FAIL[C]: the projection''s verdict (%) differs from the shared assessment (%) '
+        '— the console and the door would disagree about the same estate',
+        v_json -> 'owner_notice_reissue', v_direct;
+    end if;
+  end;
+  -- The verdict is counts and codes; it must carry no address on any branch.
+  if (v_json -> 'owner_notice_reissue')::text ilike '%@%' then
+    raise exception 'FAIL[C]: the re-notice verdict contains an address shape';
+  end if;
+  raise notice '  ok   the case file projects case_id/generation/superseded_by/is_current/'
+    'notice_accepted_at/claimed_at and a server-calculated re-notice verdict that MATCHES the '
+    'shared assessment — with no recipient anywhere';
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
   raise notice '8 · fixture integrity';
 
   -- ★ ORDER IS FK ORDER, NOT NARRATIVE ORDER. `estate_lifecycle.updated_case_id` references the

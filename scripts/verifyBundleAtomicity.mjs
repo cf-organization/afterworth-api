@@ -239,6 +239,29 @@ const WITNESS = {
    */
   'db/bundles/provisioning_correction_bundle.sql':
     "select prosrc like '%v_is_fiduciary%' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public' and p.proname='provision_from_invitation'",
+  /**
+   * ★ PHASE 11-OC / PHASE C. The witness is the PER-EPISODE unique index — the object migration 0059
+   * creates, and the one without which a re-notice produces two live generations instead of retiring
+   * the first.
+   *
+   * ★ WHY NOT `reissue_owner_safety_notice`'s existence, which is the obvious choice. It is carried
+   * by `owner_notice_reissue.sql`, and that file is in NO other bundle — so the name probe WOULD
+   * discriminate today. It is still the wrong witness: the routine is `create or replace`, so a
+   * half-applied bundle that created the function and not the schema would leave a door that raises
+   * `check_violation` on every call, and the probe would report the artifact as applied. The index is
+   * the migration half, which is the half that cannot be retried into place by re-running the
+   * routines.
+   *
+   * ★ AND NOT THE `notice_kind` CHECK. That constraint EXISTS before this bundle (0055 created it and
+   * this migration replaces it), so `exists(...)` is true at baseline and would report NO_STATE_DELTA.
+   * Probing its DEFINITION for `window_renotice` would work — and the index is the stronger witness,
+   * because a bundle that widened the vocabulary but failed before replacing the index would leave the
+   * database in exactly the state Phase C exists to prevent: two kinds in one episode with a wall that
+   * cannot see across them.
+   */
+  'db/bundles/owner_notice_reissue_bundle.sql':
+    "select exists (select 1 from pg_indexes where schemaname = 'public' "
+    + "and indexname = 'owner_notice_outbox_one_current_per_episode_idx')",
 };
 
 const witnessTrue = (q) => {

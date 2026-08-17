@@ -85,6 +85,19 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // diverge. Last also means migration 0058's inversion self-check reads the `authorize_release` that
   // every earlier bundle has finished installing.
   'db/bundles/owner_notice_acceptance_bundle.sql',
+  // ★ PHASE 11-OC / PHASE C, LAST AMONG THE BUNDLES — the newest artifact, applied onto a database
+  // the others have shaped, which is the order an operator uses. It widens the `notice_kind` CHECK,
+  // replaces the Phase A per-KIND one-current-generation index with a per-EPISODE one, adds the
+  // operator re-notice door, and re-pastes `outbox_safety.sql` and `operator_console.sql` with the
+  // episode kind SET and the re-notice verdict.
+  //
+  // ★ IT MUST LOAD AFTER `owner_notice_acceptance_bundle`, NOT BEFORE, AND THE REASON IS SHARPER THAN
+  // "newest last". Both carry `outbox_safety.sql`, and whichever loads LAST is the body the suite
+  // actually exercises — loading Phase C first would leave Phase A's kind-literal census deployed and
+  // §11's remediation control would fail for a reason that has nothing to do with the code under
+  // test. Order also matters for the schema: 0059 drops the index 0058 creates, so pasting Phase A
+  // afterwards would resurrect the weaker per-kind wall alongside the stronger one.
+  'db/bundles/owner_notice_reissue_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
@@ -167,6 +180,12 @@ export const SQL_BUNDLES = Object.freeze([
   // still carried the unmutated text.
   ['scripts/buildOwnerNoticeAcceptanceBundle.mjs',
     'db/bundles/owner_notice_acceptance_bundle.sql'],
+  // ★ PHASE 11-OC / PHASE C. Registered so the atomicity verifier, the generalized artifact-freshness
+  // audit and every rebuild-before-trust step cover it — including the mutation runner, which rebuilds
+  // every registered artifact inside its worktree and would otherwise let a mutated body reach the
+  // suite through one bundle while this one still carried the unmutated text.
+  ['scripts/buildOwnerNoticeReissueBundle.mjs',
+    'db/bundles/owner_notice_reissue_bundle.sql'],
 ]);
 
 /**

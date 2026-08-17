@@ -124,7 +124,30 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
    * only, and names no transition, no lifecycle UPDATE and no INSERT. It reads the state word to
    * COUNT, never to decide anything — the release decision itself stays in `release_safety.sql`.
    */
-  const LIFECYCLE_TABLE_READERS = ["operator_console.sql", "outbox_safety.sql"];
+  /**
+   * ★ PHASE 11-OC / PHASE C ADDS THE THIRD MEMBER, AND IT BELONGS HERE RATHER THAN IN
+   * `LIFECYCLE_MODULES` FOR THE SAME REASON THE OTHER TWO DO.
+   *
+   * `owner_notice_reissue_assessment()` must answer whether a re-notice is permitted, and the answer
+   * turns on the estate's lifecycle STATE — a warning is worth sending from
+   * `owner_notification_dispatched` and `challenge_window`, and from nowhere else. It reads the state
+   * word to REFUSE OR PERMIT ITS OWN ACT; it moves nothing.
+   *
+   * Adding it to `LIFECYCLE_MODULES` would have been the one-word fix and would ALSO have granted it
+   * permission to WRITE the lifecycle table — to transition an estate as a side effect of queueing an
+   * email. It must never have that, and the very next test proves it does not: no INSERT, no UPDATE,
+   * no DELETE against `estate_lifecycle`, and no `apply_estate_lifecycle_transition`.
+   *
+   * The one thing it does beyond reading is take a row lock on the CASE (not the lifecycle) to
+   * serialize two operators on one episode. That is in `reissue_owner_safety_notice`, is a lock
+   * rather than a write, and touches `death_verification_cases` — which is why the lifecycle
+   * read-only property below still holds exactly.
+   */
+  const LIFECYCLE_TABLE_READERS = [
+    "operator_console.sql",
+    "outbox_safety.sql",
+    "owner_notice_reissue.sql",
+  ];
 
   const namesTheReader = (code: string) => /\bpublic\.estate_lifecycle_state\s*\(/.test(code);
   const namesTheTable = (code: string) => /\bpublic\.estate_lifecycle\b(?!_state)/.test(code);
