@@ -37,6 +37,21 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const READ_ONLY_FILES = [
   "scripts/observeOwnerNoticeDelivery.mjs",
   "scripts/branchBSentinel.mjs",
+  /**
+   * ★ PHASE 11-OC. The Phase A deployment verifier and production readiness census.
+   *
+   * It reads two `stable` census routines through a real AAL2 admin session and corroborates the
+   * result against the operator queue. An earlier draft also probed `authorize_release` and
+   * `begin_challenge_window` with a nil estate to read back their refusal sentinel — calls that
+   * provably cannot write, because both raise at a state guard before any statement executes.
+   *
+   * It is listed here WITHOUT those probes, and that is the point: "provably cannot write" meant a
+   * human traced the branch. This audit exists so read-only-ness is structural rather than argued, and
+   * the way it enforces that is by refusing to let a script NAME a routine on MUTATION_RPCS at all.
+   * A census instrument that needed case-by-case reasoning is precisely what the list prevents, so the
+   * probes were removed rather than the file being left ungoverned.
+   */
+  "scripts/verifyPhaseADeployment.mjs",
   "scripts/lib/t2Classification.mjs",
   "scripts/lib/branchBCheckpoint.mjs",
   "scripts/lib/branchBBaseline.mjs",
