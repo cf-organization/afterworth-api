@@ -1814,6 +1814,121 @@ const MUTATIONS = Object.freeze([
     from: '  v_is_initiator := coalesce(v_case.is_initiator, false);',
     to: '  v_is_initiator := coalesce(v_case.is_initiator, true);',
   },
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // PHASE 11-OC / PHASE A — the acceptance fact and the case episode
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  {
+    id: 'p11oc-acceptance-never-stamped',
+    why: 'THE ONE FACT PHASE D TURNS ON, DELETED. Without notice_accepted_at nothing is ever '
+      + 'release-authoritative, so after the Phase D cutover NO estate could release at all — a '
+      + 'total availability failure that reads as a conservative safety posture. §10.2 must object.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "         notice_accepted_at = case when p_outcome = 'providerAccepted' then now()\n                                   else notice_accepted_at end",
+    to: "         notice_accepted_at = notice_accepted_at",
+  },
+  {
+    id: 'p11oc-acceptance-stamped-on-uncertain',
+    why: 'AN UNKNOWN PROVIDER OUTCOME RECORDED AS AN ACCEPTANCE — the exact fabrication D2 and D11 '
+      + 'forbid, and the single most dangerous edit in this phase. It looks like generosity ("we did '
+      + 'send it, probably") and it converts "we do not know whether the owner was warned" into '
+      + 'release authority. §10.3 must object per outcome, by name.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "         notice_accepted_at = case when p_outcome = 'providerAccepted' then now()\n                                   else notice_accepted_at end",
+    to: "         notice_accepted_at = case when p_outcome in ('providerAccepted', 'outcomeUncertain') then now()\n                                   else notice_accepted_at end",
+  },
+  {
+    id: 'p11oc-acceptance-keyed-on-status',
+    why: 'THE STAMP RE-KEYED FROM THE OUTCOME ONTO THE STATUS. Behaviourally identical TODAY, which '
+      + 'is exactly why it is the natural "tidy-up" edit — and it silently re-couples the acceptance '
+      + 'fact to a status vocabulary, so any future branch reaching `dispatched` inherits an '
+      + 'acceptance nobody established. That is the R10 defect class the whole design exists to '
+      + 'eliminate. Pinned because a change that is safe today and unsafe tomorrow is precisely what '
+      + 'a mutation matrix is for.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "         notice_accepted_at = case when p_outcome = 'providerAccepted' then now()\n                                   else notice_accepted_at end",
+    to: "         notice_accepted_at = case when v_status = 'dispatched' then now()\n                                   else notice_accepted_at end",
+    // ★ AIMED AT A SOURCE-LEVEL ASSERTION DELIBERATELY, AND THE REASON IS STATED. No runtime fixture
+    // can separate this from correct code: the two branches agree for every currently reachable
+    // outcome, so behaviour is identical TODAY. The instrument that can see it is §10.2's check on the
+    // deployed body — the same technique 0056/0057/0058 use on `authorize_release`, and legitimate for
+    // the same reason: what the stamp is KEYED ON is the invariant, and it is not observable from
+    // outside until the day a new branch reaches `dispatched` and silently inherits an acceptance.
+  },
+  {
+    id: 'p11oc-episode-key-discarded',
+    why: 'DISPATCH STOPS NAMING ITS CASE. The release predicate then has no episode key, and an '
+      + 'accepted notice from a PRIOR REJECTED death process authorizes a release under a NEW case '
+      + 'whose own notice never went out — the defect one level up from OB-2. The INSERT trigger '
+      + 'should refuse it outright, so this must fail loudly rather than degrade.',
+    file: 'db/functions/release_safety.sql',
+    from: "  values (p_estate, v_owner, 'email', v_recipient, 'death_process.window_opened', 'queued',\n          v_case, 1)",
+    to: "  values (p_estate, v_owner, 'email', v_recipient, 'death_process.window_opened', 'queued',\n          null, 1)",
+  },
+  {
+    id: 'p11oc-readiness-reads-current-generation-only',
+    why: 'THE "LATEST GENERATION ONLY" MODEL, WHICH THE ARCHITECTURE REJECTS EXPLICITLY — and the '
+      + 'draft this census actually shipped with before its own positive control caught it. Reading '
+      + 'acceptance from the CURRENT generation instead of existentially over the episode means an '
+      + 'already-accepted generation 1 STOPS qualifying the moment a generation 2 exists, so issuing '
+      + 'a protective notice REMOVES release authority and hands an operator a suppression lever. '
+      + 'Killed by §10.6 direction 1.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "           exists (\n             select 1 from public.owner_notice_outbox a\n              where a.case_id = cc.case_id\n                and a.channel = 'email'\n                and a.notice_kind = 'death_process.window_opened'\n                and a.notice_accepted_at is not null\n           ) as accepted_any,",
+    to: "           (o.notice_accepted_at is not null) as accepted_any,",
+  },
+  {
+    id: 'p11oc-readiness-scoped-to-estate',
+    why: 'EPISODE SCOPE REPLACED BY ESTATE SCOPE in the instrument built to measure the blast '
+      + 'radius. It credits an accepted notice from a prior rejected case as readiness for a new '
+      + 'one — reproducing, inside the measuring device, the exact defect Phase D exists to close. '
+      + 'An operator would then read a rollout as safe because the census agreed with the bug.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "              where a.case_id = cc.case_id\n                and a.channel = 'email'\n                and a.notice_kind = 'death_process.window_opened'\n                and a.notice_accepted_at is not null",
+    to: "              where a.estate_id = cc.estate_id\n                and a.channel = 'email'\n                and a.notice_kind = 'death_process.window_opened'\n                and a.notice_accepted_at is not null",
+  },
+  {
+    id: 'p11oc-episode-wall-removed',
+    why: 'THE INSERT WALL MADE DECORATIVE. Any path could then write an owner notice belonging to no '
+      + 'episode, and those rows satisfy no release predicate — so they fail closed today and become '
+      + 'a permanently unreleasable population tomorrow, created silently by ordinary dispatch. §10.1 '
+      + 'and §9 case 15 must both object.',
+    file: 'db/migrations/0058_20260817_owner_notice_acceptance_episode.sql',
+    from: "  if new.case_id is null then\n    raise exception 'owner_notice_case_required' using errcode = 'P0001';\n  end if;",
+    to: "  if false then\n    raise exception 'owner_notice_case_required' using errcode = 'P0001';\n  end if;",
+  },
+  {
+    id: 'p11oc-one-current-generation-not-enforced',
+    why: 'THE PARTIAL UNIQUE INDEX DROPPED, so nothing structurally identifies the active generation '
+      + 'and the release door would have to trust a max() the writer merely promises to maintain. A '
+      + 'concurrent double-reissue then produces two rows that both believe they are current. §10.4 '
+      + 'must object.',
+    file: 'db/migrations/0058_20260817_owner_notice_acceptance_episode.sql',
+    from: "create unique index if not exists owner_notice_outbox_one_current_per_case_idx\n  on public.owner_notice_outbox (case_id, channel, notice_kind)\n  where superseded_by is null;",
+    to: "create index if not exists owner_notice_outbox_one_current_per_case_idx\n  on public.owner_notice_outbox (case_id, channel, notice_kind)\n  where superseded_by is null;",
+  },
+  {
+    id: 'p11oc-superseded-fk-not-deferrable',
+    why: 'THE ORDERING THAT MAKES SUPERSESSION WRITABLE AT ALL, REMOVED. Measured against Postgres: '
+      + 'with this FK immediate, BOTH orders are refused — insert-first raises unique_violation '
+      + 'because the predecessor is still current, and update-first raises foreign_key_violation '
+      + 'because the successor does not exist yet. A re-notice becomes unwritable in either '
+      + 'direction. It reads like tightening a constraint and it disables Phase C entirely.',
+    file: 'db/migrations/0058_20260817_owner_notice_acceptance_episode.sql',
+    from: "      foreign key (superseded_by) references public.owner_notice_outbox(id)\n      on delete set null deferrable initially deferred;",
+    to: "      foreign key (superseded_by) references public.owner_notice_outbox(id)\n      on delete set null;",
+  },
+  {
+    id: 'p11oc-phase-a-changes-the-release-door',
+    why: 'THE PHASE D CUTOVER SMUGGLED INTO PHASE A. Phase A exists to be behaviour-neutral so the '
+      + 'blast radius can be MEASURED before any estate is blocked; landing the acceptance predicate '
+      + 'here deploys the stricter door ahead of its own census and ahead of the re-notice remedy, '
+      + 'which is precisely the staged-rollout gate. 0058 §5.4 and §10.7 must both object — and so '
+      + 'must the historical guards in 0056 and 0057, which is the R13 hazard proven in Stage 2.',
+    file: 'db/functions/release_safety.sql',
+    from: "     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'",
+    to: "     where o.estate_id = p_estate and o.channel = 'email' and o.notice_accepted_at is not null",
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;

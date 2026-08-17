@@ -1186,9 +1186,33 @@ begin
   -- the delete execute, and the survival of the in-flight row an actual observation.
   select count(*) into v_audit from public.outbox_purge_audit;
   update public.owner_notice_outbox set status = 'dispatched', dispatched_at = now() where estate_id = U;
-  insert into public.owner_notice_outbox
-    (estate_id, user_id, channel, recipient, notice_kind, status)
-  values (U, OWNER_U, 'email', 'rs-owner-u@example.invalid', 'death_process.window_opened', 'processing');
+  -- ★ PHASE 11-OC — THE SECOND ROW IS GENERATION 2 OF THE SAME EPISODE, WHICH IS THE ONLY SHAPE THE
+  -- MODEL PERMITS. The partial unique index allows exactly ONE current generation per case, so two
+  -- coexisting rows for one estate are legal only as a supersession pair. That is also the REALISTIC
+  -- shape — it is what an operator re-notice produces — so the purge is now exercised against a state
+  -- production can actually reach, rather than one only a direct INSERT could manufacture.
+  --
+  -- The write order is forced: retire the predecessor against a pre-generated successor id, THEN
+  -- insert the successor. Insert-first would raise unique_violation; this order is legal only because
+  -- the superseded_by FK is DEFERRABLE INITIALLY DEFERRED (migration 0058 proves both directions).
+  declare
+    v_epis uuid;
+    v_gen2 uuid := gen_random_uuid();
+  begin
+    select o.case_id into v_epis from public.owner_notice_outbox o
+     where o.estate_id = U and o.superseded_by is null limit 1;
+    if v_epis is null then
+      raise exception 'FAIL[precondition]: estate U''s notice carries no case_id, so the purge '
+        'fixture cannot build a supersession pair — the dispatch path stopped writing the episode key';
+    end if;
+    update public.owner_notice_outbox set superseded_by = v_gen2
+     where estate_id = U and superseded_by is null;
+    insert into public.owner_notice_outbox
+      (id, estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+       reissue_reason)
+    values (v_gen2, U, OWNER_U, 'email', 'rs-owner-u@example.invalid',
+            'death_process.window_opened', 'processing', v_epis, 2, 'prior_failed_permanent');
+  end;
 
   select public.purge_outbox_rows('owner_notice_outbox', now() + interval '1 day', 'harness sweep')
     into v_purged;
@@ -1880,6 +1904,28 @@ end $rs8$;
 -- ★ CLAIM AGE IS MOVED BY AGEING `claimed_at`, WHICH IS THE DETERMINISTIC EQUIVALENT OF WAITING —
 -- the same technique §1 uses to elapse the challenge window. `now()` is transaction-constant, so a
 -- test that did not move the clock could not distinguish "inside the timeout" from "outside" it.
+--
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- ★ PHASE 11-OC — THIS SECTION DELIBERATELY BUILDS LEGACY-SHAPED ROWS, AND SAYS SO.
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- Migration 0058 adds a BEFORE INSERT trigger refusing any owner-notice row with no `case_id`, because
+-- from Phase A every real dispatch names its death-verification case. This section is not about
+-- episodes: it probes the DRAIN — claim, reclaim, age gate, crash window — with ~10 rows per estate, a
+-- shape no single production episode ever has (the partial unique index permits exactly ONE current
+-- generation per case).
+--
+-- These rows are precisely the PRE-PHASE-A class this section was written for: the Branch A forensic
+-- row carried no episode either, because the column did not exist. So the fixture builds them the way
+-- history produced them, with the wall lifted for this section only.
+--
+-- ★ THE LIFT AND THE RESTORE ARE TOP-LEVEL STATEMENTS, NOT STATEMENTS INSIDE THE BLOCK, AND THAT IS
+-- FORCED RATHER THAN STYLISTIC. `ALTER TABLE … ENABLE TRIGGER` cannot run while the transaction holds
+-- pending deferred-constraint events, and §9 creates rows under a DEFERRABLE FK — so a restore inside
+-- the DO block fails with "cannot ALTER TABLE … because it has pending trigger events". At top level
+-- each statement is its own transaction and there is nothing pending. Measured, not guessed.
+alter table public.owner_notice_outbox disable trigger owner_notice_outbox_require_episode;
+
 do $rs9$
 declare
   OWNER_W uuid; W uuid; ADMIN_W uuid; OTHER_W uuid; X2 uuid;
@@ -2185,7 +2231,461 @@ begin
   -- so a second drain arriving immediately after finds nothing eligible. Case 2 above is that proof.
   -- The `skip locked` clause itself is asserted structurally by the deployment verifiers.
   raise notice '  ok   8 · re-claim is not immediately repeatable (skip-locked itself: see verifiers)';
+
 end $rs9$;
+
+-- ── 15 · PHASE 11-OC · THE EPISODE WALL IS RESTORED, PROVED BY EXECUTION ────────────────────────
+--
+-- ★ ASSERTED BY TRYING AN INSERT, NOT BY HAVING WRITTEN `enable trigger`. A statement that ran is not
+-- the same claim as a wall that holds: the trigger could have been dropped by a later artifact, or
+-- `enable` could have been applied to a trigger that no longer exists. §9 lifted the wall, so §9 must
+-- prove it put it back — every assertion in every LATER file depends on that being true, and a test
+-- that silently left a production wall down would be a worse defect than the one §9 tests.
+alter table public.owner_notice_outbox enable trigger owner_notice_outbox_require_episode;
+
+do $rs9w$
+declare
+  v_estate uuid;
+  v_user   uuid;
+  v_holds  boolean;
+begin
+  select e.id, e.owner_id into v_estate, v_user from public.estates e
+   where e.name = 'RS Estate W2' limit 1;
+  if v_estate is null then
+    raise exception 'FAIL[control]: §9''s estate is gone, so the wall-restore check would assert '
+      'nothing at all';
+  end if;
+
+  begin
+    insert into public.owner_notice_outbox (estate_id, user_id, channel, recipient, notice_kind, status)
+    values (v_estate, v_user, 'email', 'rs-w-wall@example.invalid',
+            'death_process.window_opened', 'queued');
+    v_holds := false; -- reached: the wall is NOT back
+  exception when others then
+    v_holds := true;
+  end;
+  if not v_holds then
+    delete from public.owner_notice_outbox where recipient = 'rs-w-wall@example.invalid';
+    raise exception 'FAIL[OC]: the episode wall was NOT restored after §9 lifted it. Every later '
+      'section runs unprotected, and a notice could be written with no episode';
+  end if;
+  raise notice '  ok   15 · the episode wall is restored (a NULL-case_id insert is refused again)';
+end $rs9w$;
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 10 · PHASE 11-OC / PHASE A — ACCEPTANCE IS A FACT, AND A NOTICE BELONGS TO AN EPISODE
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- ★ THIS SECTION EXISTS BECAUSE MIGRATION 0058'S OWN SELF-CHECKS ARE SKIPPED IN THE REPLAY, AND IT
+-- SAYS SO OUT LOUD. The Phase A bundle loads before any test file creates an estate, so 0058 reports
+-- "no estates in this database — the execution controls in 5.3/5.4 are SKIPPED" and its census prints
+-- zeroes. That is honest of 0058 and it is NOT coverage: a 0/0 census and a broken census are
+-- indistinguishable from the outside. Everything 0058 could only skip is proved HERE, against
+-- furnished NON-ZERO fixtures.
+--
+-- ★ AND THE CENSUS CONTROLS RUN IN BOTH DIRECTIONS, DELIBERATELY. It is not enough to prove the
+-- readiness census can report an estate as REFUSED — a census hard-wired to refuse everything would
+-- pass that and would read as conservative. So the fixture furnishes one estate Phase D would ADMIT
+-- and one it would REFUSE, and both are asserted. A one-directional census is not an instrument.
+do $rs10$
+declare
+  OWNER_Y uuid; EXEC_Y uuid; ADMIN_Y uuid; Y uuid;
+  OWNER_Z uuid; EXEC_Z uuid; Z uuid;
+  v_case_y uuid; v_case_z uuid;
+  v_row_y uuid; v_row_z uuid;
+  v_res text; n int; v_census jsonb; v_ready jsonb;
+  v_acc timestamptz; v_disp timestamptz; v_status text; v_gen int; v_cid uuid;
+  v_succ uuid;
+  v_sum bigint;
+begin
+  raise notice ' ';
+  raise notice '10 · Phase 11-OC / Phase A: the acceptance fact and the case episode';
+
+  -- ── FIXTURE Y — the estate Phase D would ADMIT: a genuinely accepted notice ────────────────────
+  insert into auth.users default values returning id into OWNER_Y;
+  insert into auth.users default values returning id into EXEC_Y;
+  insert into auth.users default values returning id into ADMIN_Y;
+  insert into public.admins (user_id) values (ADMIN_Y) on conflict do nothing;
+  update auth.users set email = 'rs-owner-y@example.invalid' where id = OWNER_Y;
+  insert into public.estates (owner_id, name) values (OWNER_Y, 'RS Estate Y-OC') returning id into Y;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (Y, OWNER_Y, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (Y, EXEC_Y, 'executor', 'active');
+
+  perform harness_rs.attempt(EXEC_Y, format('select public.initiate_death_verification_case(%L)', Y));
+  select id into v_case_y from public.death_verification_cases where estate_id = Y and status = 'open';
+  perform harness_rs.as_admin(ADMIN_Y,
+    format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case_y));
+  perform harness_rs.as_admin(ADMIN_Y,
+    format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case_y));
+  v_res := harness_rs.as_admin(ADMIN_Y, format('select public.dispatch_owner_safety_notice(%L)', Y));
+  if v_res <> 'OK' then
+    raise exception 'FAIL[precondition]: dispatch for estate Y refused: %', v_res;
+  end if;
+
+  -- ── 1 · THE DISPATCH NAMED ITS EPISODE ────────────────────────────────────────────────────────
+  --
+  -- `v_case` was already in hand inside dispatch_owner_safety_notice and, before Phase A, was
+  -- discarded into the audit metadata only. The release predicate needs it ON THE ROW.
+  select o.id, o.case_id, o.generation into v_row_y, v_cid, v_gen
+    from public.owner_notice_outbox o where o.estate_id = Y;
+  if v_cid is null then
+    raise exception 'FAIL[OC]: dispatch wrote an owner-notice row with NO case_id — the release '
+      'predicate has no episode key and an accepted notice from a prior rejected case could '
+      'authorize a later one';
+  end if;
+  if v_cid <> v_case_y then
+    raise exception 'FAIL[OC]: the notice names case % but the verified case is %', v_cid, v_case_y;
+  end if;
+  if v_gen <> 1 then
+    raise exception 'FAIL[OC]: an original dispatch created generation %, expected 1', v_gen;
+  end if;
+  raise notice '  ok   1 · dispatch stamps the CURRENT case as the episode key, at generation 1';
+
+  -- ── 2 · providerAccepted STAMPS ACCEPTANCE, IN THE SAME STATEMENT AS THE STATUS ────────────────
+  --
+  -- ★ PROVED BY EQUALITY, NOT BY BOTH BEING NON-NULL. `now()` is transaction-constant, so if the two
+  -- columns are written by ONE statement they are byte-identical. Two statements in one transaction
+  -- would also match, so this is necessary rather than sufficient — but a LATER separate write (the
+  -- shape that would make `dispatched` + NULL acceptance reachable again) cannot produce equality
+  -- with the status transition it is supposed to accompany. This is the invariant that makes the
+  -- legacy `dispatched`+NULL shape structurally unreachable after Phase A.
+  perform public.claim_owner_notices(25);
+  perform public.record_owner_notice_outcome(v_row_y, 'providerAccepted');
+  select status, dispatched_at, notice_accepted_at into v_status, v_disp, v_acc
+    from public.owner_notice_outbox where id = v_row_y;
+  if v_status <> 'dispatched' then
+    raise exception 'FAIL[OC]: providerAccepted left status at %', v_status;
+  end if;
+  if v_acc is null then
+    raise exception 'FAIL[OC]: providerAccepted did NOT stamp notice_accepted_at — the one fact Phase '
+      'D makes release-authoritative is never written, so no estate could ever release';
+  end if;
+  if v_acc <> v_disp then
+    raise exception 'FAIL[OC]: notice_accepted_at (%) and dispatched_at (%) differ, so they were not '
+      'written by one statement — `dispatched` with NULL acceptance is reachable again', v_acc, v_disp;
+  end if;
+  -- ★ AND THE STAMP IS KEYED ON THE OUTCOME, NOT ON THE STATUS — asserted on the DEPLOYED body,
+  -- because no behavioural fixture can see the difference today. `providerAccepted` is currently the
+  -- only branch that yields `dispatched`, so keying on either produces identical results and the
+  -- re-keying reads as harmless tidying. It is not: keying on `v_status` re-couples the acceptance fact
+  -- to the status vocabulary, so the first future branch that reaches `dispatched` by another route
+  -- inherits an acceptance nobody established — the exact "a new status silently becomes release-
+  -- qualifying" class this design exists to eliminate. Same technique 0056/0057/0058 use on
+  -- authorize_release, and legitimate for the same reason: the KEYING is the invariant.
+  if (select prosrc from pg_proc p join pg_namespace nsp on nsp.oid = p.pronamespace
+       where nsp.nspname = 'public' and p.proname = 'record_owner_notice_outcome')
+     not like '%notice_accepted_at = case when p_outcome = ''providerAccepted''%' then
+    raise exception 'FAIL[OC/D2]: the acceptance stamp is no longer keyed on p_outcome = '
+      '''providerAccepted''. If it now keys on a STATUS, any future branch reaching `dispatched` '
+      'inherits an acceptance fact no provider ever established.';
+  end if;
+  raise notice '  ok   2 · providerAccepted stamps acceptance in ONE statement with the status, '
+    'keyed on the OUTCOME (asserted on the deployed body)';
+
+  -- ── 3 · EVERY OTHER OUTCOME LEAVES ACCEPTANCE NULL (D2) ───────────────────────────────────────
+  --
+  -- Asserted per outcome, by name. An unknown or failed provider answer must NEVER be recorded as an
+  -- acceptance — that is the entire reason this is a stamped fact rather than a status list, and the
+  -- reason `outcomeUncertain` cannot authorize a release.
+  --
+  -- Each probe needs its own CURRENT generation, so each is written as a real supersession pair. That
+  -- exercises the deferred-FK ordering as a side effect, on the path a re-notice will actually use.
+  declare
+    v_prev uuid := v_row_y;
+    v_outcome text;
+    v_probe uuid;
+  begin
+    foreach v_outcome in array array['outcomeUncertain', 'failedPermanent', 'retryPending'] loop
+      v_succ := gen_random_uuid();
+      update public.owner_notice_outbox set superseded_by = v_succ where id = v_prev;
+      insert into public.owner_notice_outbox
+        (id, estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+         reissue_reason)
+      values (v_succ, Y, OWNER_Y, 'email', 'rs-owner-y@example.invalid',
+              'death_process.window_opened', 'queued', v_case_y,
+              (select generation + 1 from public.owner_notice_outbox where id = v_prev),
+              'prior_outcome_uncertain');
+      v_probe := v_succ;
+      perform public.record_owner_notice_outcome(v_probe, v_outcome, 'probe');
+      select notice_accepted_at into v_acc from public.owner_notice_outbox where id = v_probe;
+      if v_acc is not null then
+        raise exception 'FAIL[OC/D2]: outcome % stamped notice_accepted_at (%) — an unknown or '
+          'failed provider answer has been recorded as an acceptance', v_outcome, v_acc;
+      end if;
+      v_prev := v_probe;
+    end loop;
+  end;
+  raise notice '  ok   3 · outcomeUncertain / failedPermanent / retryPending each leave acceptance NULL';
+
+  -- ── 4 · THE EPISODE HAS EXACTLY ONE CURRENT GENERATION ────────────────────────────────────────
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = v_case_y and superseded_by is null;
+  if n <> 1 then
+    raise exception 'FAIL[OC/D12]: the episode has % current generations, expected exactly 1 — the '
+      'active generation is not structurally identified and the door would need a max()', n;
+  end if;
+  select count(*) into n from public.owner_notice_outbox where case_id = v_case_y;
+  if n < 4 then
+    raise exception 'FAIL[control]: the episode holds only % rows; the supersession fixture did not '
+      'build a chain and §10.4 proved nothing', n;
+  end if;
+  -- ★ AND THE INVARIANT IS ENFORCED BY THE DATABASE, NOT MERELY SATISFIED BY THIS FIXTURE.
+  --
+  -- Counting the current generations proves the fixture is well-formed; it does NOT prove a second one
+  -- would be refused. Those are different claims, and only the second is the invariant Phase D depends
+  -- on — without it the door would have to trust a max() the writer promises to maintain, and a
+  -- concurrent double-reissue would produce two rows that both believe they are current.
+  --
+  -- Proven by ATTEMPTING the violation. Migration 0058 carries this control too, but on the replay
+  -- database it is SKIPPED (no estates exist when the bundle loads), so this is the only place it
+  -- actually executes. Mutation `p11oc-one-current-generation-not-enforced` was NOT_DETECTED until
+  -- this assertion existed.
+  declare
+    v_dup_refused boolean;
+  begin
+    begin
+      insert into public.owner_notice_outbox
+        (estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+         reissue_reason)
+      values (Y, OWNER_Y, 'email', 'rs-owner-y@example.invalid', 'death_process.window_opened',
+              'queued', v_case_y, 9, 'prior_failed_permanent');
+      v_dup_refused := false; -- reached: a second CURRENT generation was accepted
+    exception when unique_violation then
+      v_dup_refused := true;
+    end;
+    if not v_dup_refused then
+      raise exception 'FAIL[OC/D12]: a SECOND current generation was accepted for one case — the '
+        'active generation is not structurally identified, so the release door would depend on a '
+        'max() rather than on a wall, and a concurrent double-reissue produces two live notices';
+    end if;
+  end;
+  raise notice '  ok   4 · a 4-generation episode has exactly ONE current generation, and a second '
+    'is REFUSED by the database (proved by execution)';
+
+  -- Y reaches the door with a real acceptance on record (generation 1, which MIN correctly anchors).
+  v_res := harness_rs.as_admin(ADMIN_Y, format('select public.begin_challenge_window(%L)', Y));
+  if v_res <> 'OK' then
+    raise exception 'FAIL[precondition]: begin_challenge_window for Y refused: %', v_res;
+  end if;
+
+  -- ── FIXTURE Z — the estate Phase D would REFUSE: dispatched, never accepted ───────────────────
+  insert into auth.users default values returning id into OWNER_Z;
+  insert into auth.users default values returning id into EXEC_Z;
+  update auth.users set email = 'rs-owner-z@example.invalid' where id = OWNER_Z;
+  insert into public.estates (owner_id, name) values (OWNER_Z, 'RS Estate Z-OC') returning id into Z;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (Z, OWNER_Z, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (Z, EXEC_Z, 'executor', 'active');
+  perform harness_rs.attempt(EXEC_Z, format('select public.initiate_death_verification_case(%L)', Z));
+  select id into v_case_z from public.death_verification_cases where estate_id = Z and status = 'open';
+  perform harness_rs.as_admin(ADMIN_Y,
+    format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case_z));
+  perform harness_rs.as_admin(ADMIN_Y,
+    format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case_z));
+  perform harness_rs.as_admin(ADMIN_Y, format('select public.dispatch_owner_safety_notice(%L)', Z));
+  select o.id into v_row_z from public.owner_notice_outbox o where o.estate_id = Z;
+  -- Settled as UNCERTAIN: the provider never confirmed. This is the D11 population — unknown, not
+  -- accepted, not failed — and the one the old `status <> 'cancelled'` predicate silently admitted.
+  perform public.claim_owner_notices(25);
+  perform public.record_owner_notice_outcome(v_row_z, 'outcomeUncertain');
+  perform harness_rs.as_admin(ADMIN_Y, format('select public.begin_challenge_window(%L)', Z));
+
+  -- ── 5 · THE ROW CENSUS, AGAINST NON-ZERO DATA, WITH RECONCILIATION ────────────────────────────
+  v_census := harness_rs.as_admin_json(ADMIN_Y, 'select public.owner_notice_census()');
+  if (v_census ->> 'total')::bigint = 0 then
+    raise exception 'FAIL[control]: the census total is 0, so every split below reconciles vacuously';
+  end if;
+  if (v_census ->> 'accepted_total')::bigint < 1 then
+    raise exception 'FAIL[control]: accepted_total is 0 although estate Y has a stamped acceptance — '
+      'the census cannot see the one fact Phase D turns on';
+  end if;
+  -- ★ NO NAMELESS GAP: the acceptance split must partition the total exactly.
+  if (v_census ->> 'accepted_total')::bigint + (v_census ->> 'unaccepted_total')::bigint
+     <> (v_census ->> 'total')::bigint then
+    raise exception 'FAIL[census]: accepted(%) + unaccepted(%) <> total(%) — a row belongs to no '
+      'named split and an operator reconciling them would find a gap with no name',
+      v_census ->> 'accepted_total', v_census ->> 'unaccepted_total', v_census ->> 'total';
+  end if;
+  -- The generation histogram must also partition the total.
+  select sum(value::bigint) into v_sum
+    from jsonb_each_text(v_census -> 'by_generation');
+  if v_sum <> (v_census ->> 'total')::bigint then
+    raise exception 'FAIL[census]: by_generation sums to % but total is %', v_sum,
+      v_census ->> 'total';
+  end if;
+  if (v_census ->> 'superseded_total')::bigint + (v_census ->> 'current_total')::bigint
+     <> (v_census ->> 'total')::bigint then
+    raise exception 'FAIL[census]: superseded + current <> total';
+  end if;
+  if v_census::text ilike '%@%' then
+    raise exception 'FAIL[census]: the row census projection contains an address shape';
+  end if;
+  raise notice '  ok   5 · row census: non-zero, every split partitions the total, no address';
+
+  -- ── 6 · THE READINESS CENSUS — BOTH DIRECTIONS, WHICH IS THE WHOLE POINT ──────────────────────
+  v_ready := harness_rs.as_admin_json(ADMIN_Y,
+    'select public.owner_notice_release_readiness_census()');
+  if (v_ready ->> 'estates_at_door')::bigint < 2 then
+    raise exception 'FAIL[control]: only % estate(s) at the door, but the fixture put Y and Z there — '
+      'the readiness census cannot see the population it exists to measure',
+      v_ready ->> 'estates_at_door';
+  end if;
+  -- POSITIVE CONTROL, DIRECTION 1: it can say ADMIT. Without this a census wired to refuse
+  -- everything would satisfy direction 2 and read as safely conservative.
+  if (v_ready ->> 'would_be_admitted_by_phase_d')::bigint < 1 then
+    raise exception 'FAIL[control]: the readiness census admits NOBODY although estate Y has a real '
+      'provider acceptance — it is refusing everything and direction 2 proves nothing';
+  end if;
+  -- POSITIVE CONTROL, DIRECTION 2: it can say REFUSE — and estate Z, whose provider outcome is
+  -- UNKNOWN, must be in that class (D11).
+  if (v_ready ->> 'would_be_refused_by_phase_d')::bigint < 1 then
+    raise exception 'FAIL[OC/D11]: the readiness census refuses NOBODY although estate Z settled '
+      'outcomeUncertain — an unknown provider outcome is being treated as an acceptance';
+  end if;
+  if (v_ready ->> 'would_be_admitted_by_phase_d')::bigint
+     + (v_ready ->> 'would_be_refused_by_phase_d')::bigint
+     <> (v_ready ->> 'estates_at_door')::bigint then
+    raise exception 'FAIL[census]: admitted + refused <> estates_at_door';
+  end if;
+  -- Every estate lands in a NAMED bucket, and the buckets partition the total.
+  select sum(value::bigint) into v_sum from jsonb_each_text(v_ready -> 'by_readiness');
+  if v_sum <> (v_ready ->> 'estates_at_door')::bigint then
+    raise exception 'FAIL[census]: by_readiness sums to % but estates_at_door is % — an estate fell '
+      'through the classification', v_sum, v_ready ->> 'estates_at_door';
+  end if;
+  if (v_ready -> 'by_readiness') ? 'unclassified' then
+    raise exception 'FAIL[census]: an estate classified as `unclassified` — a status outside the six '
+      'reached the door and the bucket vocabulary is behind the CHECK constraint';
+  end if;
+  -- Z must be classified specifically as uncertain, not swept into a neighbouring bucket.
+  if coalesce((v_ready -> 'by_readiness' ->> 'outcome_uncertain')::bigint, 0) < 1 then
+    raise exception 'FAIL[census]: estate Z is not in the outcome_uncertain bucket; buckets = %',
+      v_ready -> 'by_readiness';
+  end if;
+  if v_ready::text ilike '%@%' then
+    raise exception 'FAIL[census]: the readiness projection contains an address shape';
+  end if;
+  -- Privacy: counts only. No identifier of any kind may appear.
+  if v_ready::text ~ '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' then
+    raise exception 'FAIL[census]: the readiness projection contains a uuid — it must be counts only';
+  end if;
+  raise notice '  ok   6 · readiness census: admits Y, refuses Z (outcomeUncertain), buckets '
+    'partition the total, no uuid and no address';
+
+  -- ── 7 · THE RELEASE DOOR IS STILL THE PRE-PHASE-D DOOR ───────────────────────────────────────
+  --
+  -- Phase A must not have changed when a release may proceed. Asserted on the deployed body, the same
+  -- way migrations 0056/0057/0058 assert it, so a Phase D cutover pasted early fails HERE too.
+  if (select prosrc from pg_proc p join pg_namespace nsp on nsp.oid = p.pronamespace
+       where nsp.nspname = 'public' and p.proname = 'authorize_release') not like
+      '%status <> ''cancelled''%' then
+    raise exception 'FAIL[OC]: authorize_release no longer carries the pre-Phase-D predicate — the '
+      'cutover has landed inside Phase A, ahead of its blast-radius census and its remedy';
+  end if;
+  raise notice '  ok   7 · Phase A left the release door unchanged (asserted on the deployed body)';
+
+  -- ── 8 · EPISODE SCOPE — AN ACCEPTED NOTICE FROM A PRIOR CASE AUTHORIZES NOTHING (D3, R4) ───────
+  --
+  -- ★ THE FIXTURE MUST INTERLEAVE, OR IT PROVES NOTHING. Estates Y and Z each hold exactly ONE case,
+  -- so for them case-scope and estate-scope give the SAME answer and a census scoped to the estate
+  -- would pass every assertion above. That gap was not hypothetical: the mutation
+  -- `p11oc-readiness-scoped-to-estate` was reported NOT_DETECTED against §10.1-§10.7, which is the
+  -- transformation-test rule stated as evidence — a test of a scope must use input where the scope
+  -- actually changes the output.
+  --
+  -- So estate V is built to disagree with itself: a PRIOR case carrying a real provider acceptance,
+  -- and a CURRENT case whose own notice was never accepted. Case-scoped, V is refused (correct —
+  -- nobody has been warned about THIS process). Estate-scoped, V is admitted, which is the release of
+  -- an estate on the strength of a notice about a different, abandoned death process.
+  declare
+    OWNER_V uuid; EXEC_V uuid; V uuid;
+    v_case_v1 uuid; v_case_v2 uuid; v_row_v1 uuid;
+    v_before_admitted bigint;
+    v_after_admitted bigint;
+    v_acc_prior timestamptz;
+    v_acc_current timestamptz;
+  begin
+    insert into auth.users default values returning id into OWNER_V;
+    insert into auth.users default values returning id into EXEC_V;
+    update auth.users set email = 'rs-owner-v@example.invalid' where id = OWNER_V;
+    insert into public.estates (owner_id, name) values (OWNER_V, 'RS Estate V-OC') returning id into V;
+    insert into public.estate_memberships (estate_id, user_id, role, status)
+    values (V, OWNER_V, 'primary_user', 'approved');
+    insert into public.estate_designations (estate_id, user_id, designation_type, status)
+    values (V, EXEC_V, 'executor', 'active');
+
+    -- PRIOR PROCESS: runs the full real path and reaches a genuine provider acceptance.
+    perform harness_rs.attempt(EXEC_V, format('select public.initiate_death_verification_case(%L)', V));
+    select id into v_case_v1 from public.death_verification_cases
+     where estate_id = V and status = 'open';
+    perform harness_rs.as_admin(ADMIN_Y,
+      format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case_v1));
+    perform harness_rs.as_admin(ADMIN_Y,
+      format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case_v1));
+    perform harness_rs.as_admin(ADMIN_Y, format('select public.dispatch_owner_safety_notice(%L)', V));
+    select o.id into v_row_v1 from public.owner_notice_outbox o where o.estate_id = V;
+    perform public.claim_owner_notices(25);
+    perform public.record_owner_notice_outcome(v_row_v1, 'providerAccepted');
+    perform harness_rs.as_admin(ADMIN_Y, format('select public.begin_challenge_window(%L)', V));
+
+    -- That prior process is then abandoned, and a SECOND, independent one opens. The lifecycle stays
+    -- at challenge_window for the new process; only the case identity moves. Composed directly rather
+    -- than through the withdraw/re-initiate doors because what §10.8 tests is the SCOPE of the release
+    -- predicate, not the reachability of the transition — and every NOT NULL column is carried over
+    -- from the real case so no vocabulary is invented here.
+    v_case_v2 := gen_random_uuid();
+    insert into public.death_verification_cases (
+      id, estate_id, event_type, status, initiated_by, initiator_designation_id,
+      initiator_capacity, required_level_at_initiation, attained_level, decided_at, decided_by)
+    select v_case_v2, c.estate_id, c.event_type, 'verified', c.initiated_by,
+           c.initiator_designation_id, c.initiator_capacity, c.required_level_at_initiation,
+           c.attained_level, now() + interval '1 second', c.decided_by
+      from public.death_verification_cases c where c.id = v_case_v1;
+    update public.death_verification_cases set status = 'cancelled' where id = v_case_v1;
+
+    -- The NEW process's own notice: dispatched, never accepted. Nobody has been warned about THIS one.
+    insert into public.owner_notice_outbox
+      (estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation, dispatched_at)
+    values (V, OWNER_V, 'email', 'rs-owner-v@example.invalid', 'death_process.window_opened',
+            'dispatched', v_case_v2, 1, now());
+
+    -- ★ ASSERT THE INPUT PRECONDITION, so later fixture drift cannot quietly make this tautological.
+    select o.notice_accepted_at into v_acc_prior from public.owner_notice_outbox o
+     where o.case_id = v_case_v1;
+    select o.notice_accepted_at into v_acc_current from public.owner_notice_outbox o
+     where o.case_id = v_case_v2;
+    if v_acc_prior is null then
+      raise exception 'FAIL[control]: the PRIOR case carries no acceptance, so estate-scope and '
+        'case-scope agree and §10.8 cannot distinguish them';
+    end if;
+    if v_acc_current is not null then
+      raise exception 'FAIL[control]: the CURRENT case already carries an acceptance, so §10.8 would '
+        'pass under either scope';
+    end if;
+
+    v_before_admitted := (v_ready ->> 'would_be_admitted_by_phase_d')::bigint;
+    v_ready := harness_rs.as_admin_json(ADMIN_Y,
+      'select public.owner_notice_release_readiness_census()');
+    v_after_admitted := (v_ready ->> 'would_be_admitted_by_phase_d')::bigint;
+
+    -- Estate V joined the door. It must NOT have joined the admitted set.
+    if v_after_admitted <> v_before_admitted then
+      raise exception 'FAIL[OC/D3]: adding an estate whose CURRENT case has no acceptance changed the '
+        'admitted count from % to % — the predicate is scoped to the ESTATE, so an accepted notice '
+        'from a prior abandoned death process authorizes a release under a new one',
+        v_before_admitted, v_after_admitted;
+    end if;
+    if coalesce((v_ready -> 'by_readiness' ->> 'legacy_dispatched_unaccepted')::bigint, 0) < 1 then
+      raise exception 'FAIL[OC/D3]: estate V is not classified as dispatched-without-acceptance; '
+        'buckets = %', v_ready -> 'by_readiness';
+    end if;
+    raise notice '  ok   8 · episode scope: a prior case''s acceptance authorizes NOTHING for the '
+      'current case (fixture interleaves, precondition asserted)';
+  end;
+end $rs10$;
 
 do $$
 begin

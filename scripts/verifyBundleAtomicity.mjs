@@ -199,6 +199,24 @@ const WITNESS = {
     "select exists (select 1 from information_schema.columns "
     + "where table_schema = 'public' and table_name = 'owner_notice_outbox' "
     + "and column_name = 'claimed_at')",
+  /**
+   * ★ PHASE 11-OC / PHASE A. The witness is `notice_accepted_at` — the acceptance FACT itself, and the
+   * same reasoning that made `claimed_at` the right witness for OB-1 applies here for the same reason.
+   *
+   * It is what the migration half adds, and it is the thing without which the acceptance stamp in
+   * `record_owner_notice_outcome` cannot even be written. A function-body probe would be the wrong
+   * witness: `outbox_safety.sql` and `release_safety.sql` both already exist on any database that has
+   * ever been pasted, so a probe for either NAME would be true at baseline and report NO_STATE_DELTA
+   * instead of discriminating.
+   *
+   * Deliberately NOT the episode trigger or the partial unique index: a half-applied bundle that
+   * created the column but not the routines is still caught by the SQL suite's own controls, whereas a
+   * witness that is true before AND after proves nothing about atomicity at all.
+   */
+  'db/bundles/owner_notice_acceptance_bundle.sql':
+    "select exists (select 1 from information_schema.columns "
+    + "where table_schema = 'public' and table_name = 'owner_notice_outbox' "
+    + "and column_name = 'notice_accepted_at')",
   'db/bundles/challenge_settlement_bundle.sql':
     "select exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
     + "where n.nspname = 'public' and p.proname = 'challenge_death_process' "
