@@ -2343,13 +2343,21 @@ const MUTATIONS = Object.freeze([
   },
   {
     id: 'p11ocd-acceptance-coalesced-to-provenance',
-    why: 'THE SILENT FALLBACK. The most seductive edit in the phase: it looks like defensive '
-      + 'null-handling and it re-admits the ENTIRE legacy population, because every one of those '
-      + 'rows has a non-null owner_notified_at. Authority is decided by SOURCE, and provenance was '
-      + 'written by a path that could not have been telling the truth about acceptance.',
+    why: 'THE SILENT FALLBACK, AND THE MOST SEDUCTIVE EDIT IN THE PHASE. It looks like defensive '
+      + 'null-handling. It makes release_eligible_at and elapsed describe PROVENANCE — stamped when '
+      + 'the row was QUEUED — on exactly the legacy population that has no acceptance fact, so the '
+      + 'operator console renders a date and an elapsed window for an estate the door refuses. '
+      + 'Authority is decided by SOURCE, and owner_notified_at was written by a path that could not '
+      + 'have been telling the truth about acceptance. §12.4 asserts the projection renders NULL '
+      + 'there, and §12.10 asserts the same on a halted estate.'
+      + ' ★ THE FIRST DRAFT OF THIS MUTATION WAS INERT AND THE MATRIX CAUGHT IT. It coalesced inside '
+      + 'the `if` CONDITION and left the assignment reading the raw column, so v_eligible stayed '
+      + 'NULL + duration = NULL and nothing changed. It APPLIED and reported NOT_DETECTED, which '
+      + 'reads exactly like a hole in the suite. A mutation must reach BEHAVIOUR, not merely match '
+      + 'text — so it now replaces the guard AND the assignment together.',
     file: 'db/functions/release_safety.sql',
-    from: "  if v_row.notice_accepted_at is not null and v_duration is not null then",
-    to: "  if coalesce(v_row.notice_accepted_at, (select l.owner_notified_at from public.estate_lifecycle l where l.estate_id = v_c.estate_id)) is not null and v_duration is not null then",
+    from: "  if v_row.notice_accepted_at is not null and v_duration is not null then\n    v_eligible := v_row.notice_accepted_at + v_duration;",
+    to: "  if v_duration is not null then\n    v_eligible := coalesce(v_row.notice_accepted_at, (select l.owner_notified_at from public.estate_lifecycle l where l.estate_id = v_c.estate_id)) + v_duration;",
   },
   {
     id: 'p11ocd-clock-uses-dispatched-at',
@@ -2509,17 +2517,23 @@ const MUTATIONS = Object.freeze([
     to: "  v_old := v_def like '%o.status <> ''cancelled''%';\n  if not v_old then\n    raise exception '0057 FAILED: authorize_release no longer carries the OB-2 precondition this '\n      'migration is required to leave alone';\n  end if;",
   },
   {
-    id: 'p11ocd-r13-comment-stripping-removed',
-    why: 'THE REFUSED R13 "FIX", ATTEMPTED — prose allowed to vote again. Deleting the '
-      + 'comment-stripping step restores the state in which a plpgsql body\'s COMMENTS satisfy a '
-      + 'text guard, which is the "plant the literal in a comment" option this programme recorded as '
-      + 'the worst available and refused. It is detectable in the OTHER direction, which is what '
-      + 'makes it a usable mutation: the Phase D banner QUOTES the superseded predicate in order to '
-      + 'state that it is gone, so without stripping the guard sees BOTH postures and fires its '
-      + 'half-cutover branch on a perfectly correct tree. Aimed at the INSTRUMENT: this '
-      + 'preprocessing must not be droppable in silence.',
-    file: 'db/migrations/0058_20260817_owner_notice_acceptance_episode.sql',
-    from: "    v_def := regexp_replace(v_def, E'--[^\\n]*', '', 'g');\n    if v_def not like '%raise exception%' then\n      raise exception '0058 FAILED: the stripped authorize_release body contains no code — the '\n        'preprocessing has eaten the routine and this guard is inspecting an empty string';\n    end if;\n",
+    id: 'p11ocd-comment-stripping-removed',
+    why: 'THE PREPROCESSING DROPPED, AND THE FAILURE IT PREVENTS OBSERVED FOR REAL. Postgres stores '
+      + 'a plpgsql body VERBATIM, comments included. `begin_challenge_window` carries a comment '
+      + 'explaining that it deliberately does NOT gate on `notice_accepted_at` — and on the first '
+      + 'Phase D replay, before stripping existed, that sentence alone failed 0060 §2.2 ABSENCE '
+      + 'check against a body that does not require it and never did. Removing the stripper '
+      + 'reproduces that exactly: a correct tree fails its own certification. Aimed at the '
+      + 'INSTRUMENT — this preprocessing must not be droppable in silence.'
+      + ' ★ IT WAS FIRST AIMED AT 0058 AND REPORTED NOT_DETECTED, WHICH WAS A FINDING ABOUT THE '
+      + 'MUTATION RATHER THAN ABOUT THE GUARD. The premise was that authorize_release Phase D '
+      + 'banner quotes the superseded predicate, so an unstripped guard would see both postures. It '
+      + 'does quote it — in the FILE-LEVEL comment ABOVE `create or replace`, which is not part of '
+      + 'the function body and never reaches prosrc at all. The stripping is genuinely load-bearing '
+      + 'for the window door and genuinely inert for the release door, and the matrix is what '
+      + 'established which.',
+    file: 'db/migrations/0060_20260817_owner_notice_release_authority.sql',
+    from: "  v_def := regexp_replace(v_def, E'--[^\\n]*', '', 'g');\n  if v_def not like '%raise exception%' then\n    raise exception '0060 FAILED: the stripped begin_challenge_window body contains no code';\n  end if;\n",
     to: "",
   },
 ]);

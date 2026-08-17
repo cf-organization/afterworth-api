@@ -4504,6 +4504,130 @@ begin
       'from structurally, never silently repaired';
   end;
 
+  -- ── 12.10 · THE AUTHORITY'S OWN LIFECYCLE GUARD, WHICH THE DOOR'S GUARD HIDES ────────────────
+  --
+  -- ★ FOUND BY MUTATION, AND THE FIRST FIXTURE FOR IT WAS WRONG — BOTH FACTS ARE THE RECORD.
+  -- `p11ocd-lifecycle-guard-dropped-in-authority` deletes the authority's
+  -- `v_state is distinct from 'challenge_window'` branch and was reported NOT_DETECTED:
+  -- `authorize_release` keeps its OWN state guard, so the door still refuses and every door-level
+  -- assertion in §12 stays green. What changes is the PROJECTION — it would report `ready: true`,
+  -- and the console would offer AUTHORIZE RELEASE on a process that is over.
+  --
+  -- ★ THE OBVIOUS FIXTURE — A HALTED ESTATE — CANNOT OBSERVE IT, WHICH WAS MEASURED RATHER THAN
+  -- REASONED. `challenge_death_process` also settles the case to `halted`, so the canonical
+  -- current-case lookup (`status = 'verified'`) finds nothing and `no_verified_case` fires FIRST.
+  -- The authority refuses either way and the branch under test is never reached. A test built on
+  -- that fixture would have passed with the guard present and with it deleted.
+  --
+  -- ★ THE RELEASED ESTATE IS THE ONE THAT CAN. Release does NOT change the case status — it stays
+  -- `verified` — so every other authority is satisfied, the notice is accepted and long elapsed, and
+  -- the LIFECYCLE is the only thing left that can refuse. Estate P reached `released` in §12.7
+  -- through the real door, so the fixture is already here and was built by the product rather than
+  -- by hand.
+  if public.estate_lifecycle_state(P) <> 'released' then
+    raise exception 'FAIL[12.10 precondition]: estate P is % rather than released, so this section '
+      'cannot isolate the authority''s lifecycle branch', public.estate_lifecycle_state(P);
+  end if;
+  if (select c.status from public.death_verification_cases c where c.id = v_cur) <> 'verified' then
+    raise exception 'FAIL[12.10 precondition]: the case is not still verified after release, so '
+      'no_verified_case would refuse first and the lifecycle branch stays unreached';
+  end if;
+
+  v_auth := public.owner_notice_release_authority(v_cur);
+  if (v_auth ->> 'ready')::boolean or (v_auth ->> 'refusal_code') <> 'invalid_release_state' then
+    raise exception 'FAIL[12.10]: on a RELEASED estate whose case is still verified and whose notice '
+      'is accepted and elapsed, the authority reports % — every other authority passes, so with the '
+      'lifecycle branch gone the console would offer AUTHORIZE RELEASE on an estate that has already '
+      'been disclosed. The door''s own state guard hides this from every door-level assertion.',
+      v_auth;
+  end if;
+  v_file := harness_rs.as_admin_json(ADMIN_P,
+    format('select public.admin_get_death_verification_case(%L)', v_cur));
+  if (v_file -> 'release_authority' ->> 'ready') <> 'false' then
+    raise exception 'FAIL[12.10]: the operator projection reports ready on a RELEASED estate';
+  end if;
+
+  -- A halted estate must also refuse. The CODE is not pinned here, deliberately: it legitimately
+  -- arrives as `no_verified_case` because the halt settles the case, and pinning the code would be
+  -- asserting an implementation detail of a neighbouring routine. Refusal is the invariant.
+  if (public.owner_notice_release_authority(
+        (select c.id from public.death_verification_cases c
+          where c.estate_id = (select l.estate_id from public.estate_lifecycle l
+                                where l.state = 'challenge_halted' limit 1)
+            and c.status in ('halted', 'verified') limit 1)) ->> 'ready')::boolean then
+    raise exception 'FAIL[12.10]: the authority reports ready for a HALTED process';
+  end if;
+  raise notice '  ok  12.10 · the authority refuses a RELEASED estate whose case is still verified '
+    'and whose notice is accepted and elapsed (the lifecycle branch, isolated), and refuses a '
+    'halted one too';
+
+  -- ── 12.11 · THE CURRENT GENERATION IS STRUCTURAL, NOT max(generation) (D4) ───────────────────
+  --
+  -- ★ ALSO FOUND BY MUTATION. `p11ocd-current-generation-becomes-max` replaces
+  -- `superseded_by is null` with `order by generation desc limit 1` and was reported NOT_DETECTED,
+  -- because on every state the deployed doors can produce the two select the SAME row: the re-notice
+  -- routine only ever increments, so the highest generation is always the current one.
+  --
+  -- That coincidence is exactly why the architecture insists on the structural form. `max()` is an
+  -- invariant only the WRITER maintains; `superseded_by is null` is a partial-unique-indexed wall the
+  -- DATABASE maintains. A concurrent double-reissue, or any future writer that appends without
+  -- retiring, breaks the first and cannot break the second.
+  --
+  -- So the divergence is written BY HAND — as the superseded-acceptance case is, and for the same
+  -- reason: resting the door's correctness on "the other routines will keep incrementing" is the
+  -- dependency this assertion removes.
+  declare
+    M uuid; v_mcase uuid; v_cur_row uuid; v_high uuid;
+  begin
+    insert into public.estates (owner_id, name) values (OWNER_P, 'RS Estate M-OCD') returning id into M;
+    insert into public.estate_memberships (estate_id, user_id, role, status)
+    values (M, OWNER_P, 'primary_user', 'approved');
+    insert into public.estate_designations (estate_id, user_id, designation_type, status)
+    values (M, EXEC_P, 'executor', 'active');
+    perform harness_rs.attempt(EXEC_P, format('select public.initiate_death_verification_case(%L)', M));
+    select id into v_mcase from public.death_verification_cases where estate_id = M and status = 'open';
+    perform harness_rs.as_admin(ADMIN_P,
+      format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_mcase));
+    perform harness_rs.as_admin(ADMIN_P,
+      format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_mcase));
+    perform harness_rs.as_admin(ADMIN_P, format('select public.dispatch_owner_safety_notice(%L)', M));
+    perform harness_rs.as_admin(ADMIN_P, format('select public.begin_challenge_window(%L)', M));
+    select o.id into v_cur_row from public.owner_notice_outbox o where o.estate_id = M;
+
+    -- A generation 9 that is RETIRED, carrying a long-elapsed acceptance, beside a CURRENT
+    -- generation 1 that has none. max(generation) picks the retired row; the structural invariant
+    -- picks the current one. The two now disagree, which is what makes this a control that can fail.
+    v_high := gen_random_uuid();
+    insert into public.owner_notice_outbox
+      (id, estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+       reissue_reason, superseded_by, notice_accepted_at, dispatched_at)
+    values (v_high, M, OWNER_P, 'email', 'rs-owner-p@example.invalid',
+            'death_process.window_renotice', 'dispatched', v_mcase, 9,
+            'prior_failed_permanent', v_cur_row, now() - v_dur - interval '5 days',
+            now() - v_dur - interval '5 days');
+
+    -- PRECONDITION: the fixture must actually interleave, or this proves nothing.
+    if (select max(generation) from public.owner_notice_outbox where case_id = v_mcase) <> 9
+       or (select generation from public.owner_notice_outbox
+            where case_id = v_mcase and superseded_by is null) <> 1 then
+      raise exception 'FAIL[12.11 precondition]: max(generation) and the structural current '
+        'generation do not disagree, so this fixture cannot distinguish them';
+    end if;
+
+    v_auth := public.owner_notice_release_authority(v_mcase);
+    if (v_auth ->> 'generation')::int <> 1 then
+      raise exception 'FAIL[12.11/D4]: the authority selected generation % — it is choosing by '
+        'max(generation) rather than by the structural superseded_by invariant, so a retired row '
+        'with a higher number decides release', v_auth ->> 'generation';
+    end if;
+    if (v_auth ->> 'ready')::boolean or (v_auth ->> 'refusal_code') <> 'notice_never_accepted' then
+      raise exception 'FAIL[12.11/D4]: a RETIRED generation 9 carrying a long-elapsed acceptance '
+        'authorized a release (%) — max() has replaced the wall', v_auth;
+    end if;
+    raise notice '  ok  12.11 · D4 · a retired generation 9 beside a current generation 1: the '
+      'authority reads the STRUCTURAL current row, never max(generation)';
+  end;
+
   -- ── 12.9 · THE AUTHORITY IS INTERNAL, AND THE DOOR IS THE ONLY WAY IN ────────────────────────
   if harness_rs.attempt(OWNER_P,
        format('select public.owner_notice_release_authority(%L)', v_cur)) not like '%ERR:%' then
