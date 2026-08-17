@@ -325,3 +325,58 @@ describe("7 · repeated evaluation is identical — no stateful matcher", () => 
     expect(JSON.stringify(classifyT2(args))).toBe(JSON.stringify(classifyT2(args)));
   });
 });
+
+/**
+ * ★ PHASE 11-OBR — THE OBSERVER MUST NOT PRINT A FABRICATED `claimed_at`.
+ *
+ * Until 11-OBR the observer emitted a hard-coded `claimed_at: null` beside the real columns,
+ * explained as "the schema has no column". That was true when written and became false the moment
+ * migration 0057 added `owner_notice_outbox.claimed_at`.
+ *
+ * The harm is not the stale sentence. A `null` printed in a data column reads as a MEASUREMENT, and
+ * after the OB-1 recovery it would have reported `claimed_at null` on a row that had just been
+ * re-claimed and stamped — indistinguishable from the `p11obr-claimed-at-not-stamped` mutation, and
+ * grounds for classifying a working recovery as a new defect.
+ *
+ * These assertions pin the correction so it cannot silently regress.
+ */
+describe("11-OBR · claimed_at is reported as unobservable, never as a value", () => {
+  const OBSERVER = readFileSync(join(ROOT, "scripts/observeOwnerNoticeDelivery.mjs"), "utf8");
+  const CLASSIFIER = readFileSync(join(ROOT, "scripts/lib/t2Classification.mjs"), "utf8");
+
+  // Comments are stripped before matching prose claims: the correction NARRATES the old wording in
+  // order to explain it, and a raw scan would match that narration and report phantom debt.
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+  it("the instrument reads something — the scan set is non-empty", () => {
+    expect(OBSERVER.length).toBeGreaterThan(2000);
+    expect(CLASSIFIER.length).toBeGreaterThan(2000);
+  });
+
+  it("no executable line claims the claimed_at column does not exist", () => {
+    const code = stripComments(OBSERVER) + stripComments(CLASSIFIER);
+    expect(code).not.toMatch(/schema has no column/i);
+    expect(code).not.toMatch(/records no claim timestamp/i);
+    expect(code).not.toMatch(/claimed_at\s+column\s+DOES NOT EXIST/i);
+  });
+
+  it("claimed_at is emitted as an explicit sentinel, not as null", () => {
+    const code = stripComments(OBSERVER);
+    expect(code).toMatch(/CLAIMED_AT_NOT_OBSERVABLE\s*=\s*'NOT_OBSERVABLE_HERE'/);
+    expect(code).toMatch(/claimed_at:\s*CLAIMED_AT_NOT_OBSERVABLE/);
+    // The precise regression: a literal `claimed_at: null` in executable code.
+    expect(code).not.toMatch(/claimed_at:\s*null/);
+  });
+
+  it("the note explains WHY it is unobservable and names the column as existing", () => {
+    expect(OBSERVER).toMatch(/not selected by admin_get_death_verification_case/);
+    expect(OBSERVER).toMatch(/column EXISTS/);
+    expect(OBSERVER).toMatch(/0057/);
+  });
+
+  it("classification still does not depend on claimed_at — attempts proves a claim", () => {
+    // The verdict logic must remain independent of a field the instrument cannot see.
+    expect(stripComments(CLASSIFIER)).not.toMatch(/claimed_at/);
+  });
+});

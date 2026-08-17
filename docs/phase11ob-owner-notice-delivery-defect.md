@@ -346,3 +346,102 @@ may be reconsidered:
 2. the forensic row's recovery observed through the scheduled worker;
 3. an explicit **OB-2 decision**, because Branch B's B2 gate is an operational rule while the product
    still permits release on a notice that was never delivered.
+
+---
+
+## 13 · Post-deployment closeout — OB-1 and OB-4 recovered through the natural cron
+
+Deployment SHA **`3ed5518b1e9f64b3db1f69097dbbfe0e0597f433`** · bundle SHA256
+**`a3826c4819bbebaeb72446b6fae937f80006a080ba53c411476f81749a450b50`** (rebuilt from committed source
+and matched exactly before observing anything).
+
+**The drain was not triggered.** No `CRON_SECRET`, no manual claim, no row edit. The recovery below is
+the scheduled `0 4 * * *` worker operating unaided on the exact row the defect stranded.
+
+### The forensic row, before and after
+
+| Field | Before (pre-cron, 2026-08-16T23:46:20Z) | After (2026-08-17T05:40:37Z) |
+|---|---|---|
+| `status` | `processing` | **`dispatched`** |
+| `attempts` | `1` | **`2`** |
+| `dispatched_at` | `null` | **`2026-08-17T04:41:31.014903Z`** |
+| `failure_class` | `null` | `null` |
+| `provider_result` | `null` | **`providerAccepted`** |
+| `claimed_at` | *not observable through this interface* | *not observable through this interface* |
+
+**Attempts delta: 1 → 2.** Only `claim_owner_notices` increments `attempts`, so this is direct
+evidence the row was **re-claimed** — the behaviour that did not exist before 0057.
+
+**Settlement: `processing` → `dispatched`.** The row reached a legitimate terminal settled state.
+
+**Classification: `OB1_RECOVERY_PASS`** (outcome A).
+
+Corroborated independently by the census, which moved `processing_total` **1 → 0** and
+`processing_stale` **1 → 0**, with `by_status` now `{"dispatched": 1}` and `purgeable` 1. The
+observability keys added by this phase tracked the recovery they were built to expose.
+
+### OB-4 runtime proof — `OB4_RUNTIME_PASS`
+
+Not inferred from the widened constraint. `record_owner_notice_outcome` performs its UPDATE and its
+`source = 'worker'` audit INSERT **in one function, one transaction**, with the audit last. Had that
+insert still raised `check_violation`, the transaction would have rolled back and the row would have
+remained `processing` — exactly as it did for the two days before deployment.
+
+**The row is `dispatched`. Therefore the worker-sourced audit row committed.** The settlement state is
+the proof.
+
+### Delivery evidence — kept in three separate facts
+
+| Fact | Value |
+|---|---|
+| database settlement | **YES** — `dispatched`, `2026-08-17T04:41:31Z` |
+| `PROVIDER_ACCEPTED` | **YES** — `provider_result = providerAccepted` |
+| `MAILBOX_RECEIPT` | **UNCONFIRMED** — no independent out-of-band observation supplied |
+
+The observer's verdict is therefore **`T2_PROVIDER_ACCEPTED_ONLY`** (`provider_accepted_no_independent_observation`), exit 1. It is **not** `T2_DELIVERED`, and the gate does not clear on
+provider acceptance. Backend state still cannot prove inbox delivery: no provider message id is
+stored, there is no delivery webhook and no `delivered_at` column.
+
+**Duplicate-send evidence: none observed, and not independently verifiable from here.** The reclaim
+replayed the identical message under the identical `Idempotency-Key`. `DELIVERY SEMANTICS:
+AT_LEAST_ONCE` stands unchanged — confirming the provider's dedupe retention still requires vendor
+documentation this repository does not pin.
+
+### Two instrument defects found while closing out
+
+**(a) The observer printed a fabricated `claimed_at`.** It emitted a hard-coded `claimed_at: null`
+beside genuinely measured columns, annotated "the schema has no column" — true when written, false
+since 0057. `admin_get_death_verification_case` does not select the column, so the value was never
+read from anywhere.
+
+The harm was not the stale sentence. A `null` in a data column reads as a measurement, and after this
+recovery it would have reported `claimed_at null` on a row that had just been re-claimed and stamped
+— **indistinguishable from the `p11obr-claimed-at-not-stamped` mutation**, and grounds for
+classifying a successful recovery as a new defect. It now prints the sentinel `NOT_OBSERVABLE_HERE`
+with the reason, and `t2Classification.test.ts` pins the correction (mutation-proven: restoring
+`claimed_at: null` fails the suite). Classification never depended on the field and still must not —
+`attempts` is what proves a claim.
+
+**(b) Two generated bundles were left stale by the 11-OBR PR.** `db/functions/outbox_safety.sql` is
+carried by THREE artifacts; only the new one was rebuilt, so `death_verification_bundle.sql` and
+`operator_console_bundle.sql` sat on disk claiming to carry a version of the file that no longer
+existed. Pasting either on a DB reset would have silently reinstated the pre-remediation
+`claim_owner_notices` and re-opened OB-1/OB-4 — the Phase 10-E `create_asset_grant` near-miss.
+
+The existing freshness audit covered exactly one bundle and three named parts, which is why it stayed
+green. It is now generalised: every artifact in the builder registry is regenerated to a temp path
+and compared by digest. Mutation-proven by restoring a stale copy and observing the failure, with the
+restore verified byte-identical afterwards.
+
+### Standing posture at closeout
+
+Drift **exit 0** · deployed contracts **exit 0** · standing fixture **23/23**, lock FREE · Branch A
+forensic estate otherwise untouched (`challenge_halted`, case `verified`, `released_at` null).
+
+**OB-3** remains a bounded follow-up. **OB-2 remains `DECISION_REQUIRED`** and unchanged by this
+work — `authorize_release` still accepts any outbox row with `status <> 'cancelled'`. Note that the
+row is now `dispatched`, which would satisfy even the strictest candidate policy; that is a fact about
+this row, not a reason to defer the decision.
+
+**Branch B remains NOT STARTED — GATE CLOSED.** OB-1/OB-4 being closed removes one blocker, not the
+gate: T2 is `PROVIDER_ACCEPTED_ONLY`, mailbox receipt is unconfirmed, and OB-2 is undecided.
