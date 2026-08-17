@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DRAIN_GRACE_MS,
+  DELIVERY_OBSERVATION_TOLERANCE_MS,
   NOTICE_STATUS,
   T2,
   T2_DELIVERY_CAVEAT,
@@ -378,5 +379,70 @@ describe("11-OBR · claimed_at is reported as unobservable, never as a value", (
   it("classification still does not depend on claimed_at — attempts proves a claim", () => {
     // The verdict logic must remain independent of a field the instrument cannot see.
     expect(stripComments(CLASSIFIER)).not.toMatch(/claimed_at/);
+  });
+});
+
+/**
+ * ★ PHASE 11-OBR — A DELIVERY ATTESTATION MUST NOT PRE-DATE THE SEND.
+ *
+ * The original corroboration compared the observation only against `requested_at` (enqueue). A
+ * notice can sit `queued` for days, so that admits any instant in the whole window — including
+ * instants hours before the provider was ever handed the message.
+ *
+ * ★ FOUND BY A REAL ATTESTATION. Branch A's closeout was attested as "2026-08-16 23:41" against a
+ * row dispatched at 2026-08-17T04:41:31Z. Read as local time (CDT) that is 04:41Z — the truth. Read
+ * as UTC it is FIVE HOURS BEFORE the provider accepted the message, and the old rule cleared the
+ * gate for it, because the 16th is still after the 15th enqueue. A bare local timestamp is exactly
+ * what a human reads off a mail client, so the ambiguous case is the common one.
+ */
+describe("11-OBR · a delivery observation is corroborated against the SEND, not the enqueue", () => {
+  const DISPATCHED = "2026-08-17T04:41:31.014903Z";
+  const delivered = (observedAt: string) =>
+    classify(
+      { status: "dispatched", dispatched_at: DISPATCHED, attempts: 2 },
+      "2026-08-17T06:00:00Z",
+      { deliveryObservedAt: observedAt }
+    );
+
+  it("refuses an observation five hours before the provider accepted (the timezone misread)", () => {
+    const v = delivered("2026-08-16T23:41:00Z");
+    expect(v.verdict).toBe(T2.UNVERIFIABLE);
+    expect(v.reason).toBe("delivery_observed_before_provider_accepted");
+  });
+
+  it("still refuses one before enqueue, by its own distinct reason", () => {
+    const v = delivered("2026-08-01T00:00:00Z");
+    expect(v.verdict).toBe(T2.UNVERIFIABLE);
+    expect(v.reason).toBe("delivery_observed_before_enqueue");
+  });
+
+  /**
+   * ★ THE TOLERANCE IS LOAD-BEARING AND A STRICT COMPARISON WAS TRIED FIRST AND WAS WRONG. The true
+   * attestation was the SAME MINUTE as the dispatch and 31 seconds "early", because mail clients
+   * display minutes and because the two timestamps come from clocks nobody synchronised.
+   */
+  it("accepts the true observation despite minute-quantisation making it 31s early", () => {
+    const v = delivered("2026-08-17T04:41:00Z");
+    expect(v.verdict).toBe(T2.DELIVERED);
+    expect(v.reason).toBe("independently_observed_and_provider_accepted");
+  });
+
+  it("accepts an observation after the send", () => {
+    expect(delivered("2026-08-17T05:10:00Z").verdict).toBe(T2.DELIVERED);
+  });
+
+  it("the tolerance is bounded — it absorbs seconds, never a wrong hour", () => {
+    // Just inside: believed. Well outside: refused. The guard rejects a wrong zone or a wrong day.
+    expect(delivered("2026-08-17T04:37:00Z").verdict).toBe(T2.DELIVERED);
+    expect(delivered("2026-08-17T03:41:00Z").verdict).toBe(T2.UNVERIFIABLE);
+    expect(DELIVERY_OBSERVATION_TOLERANCE_MS).toBeLessThan(15 * 60 * 1000);
+  });
+
+  it("an observation still cannot clear the gate without provider acceptance", () => {
+    const v = classify({ status: "processing", attempts: 1 }, "2026-08-17T06:00:00Z", {
+      deliveryObservedAt: "2026-08-17T05:00:00Z",
+    });
+    expect(v.verdict).toBe(T2.UNVERIFIABLE);
+    expect(v.reason).toBe("delivery_observed_without_provider_acceptance");
   });
 });

@@ -90,6 +90,19 @@ export const NOTICE_STATUS = Object.freeze([
  */
 export const DEFAULT_DRAIN_GRACE_MS = 60 * 60 * 1000;
 
+/**
+ * How far BEFORE `dispatched_at` a human delivery observation may fall and still be believed.
+ *
+ * Not slop. It covers exactly two things a delivery attestation cannot avoid: a mail client that
+ * displays MINUTES (so an honest 04:41:31 is reported as 04:41), and the fact that the mailbox
+ * timestamp and `dispatched_at` come from two clocks nobody has synchronised. Requiring strict
+ * ordering across those would manufacture precision that does not exist.
+ *
+ * Five minutes absorbs both and remains three orders of magnitude below the five-hour timezone
+ * error the guard exists to reject.
+ */
+export const DELIVERY_OBSERVATION_TOLERANCE_MS = 5 * 60 * 1000;
+
 const isFiniteInstant = (v) => v instanceof Date && Number.isFinite(v.getTime());
 
 /** ISO-8601 → Date, or null. Rejects the empty string and `Invalid Date` alike. */
@@ -217,6 +230,44 @@ export function classifyT2({ notice, now, schedule, graceMs = DEFAULT_DRAIN_GRAC
     }
     if (observedAt.getTime() < requestedAt.getTime()) {
       return verdict(T2.UNVERIFIABLE, 'delivery_observed_before_enqueue');
+    }
+    /**
+     * ★ AND IT MUST NOT PRE-DATE THE SEND — the bound `requested_at` cannot supply.
+     *
+     * Enqueue is the wrong corroboration anchor. A notice can sit `queued` for days before a worker
+     * touches it, so "after enqueue" admits any instant in that whole window, including instants
+     * hours before the provider was ever handed the message. Mail cannot arrive before it is sent.
+     *
+     * ★ FOUND BY A REAL ATTESTATION, NOT BY REVIEW. The Branch A closeout was attested as
+     * "2026-08-16 23:41" against a row whose `dispatched_at` was 2026-08-17T04:41:31Z. Read as local
+     * time (CDT) that is 04:41Z — an exact match, and the truth. Read as UTC it is FIVE HOURS BEFORE
+     * the provider accepted the message, and the old rule returned `T2_DELIVERED` for it anyway,
+     * because 23:41 on the 16th is still comfortably after the 15th enqueue.
+     *
+     * A bare local timestamp is exactly what a human reads off a mail client, so the ambiguous case
+     * is the COMMON case, and the gate this clears is the one protecting a living owner's chance to
+     * object. `dispatched_at` is non-null here by construction (status is `dispatched`, checked
+     * above, and the two are stamped together).
+     *
+     * ★ THE TOLERANCE IS NOT SLOP, AND A STRICT COMPARISON WAS TRIED FIRST AND WAS WRONG. The real
+     * attestation read `23:41` against a dispatch at `04:41:31Z` — the SAME minute, and a strict
+     * `<` refused it over 31 seconds. Two independent reasons forbid strictness here:
+     *
+     *   · QUANTISATION. A mail client displays minutes, so an honest observation of 04:41:31 is
+     *     reported as 04:41 and is legitimately up to 59s "early".
+     *   · UNSYNCHRONISED CLOCKS. `dispatched_at` is Postgres's clock; the mailbox timestamp is the
+     *     mail provider's. Requiring strict ordering across two clocks nobody has synchronised
+     *     manufactures precision that does not exist — the repository's own cross-device rule.
+     *
+     * Five minutes absorbs both and is still three orders of magnitude smaller than the five-hour
+     * timezone error this guard exists to catch. The guard rejects a WRONG DAY or a WRONG ZONE; it
+     * does not adjudicate seconds.
+     */
+    if (dispatchedAt && observedAt.getTime() < dispatchedAt.getTime() - DELIVERY_OBSERVATION_TOLERANCE_MS) {
+      return verdict(T2.UNVERIFIABLE, 'delivery_observed_before_provider_accepted', {
+        delivery_observed_at: observedAt.toISOString(),
+        dispatched_at: dispatchedAt.toISOString(),
+      });
     }
     return verdict(T2.DELIVERED, 'independently_observed_and_provider_accepted', {
       delivery_observed_at: observedAt.toISOString(),
