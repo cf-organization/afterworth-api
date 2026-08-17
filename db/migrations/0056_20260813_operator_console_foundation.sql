@@ -102,6 +102,10 @@ declare
   v_owner  uuid;
   v_id     uuid;
   v_def    text;
+  -- Phase D supersession bookkeeping — see the banner beside the release/window guards below.
+  v_ob2    boolean;
+  v_old    boolean;
+  v_new    boolean;
 begin
   -- ★ A POSITIVE CONTROL BEFORE THE ABSENCE CHECK. Find a real estate with a resolvable owner; if
   -- none exists the constraint cannot be exercised, and this migration says so rather than passing
@@ -157,23 +161,95 @@ begin
     raise exception '0056 FAILED: the status CHECK does not carry outcomeUncertain';
   end if;
 
-  -- ★ THE DOWNSTREAM GATES ARE UNCHANGED. A new status value must not have widened the two
-  -- predicates that decide whether a window may open and whether an estate may release. Both read
-  -- `status <> 'cancelled'`; if a later edit ever narrows them to `= 'dispatched'`, dispatch
-  -- INITIATION would silently have become delivery CONFIRMATION, and this fails.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ SUPERSEDED BY MIGRATION 0060 (PHASE 11-OC / PHASE D) — AMENDED 2026-08-17, ASSERTION LAYER
+  --   ONLY. NO DEPLOYED SCHEMA BEHAVIOUR OF THIS MIGRATION CHANGED.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ORIGINAL INVARIANT (OB-1 era, correct when written): a new `outcomeUncertain` status must not
+  -- have widened the two predicates that decide whether a window may open and whether an estate may
+  -- release. Both read `status <> 'cancelled'`, and this asserted that exact text on both bodies.
+  --
+  -- SUPERSEDING INVARIANT (OB-2, migration 0060): the release door no longer consults ANY status
+  -- string. It consults `owner_notice_release_authority`, which requires the CURRENT generation of
+  -- the CURRENT case episode to carry `notice_accepted_at`. `begin_challenge_window` likewise now
+  -- requires a committed email notice for the CURRENT EPISODE rather than a non-cancelled row on the
+  -- estate. Both original literals are therefore GONE by design, and exact-text pinning of them
+  -- would fail every replay from 0060 onward.
+  --
+  -- WHY THE PIN COULD NOT SIMPLY BE DELETED, AND WHY IT IS NOT A DECORATION. Three "fixes" were
+  -- refused: planting the literal in a comment (prosrc INCLUDES comments, so it would satisfy the
+  -- old check while inspecting nothing — the vacuous-audit failure this repository has shipped five
+  -- times); deleting the guard outright (a future edit could then remove BOTH predicates with
+  -- nothing objecting); and teaching the replay harness to skip it (the self-checks live inside the
+  -- migration text embedded in the bundles, so neutralizing them would mean rewriting the bytes an
+  -- operator pastes).
+  --
+  -- THE AMENDMENT IS A SUPERSESSION-AWARE DISJUNCTION, AND IT IS STRICTLY STRONGER THAN THE
+  -- ORIGINAL. Each body must carry the OB-1 predicate **or** the OB-2 authority — and NEVER
+  -- NEITHER, and never BOTH. The original could be satisfied only by the old text; this cannot be
+  -- satisfied by the absence of both, so a future edit that deletes the guard with nothing replacing
+  -- it still raises here. The OB-2 branch is anchored on `to_regprocedure` — a CATALOG fact about a
+  -- function that must genuinely exist — precisely so a comment cannot supply it.
+  --
+  -- ★ AND A TEXT SEARCH IS NOT THE ONLY VOTER. Migration 0060 §4 proves the authority BEHAVIOURALLY
+  -- by executing it against constructed fixtures, and `db/tests/release_safety_authorization.sql`
+  -- §12 proves the door. This guard's job is to make a HALF-cutover impossible; runtime semantics
+  -- are proven where runtime semantics can be observed.
+  --
+  -- ★ COMMENTS ARE STRIPPED BEFORE EVERY MATCH, AND THAT IS WHAT MAKES "PLANT THE LITERAL IN A
+  -- COMMENT" UNAVAILABLE RATHER THAN MERELY FORBIDDEN. Postgres stores a plpgsql body verbatim, so
+  -- prose containing `status <> 'cancelled'` used to satisfy this check while inspecting nothing —
+  -- and, in the other direction, the Phase D banner that QUOTES the superseded predicate in order to
+  -- say it is gone would have read as the predicate still being present. Measured on the first Phase
+  -- D replay, in both directions. String literals are deliberately NOT stripped: the predicate being
+  -- looked for IS a quoted literal, so removing them would erase the evidence class itself.
+  v_ob2 := to_regprocedure('public.owner_notice_release_authority(uuid)') is not null;
+
   if to_regprocedure('public.begin_challenge_window(uuid)') is not null then
     select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'begin_challenge_window';
-    if v_def not like '%status <> ''cancelled''%' then
-      raise exception '0056 FAILED: begin_challenge_window no longer gates on status <> cancelled — '
-        'the dispatch-initiation contract changed underneath this migration';
+    v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+    -- Non-vacuity: a stripper that ate the body would satisfy every negative test below.
+    if v_def not like '%raise exception%' then
+      raise exception '0056 FAILED: the stripped begin_challenge_window body contains no code — the '
+        'preprocessing has eaten the routine and this guard is inspecting an empty string';
+    end if;
+    v_old := v_def like '%status <> ''cancelled''%';
+    -- The OB-2 posture for THIS door is episode scope, not the acceptance fact — Phase D
+    -- deliberately does not require provider acceptance to open a window (D7).
+    v_new := v_ob2 and v_def like '%owner_notice_episode_kinds%' and v_def like '%o.case_id = v_case%';
+    if not (v_old or v_new) then
+      raise exception '0056 FAILED: begin_challenge_window gates on NEITHER the OB-1 predicate '
+        '(status <> cancelled) NOR the OB-2 episode scope (a current-generation email notice for '
+        'the resolved case). The window-opening precondition has been removed rather than '
+        'superseded, and a window can now open with no committed notice at all.';
+    end if;
+    if v_old and v_new then
+      raise exception '0056 FAILED: begin_challenge_window carries BOTH the OB-1 predicate and the '
+        'OB-2 episode scope — a half-applied Phase D cutover, which is neither posture and cannot '
+        'be reasoned about.';
     end if;
   end if;
+
   if to_regprocedure('public.authorize_release(uuid, text)') is not null then
     select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'authorize_release';
-    if v_def not like '%status <> ''cancelled''%' then
-      raise exception '0056 FAILED: authorize_release no longer gates on status <> cancelled';
+    v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+    if v_def not like '%raise exception%' then
+      raise exception '0056 FAILED: the stripped authorize_release body contains no code';
+    end if;
+    v_old := v_def like '%status <> ''cancelled''%';
+    v_new := v_ob2 and v_def like '%public.owner_notice_release_authority(%';
+    if not (v_old or v_new) then
+      raise exception '0056 FAILED: authorize_release gates on NEITHER the OB-1 predicate '
+        '(status <> cancelled) NOR the OB-2 acceptance authority '
+        '(owner_notice_release_authority). The owner-notice precondition has been removed rather '
+        'than superseded, and an estate can now release with no provable owner notice of any kind.';
+    end if;
+    if v_old and v_new then
+      raise exception '0056 FAILED: authorize_release carries BOTH the OB-1 predicate and the OB-2 '
+        'acceptance authority — a half-applied Phase D cutover.';
     end if;
   end if;
 
@@ -189,5 +265,6 @@ begin
   end if;
 
   raise notice '0056 · owner_notice_outbox admits outcomeUncertain (terminal, never re-sent, never '
-    'purged); window and release predicates unchanged; no client table grant';
+    'purged); window and release predicates carry exactly one posture each (OB-1 status <> '
+    'cancelled, or OB-2 acceptance authority — never neither, never both); no client table grant';
 end $$;

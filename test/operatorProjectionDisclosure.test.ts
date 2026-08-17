@@ -181,12 +181,54 @@ describe("4 · the console cannot disagree with the door", () => {
     expect(body).toContain("'required_level_live'");
   });
 
-  it("window elapse uses STRICT >, matching authorize_release exactly", () => {
+  /**
+   * ★ PHASE 11-OC / PHASE D — "MATCHING authorize_release EXACTLY" IS NO LONGER A CLAIM ABOUT TWO
+   * IMPLEMENTATIONS AGREEING. IT IS A CLAIM THAT THERE IS ONLY ONE.
+   *
+   * This test used to require the projection to carry its own copy of the door's comparison,
+   * `now() > v_l.owner_notified_at + v_duration`, and asserted the copy was faithful. That is the
+   * strongest thing a source test CAN assert about two independent implementations, and it is still
+   * a test of a mirror: it passes for as long as somebody remembers to edit both sides.
+   *
+   * Phase D removed the mirror. `window.elapsed`, `window.release_eligible_at` and the whole
+   * `release_authority` verdict come from `owner_notice_release_authority` — the SAME function
+   * `authorize_release` consults — so the two cannot disagree, rather than merely being checked for
+   * agreement. What this test now pins is that ABSENCE: the projection must perform no clock
+   * arithmetic of its own, and must not re-anchor on provenance.
+   */
+  it("the projection performs NO clock arithmetic — it reads the door's own authority", () => {
     const body = bodyOf("admin_get_death_verification_case");
-    // A console rounding the other way would offer a release the routine refuses, one second
-    // before the owner's tie-break ends.
-    expect(body).toMatch(/now\(\)\s*>\s*v_l\.owner_notified_at\s*\+\s*v_duration/);
-    expect(body).not.toMatch(/now\(\)\s*>=\s*v_l\.owner_notified_at/);
+    // It consults the canonical authority…
+    expect(body).toContain("public.owner_notice_release_authority(p_case)");
+    expect(body).toContain("'release_authority', v_auth");
+    // …and both window facts are taken from that verdict rather than recomputed.
+    expect(body).toContain("'release_eligible_at', v_auth -> 'release_eligible_at'");
+    expect(body).toContain("(v_auth ->> 'elapsed')::boolean");
+    // ★ NO SECOND CLOCK, ON EITHER ANCHOR. A projection that computed a deadline from
+    // `owner_notified_at` would show operators an eligibility date days earlier than the door's.
+    expect(body, "the case file still computes a deadline from owner_notified_at")
+      .not.toMatch(/owner_notified_at\s*\+\s*v_duration/);
+    expect(body, "the case file computes its own elapse comparison")
+      .not.toMatch(/now\(\)\s*>=?\s*v_l\./);
+    // `owner_notified_at` survives as PROVENANCE in the lifecycle block, and that is deliberate —
+    // an operator needs to see when dispatch was initiated. It simply is not the clock.
+    expect(body).toContain("'owner_notified_at',           v_l.owner_notified_at");
+  });
+
+  it("the strict boundary lives in the authority, and the tie still goes to the owner", () => {
+    // The comparison MOVED; it did not soften. Asserted at its new home, because a test that
+    // stopped looking for it anywhere would let `>` become `>=` unobserved. Read from
+    // `release_safety.sql` — this file's own SOURCE is the projection, and the authority is not in
+    // it, which is the whole point.
+    const rs = stripComments(
+      fs.readFileSync(path.join(ROOT, "db/functions/release_safety.sql"), "utf8")
+    );
+    const auth = rs.slice(rs.indexOf("function public.owner_notice_release_authority"));
+    const fn = auth.slice(0, auth.indexOf("$function$;"));
+    expect(fn, "the release authority body was not found — this test is inspecting nothing")
+      .toContain("v_eligible");
+    expect(fn).toMatch(/now\(\)\s*>\s*v_eligible/);
+    expect(fn).not.toMatch(/now\(\)\s*>=\s*v_eligible/);
   });
 
   it("the window duration is read live, never stamped or hardcoded", () => {

@@ -514,19 +514,68 @@ describe("5 · attained level — one writer, typed to the engine's enum", () =>
     const rs = sources.find((s) => s.file === "release_safety.sql")!;
     const body = rs.code.slice(rs.code.indexOf("function public.authorize_release"));
     const fn = body.slice(0, body.indexOf("$function$;"));
+    /**
+     * ★ PHASE 11-OC / PHASE D MOVED THE CLOCK OUT OF THIS ROUTINE, AND THAT IS THE ASSERTION NOW.
+     *
+     * This test used to pin the comparison `now() > v_row.owner_notified_at + v_duration` inside
+     * `authorize_release`. Both halves of that are obsolete: the anchor is now
+     * `notice_accepted_at`, and the arithmetic no longer lives here at all — it lives in
+     * `owner_notice_release_authority`, which the operator projection reads through the SAME
+     * function so a console and a door cannot hold two opinions about one estate.
+     *
+     * Re-pinning the moved expression against the authority instead would have preserved the letter
+     * of this test and lost its point. What made it load-bearing was that release could not proceed
+     * on a non-strict comparison; so that is asserted where the comparison now is, plus the NEW
+     * obligation Phase D creates — that the door contains NO clock of its own to disagree with it.
+     */
+    const auth = rs.code.slice(rs.code.indexOf("function public.owner_notice_release_authority"));
+    const authFn = auth.slice(0, auth.indexOf("$function$;"));
+    expect(authFn, "the release authority body was not found — this test is inspecting nothing")
+      .toContain("v_eligible");
     // ★ STRICT `>`, NOT `>=`. At the exact boundary instant release must refuse so the owner
     // challenge wins the tie (R14). `>=` is the one-character edit that loses it.
-    expect(fn).toMatch(/now\(\)\s*>\s*v_row\.owner_notified_at\s*\+\s*v_duration/);
-    expect(fn, "the boundary comparison is non-strict — a tie would go to release, not the owner")
-      .not.toMatch(/now\(\)\s*>=\s*v_row\.owner_notified_at/);
+    expect(authFn).toMatch(/now\(\)\s*>\s*v_eligible/);
+    expect(authFn, "the boundary comparison is non-strict — a tie would go to release, not the owner")
+      .not.toMatch(/now\(\)\s*>=\s*v_eligible/);
     // The three-valued-logic discipline: a NULL comparison must refuse, not pass.
-    expect(fn).toContain("coalesce(now() > v_row.owner_notified_at + v_duration, false)");
-    // Guards: state, committed notice, reachable channel, verified case, duration, two-person, reason.
-    for (const guard of ["invalid_release_state", "owner_not_notified", "owner_channel_unreachable",
-                         "no_verified_case", "release_window_not_configured",
-                         "release_window_not_elapsed", "two_person_rule_violated",
+    expect(authFn).toContain("coalesce(now() > v_eligible, false)");
+    // ★ THE ANCHOR IS THE ACCEPTANCE FACT, AND THERE IS NO FALLBACK TO PROVENANCE. A coalesce from
+    // one to the other would silently restore the defective clock for exactly the legacy population
+    // Phase D exists to refuse.
+    expect(authFn).toContain("v_row.notice_accepted_at + v_duration");
+    expect(authFn, "the authority falls back from acceptance to provenance")
+      .not.toMatch(/coalesce\s*\(\s*[a-z_.]*notice_accepted_at\s*,\s*[a-z_.]*owner_notified_at/);
+    // ★ AND THE DOOR ITSELF HOLDS NO SECOND COPY. This is the new obligation: a clock re-derived in
+    // `authorize_release` would be a policy that drifts from the one the console renders.
+    expect(fn, "authorize_release computes its own deadline — the authority is not the only clock")
+      .not.toMatch(/owner_notified_at\s*\+\s*v_duration/);
+    expect(fn, "authorize_release does not consume the canonical release authority")
+      .toContain("public.owner_notice_release_authority(v_case)");
+
+    // Guards: state, dispatch provenance, verified case, duration, elapse, two-person, reason.
+    // ★ `owner_channel_unreachable` LEFT THIS LIST IN PHASE D, and its replacement is stronger.
+    // It was raised by a predicate (`status <> 'cancelled'`) that nothing in production can falsify,
+    // so the guard was reachable only from a test fixture. `notice_never_accepted` is raised by the
+    // authority for every notice that never reached provider acceptance — which is the condition the
+    // old guard was believed to be testing.
+    for (const guard of ["invalid_release_state", "owner_not_notified",
+                         "no_verified_case", "two_person_rule_violated",
                          "audit_reason_required"]) {
       expect(fn, `release lost its ${guard} guard`).toContain(guard);
+    }
+    for (const guard of ["no_verified_case", "notice_episode_mismatch", "no_current_notice",
+                         "notice_never_accepted", "release_window_not_configured",
+                         "release_window_not_elapsed"]) {
+      expect(authFn, `the release authority lost its ${guard} refusal`).toContain(guard);
+    }
+    // ★ NO STATUS STRING PARTICIPATES IN THE RELEASE DECISION (D2). A seventh status added to the
+    // CHECK constraint tomorrow must not become release-qualifying by not being 'cancelled'.
+    for (const status of ["'queued'", "'processing'", "'dispatched'", "'outcomeUncertain'",
+                          "'failedPermanent'", "'cancelled'"]) {
+      expect(authFn, `the release authority consults the notice status ${status} — release '
+        + 'authority must be the acceptance FACT, never a status allow-list`)
+        .not.toContain(`o.status = ${status}`);
+      expect(authFn).not.toContain(`v_row.status = ${status}`);
     }
     /**
      * ★ D1 — reviewer_a IS DERIVED, NEVER SUPPLIED. A parameter would let the caller nominate a

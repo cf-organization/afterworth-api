@@ -318,28 +318,69 @@ begin
 
   -- ── 3.3 THE INVERSION: PHASE C HAS NOT CHANGED THE RELEASE DOOR ──────────────────────────────
   --
-  -- Identical in form to 0058 §5.4, and repeated rather than referenced because a guard that lives
-  -- only in an earlier artifact does not run when THIS one is pasted. Phase D (migration 0060) is
-  -- the artifact allowed to change this.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ SUPERSEDED BY MIGRATION 0060 (PHASE 11-OC / PHASE D) — AMENDED 2026-08-17, ASSERTION LAYER
+  --   ONLY. NO DEPLOYED SCHEMA BEHAVIOUR OF THIS MIGRATION CHANGED.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ORIGINAL INVARIANT: Phase C makes RECOVERY possible and must not change when a release may
+  -- proceed, so `authorize_release` must still carry `status <> 'cancelled'` and must not yet read
+  -- `notice_accepted_at`.
+  --
+  -- SUPERSEDING INVARIANT, identical in form to 0058 §5.4 and repeated rather than referenced
+  -- because a guard that lives only in an earlier artifact does not run when THIS one is pasted:
+  -- the door's posture must be CONSISTENT with the migrations actually applied, decided by a CATALOG
+  -- fact (`owner_notice_release_authority` exists iff 0060 is applied) rather than by a moment in
+  -- time. Pre-cutover the original assertion is intact; post-cutover the door must have completed
+  -- the move rather than straddled it. Neither branch can be satisfied by a comment, because the
+  -- catalog half of the post-cutover test is not text.
   if to_regprocedure('public.authorize_release(uuid, text)') is not null then
     select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'authorize_release';
-    if v_def not like '%status <> ''cancelled''%' then
-      raise exception '0059 FAILED: authorize_release no longer carries the pre-Phase-D predicate. '
-        'Phase C makes RECOVERY possible; it must not change when a release may proceed. That is '
-        'Phase D (migration 0060), and folding it in here would deploy the cutover as a side effect '
-        'of deploying its remedy.';
+    -- ★ COMMENTS STRIPPED BEFORE MATCHING, IN BOTH DIRECTIONS — see 0058 §5.4 for the measurement.
+    -- Prose satisfies a presence test and defeats an absence test, and a plpgsql body is stored
+    -- verbatim. String literals stay: the predicate being matched IS a quoted literal.
+    v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+    if v_def not like '%raise exception%' then
+      raise exception '0059 FAILED: the stripped authorize_release body contains no code — the '
+        'preprocessing has eaten the routine and this guard is inspecting an empty string';
     end if;
-    if v_def like '%notice_accepted_at%' then
-      raise exception '0059 FAILED: authorize_release already reads notice_accepted_at — the Phase D '
-        'cutover has been pasted as part of Phase C';
+
+    if to_regprocedure('public.owner_notice_release_authority(uuid)') is null then
+      if v_def not like '%status <> ''cancelled''%' then
+        raise exception '0059 FAILED: authorize_release no longer carries the pre-Phase-D predicate, '
+          'and the Phase D authority (owner_notice_release_authority) is NOT deployed. Phase C makes '
+          'RECOVERY possible; it must not change when a release may proceed. That is Phase D '
+          '(migration 0060), and folding it in here would deploy the cutover as a side effect of '
+          'deploying its remedy.';
+      end if;
+      if v_def like '%notice_accepted_at%' then
+        raise exception '0059 FAILED: authorize_release already reads notice_accepted_at while the '
+          'Phase D authority is NOT deployed — the cutover has been pasted as part of Phase C';
+      end if;
+    else
+      if v_def not like '%public.owner_notice_release_authority(%' then
+        raise exception '0059 FAILED: the Phase D authority is deployed but authorize_release does '
+          'not consume it — the release door has been left on the superseded predicate while the '
+          'schema says the cutover happened';
+      end if;
+      if v_def like '%status <> ''cancelled''%' then
+        raise exception '0059 FAILED: authorize_release carries BOTH the pre-Phase-D predicate and '
+          'the Phase D authority — a half-applied cutover';
+      end if;
     end if;
   end if;
 
+  -- The notice names the branch that actually ran — see 0058 §5.4 for why an unconditional
+  -- "unchanged" would be a false statement printed by a guard that just verified the opposite.
   raise notice '0059 OK: the re-notice kind is admitted and the vocabulary stays closed; the '
     'one-current-generation wall now follows the EPISODE rather than the kind (proved by execution, '
     'across kinds, with a positive control); a cross-kind supersession pair is writable; release '
-    'door PROVABLY unchanged.';
+    'door posture = % (asserted on the deployed body).',
+    case when to_regprocedure('public.owner_notice_release_authority(uuid)') is null
+         then 'PRE-PHASE-D, provably unchanged by this migration'
+         else 'POST-PHASE-D, consuming the acceptance authority with the superseded predicate GONE'
+    end;
 end $$;
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1797,11 +1838,13 @@ comment on function public.admin_list_death_verification_cases(text, timestamptz
 -- affordance TRUTHFUL; it grants nothing. UI affordance is not permission.
 --
 -- ★ WINDOW FACTS ARE FACTS, NOT A COUNTDOWN. `release_eligible_at` and `elapsed` are what an
--- operator needs in order to know whether a release call will be refused. The duration is read LIVE
--- through `challenge_window_duration()`, the same way `authorize_release` reads it, so the console
--- cannot display a deadline the routine disagrees with. `elapsed` uses STRICT `>` for the same
--- reason the routine does: at the exact boundary instant release refuses and the owner's challenge
--- still succeeds, and a console that rounded the other way would offer an action that is refused.
+-- operator needs in order to know whether a release call will be refused. Since Phase 11-OC / Phase
+-- D they are not computed here at all: they are read from `owner_notice_release_authority`, the same
+-- function `authorize_release` consults, so the console cannot display a deadline the routine
+-- disagrees with — not because it copies the routine's arithmetic carefully, but because there is
+-- only one piece of arithmetic. `elapsed` is STRICT `>` inside that authority for the reason the
+-- routine needs it: at the exact boundary instant release refuses and the owner's challenge still
+-- succeeds, and a console that rounded the other way would offer an action that is refused.
 -- Nothing here ranks, scores, urges, estimates, or performs urgency.
 --
 -- ★ DECISION AND REVIEW NOTES ARE INCLUDED, AS A WORKFLOW REQUIREMENT RATHER THAN A CONVENIENCE.
@@ -1827,6 +1870,7 @@ declare
   v_c        public.death_verification_cases%rowtype;
   v_l        public.estate_lifecycle%rowtype;
   v_duration interval;
+  v_auth     jsonb;
   v_out      jsonb;
 begin
   perform public.admin_require_gate();
@@ -1839,6 +1883,10 @@ begin
 
   select * into v_l from public.estate_lifecycle l where l.estate_id = v_c.estate_id;
   v_duration := public.challenge_window_duration();
+  -- ★ PHASE D — ONE CONSULTATION, TWO CONSUMERS BELOW. Both `window` and `release_authority` read
+  -- this single verdict, so the dates the console renders and the verdict it acts on can never
+  -- describe different evaluations of the same estate.
+  v_auth := public.owner_notice_release_authority(p_case);
 
   select jsonb_build_object(
     'case', jsonb_build_object(
@@ -1876,15 +1924,52 @@ begin
       'released_at',                 v_l.released_at,
       'updated_at',                  v_l.updated_at
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE D — THE WINDOW FACTS COME FROM THE RELEASE AUTHORITY, NOT FROM HERE.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- This object used to compute its own clock: `owner_notified_at + duration`, and `elapsed` from
+    -- the same anchor. That was a faithful mirror of the pre-Phase-D door — and being a faithful
+    -- mirror is exactly the problem, because it was a SECOND implementation of the release clock.
+    -- When Phase D re-anchored the door on `notice_accepted_at`, a console still computing from
+    -- `owner_notified_at` would have shown an eligibility date up to several days too early and
+    -- offered AUTHORIZE RELEASE on an estate the server refuses.
+    --
+    -- So both fields are now read from `owner_notice_release_authority` — the SAME function
+    -- `authorize_release` consults — and this projection performs no clock arithmetic of its own.
+    -- The `viewer_is_reviewer_a` discipline applied to a date: the server answers, the client
+    -- renders, and the routine re-checks independently regardless.
+    --
+    -- ★ THE SHAPE IS PRESERVED so an older console keeps parsing. `duration`, `configured`,
+    -- `release_eligible_at` and `elapsed` all still exist and still mean what their names say —
+    -- they are simply now computed once, in the authority, from the acceptance fact.
     'window', jsonb_build_object(
       'duration',            v_duration::text,
       -- NULL duration means NOT CONFIGURED, which means the window never elapses and release
       -- refuses. The console must be able to say that, rather than render a blank date.
       'configured',          v_duration is not null,
-      'release_eligible_at', case when v_l.owner_notified_at is not null and v_duration is not null
-                                  then v_l.owner_notified_at + v_duration end,
-      'elapsed',             coalesce(now() > v_l.owner_notified_at + v_duration, false)
+      -- NULL until there is an acceptance fact to anchor on. A console must render that as "not yet
+      -- eligible", never as a blank it fills in from provenance.
+      'release_eligible_at', v_auth -> 'release_eligible_at',
+      'elapsed',             coalesce((v_auth ->> 'elapsed')::boolean, false)
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE D — RELEASE AUTHORITY IS THE SERVER'S ANSWER, NOT THE CLIENT'S GUESS.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- The console must offer AUTHORIZE RELEASE exactly when `authorize_release` would accept it on
+    -- owner-notice grounds. That rule is not a status list: it turns on the CURRENT case episode, on
+    -- the CURRENT generation, on the acceptance FACT rather than the status, and on a strict clock
+    -- anchored to that fact. A TypeScript mirror of it would be a second policy governing an
+    -- IRREVERSIBLE act — the highest-stakes place in this product for a console and a door to drift.
+    --
+    -- It carries a NAMED refusal code rather than a sentence, so the console owns the operator copy
+    -- and the server owns the policy. No address, no owner identity, on any branch.
+    --
+    -- ★ IT IS NOT A PERMISSION. The two-person rule, the admin gate, the lifecycle state and the
+    -- audit reason are all re-checked inside `authorize_release` every single time. This field makes
+    -- the affordance TRUTHFUL; it grants nothing.
+    'release_authority', v_auth,
     -- ────────────────────────────────────────────────────────────────────────────────────────
     -- ★ PHASE 11-OC — THE EPISODE, NOT JUST A LIST OF ROWS.
     -- ────────────────────────────────────────────────────────────────────────────────────────
@@ -1993,7 +2078,10 @@ comment on function public.admin_get_death_verification_case(uuid) is
   'window facts, owner-notice dispatch status (NEVER the recipient address) and evidence METADATA. '
   'viewer_is_reviewer_a is derived from auth.uid() INSIDE this definer so the console can state '
   'release ineligibility truthfully — it grants nothing; authorize_release re-checks independently. '
-  'Carries no asset, valuation, beneficiary, designation, grant, document byte or storage path.';
+  'Phase 11-OC/D: `window` and `release_authority` both come from owner_notice_release_authority, '
+  'the SAME verdict the release door consults, so the console performs no notice qualification, no '
+  'episode matching and no clock arithmetic of its own. Carries no asset, valuation, beneficiary, '
+  'designation, grant, document byte or storage path.';
 
 commit;
 -- ★ If you see an error above and no COMMIT, nothing was applied. Fix the cause and paste again.

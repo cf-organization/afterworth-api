@@ -527,26 +527,90 @@ begin
 
   -- ── 5.4 THE INVERSION: THIS MIGRATION HAS NOT CHANGED THE RELEASE DOOR ──────────────────────
   --
-  -- Phase A is provably schema-and-observation only, asserted the same way 0056 and 0057 assert it.
-  -- Phase D (0060) is the artifact allowed to change this, and it says so loudly.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ SUPERSEDED BY MIGRATION 0060 (PHASE 11-OC / PHASE D) — AMENDED 2026-08-17, ASSERTION LAYER
+  --   ONLY. NO DEPLOYED SCHEMA BEHAVIOUR OF THIS MIGRATION CHANGED.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ORIGINAL INVARIANT: Phase A is schema-and-observation only, so `authorize_release` must STILL
+  -- carry `status <> 'cancelled'` and must NOT yet read `notice_accepted_at`. Both halves were
+  -- correct and load-bearing right up to the instant 0060 was applied, at which point both flip and
+  -- an unconditional pin would fail every replay from 0060 onward.
+  --
+  -- SUPERSEDING INVARIANT: the question this guard asks is not "is the door pre-Phase-D" — it is
+  -- **"is the door's posture CONSISTENT with the migrations that have actually been applied"**. That
+  -- is a strictly better question and it stays live forever, because it is answered against a
+  -- CATALOG fact rather than against a moment in time: `owner_notice_release_authority(uuid)` exists
+  -- if and only if 0060 has been applied.
+  --
+  --      0060 NOT applied  →  the door MUST carry `status <> 'cancelled'` and MUST NOT read
+  --                           `notice_accepted_at`.   [the original Phase-A inversion, intact]
+  --      0060 applied      →  the door MUST consume `owner_notice_release_authority` and MUST NOT
+  --                           carry `status <> 'cancelled'`.   [the cutover, completed]
+  --
+  -- ★ THE ORIGINAL HAZARD IS STILL CAUGHT, WHICH IS THE WHOLE POINT OF AMENDING RATHER THAN
+  -- DELETING. Pasting the Phase-D acceptance predicate into `release_safety.sql` WITHOUT deploying
+  -- 0060 lands in branch one with no authority function in the catalog, and raises exactly as it did
+  -- before — the `p11oc-phase-a-changes-the-release-door` mutation must remain DETECTED here.
+  --
+  -- ★ AND A COMMENT CANNOT SUPPLY THE POST-CUTOVER BRANCH. `prosrc` includes comments, so the text
+  -- half of the test is satisfiable by prose; the `to_regprocedure` half is not. Both are required.
   if to_regprocedure('public.authorize_release(uuid, text)') is not null then
     select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'authorize_release';
-    if v_def not like '%status <> ''cancelled''%' then
-      raise exception '0058 FAILED: authorize_release no longer carries the pre-Phase-D predicate. '
-        'Phase A must not change when a release may proceed — that is Phase D (migration 0060), '
-        'and folding it in here would deploy the cutover without its census or its remedy.';
+    -- ★ COMMENTS STRIPPED BEFORE MATCHING, IN BOTH DIRECTIONS. A plpgsql body is stored verbatim, so
+    -- prose satisfies a presence test (the refused "plant it in a comment" R13 fix) and defeats an
+    -- absence test (the Phase D banner QUOTES the superseded predicate in order to say it is gone,
+    -- and quotes `notice_accepted_at` in order to say the window door does not require it). Both
+    -- directions were measured on the first Phase D replay. String literals stay: the predicate
+    -- being matched IS a quoted literal.
+    v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+    if v_def not like '%raise exception%' then
+      raise exception '0058 FAILED: the stripped authorize_release body contains no code — the '
+        'preprocessing has eaten the routine and this guard is inspecting an empty string';
     end if;
-    if v_def like '%notice_accepted_at%' then
-      raise exception '0058 FAILED: authorize_release already reads notice_accepted_at — the Phase D '
-        'cutover has been pasted as part of Phase A, ahead of the blast-radius census';
+
+    if to_regprocedure('public.owner_notice_release_authority(uuid)') is null then
+      -- PRE-CUTOVER POSTURE. Phase D has not been deployed; Phase A must not have implemented it.
+      if v_def not like '%status <> ''cancelled''%' then
+        raise exception '0058 FAILED: authorize_release no longer carries the pre-Phase-D predicate, '
+          'and the Phase D authority (owner_notice_release_authority) is NOT deployed. Phase A must '
+          'not change when a release may proceed — that is Phase D (migration 0060), and folding it '
+          'in here would deploy the cutover without its census or its remedy.';
+      end if;
+      if v_def like '%notice_accepted_at%' then
+        raise exception '0058 FAILED: authorize_release already reads notice_accepted_at while the '
+          'Phase D authority is NOT deployed — the cutover has been pasted as part of Phase A, '
+          'ahead of the blast-radius census';
+      end if;
+    else
+      -- POST-CUTOVER POSTURE. 0060 is applied; the door must have completed the move, not straddled
+      -- it. A body still carrying the old predicate is a half-cutover: two owner-notice policies in
+      -- one routine, which is neither posture and cannot be reasoned about.
+      if v_def not like '%public.owner_notice_release_authority(%' then
+        raise exception '0058 FAILED: the Phase D authority is deployed but authorize_release does '
+          'not consume it — the release door has been left on the superseded predicate while the '
+          'schema says the cutover happened';
+      end if;
+      if v_def like '%status <> ''cancelled''%' then
+        raise exception '0058 FAILED: authorize_release carries BOTH the pre-Phase-D predicate and '
+          'the Phase D authority — a half-applied cutover';
+      end if;
     end if;
   end if;
 
+  -- ★ THE NOTICE NAMES THE BRANCH THAT ACTUALLY RAN. It used to say "release door PROVABLY
+  -- unchanged" unconditionally, which after the Phase D cutover would have been a false statement
+  -- printed by a guard that had just verified the opposite — the operator reading the paste log
+  -- would be told the door was untouched on the very run that certified it had moved.
   raise notice '0058 OK: acceptance fact + episode columns present and nullable-correct; episode '
     'wall holds on INSERT and leaves legacy rows updatable (both proved by execution, with a '
     'positive control); one-current-generation index enforced; reason vocabulary closed; release '
-    'door PROVABLY unchanged.';
+    'door posture = % (asserted on the deployed body).',
+    case when to_regprocedure('public.owner_notice_release_authority(uuid)') is null
+         then 'PRE-PHASE-D, provably unchanged by this migration'
+         else 'POST-PHASE-D, consuming the acceptance authority with the superseded predicate GONE'
+    end;
 end $$;
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────

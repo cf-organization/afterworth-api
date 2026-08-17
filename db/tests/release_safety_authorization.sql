@@ -124,6 +124,57 @@ returns jsonb language sql as $$
                                 from public.estate_designations d where d.estate_id = p_estate), '[]'::jsonb));
 $$;
 
+-- ★ PHASE 11-OC / PHASE D — SETTLE AN EPISODE'S NOTICE THROUGH THE REAL DRAIN, THEN AGE THE FACT.
+--
+-- Every fixture that needs a RELEASEABLE estate now needs an acceptance fact, because Phase D
+-- anchors both the qualification and the clock on `notice_accepted_at`. This helper exists so that
+-- fact is produced the way production produces it — `claim_owner_notices` then
+-- `record_owner_notice_outcome(..., 'providerAccepted')` — rather than by an UPDATE that writes the
+-- column directly. A fixture that stamped the column itself would agree with whatever the client
+-- already believes and could not catch a settle path that had stopped stamping it at all.
+--
+-- ★ THE AGEING IS SEPARATE FROM THE SETTLEMENT, AND ONLY THE AGEING IS SYNTHETIC. `p_at` moves the
+-- stamped instant backwards, which is the deterministic equivalent of waiting: `now()` is constant
+-- inside a transaction, so `now() - duration` is the boundary EXACTLY and `now() - duration - 1s` is
+-- strictly past it. No sleep, no wall clock, no flake. Passing NULL leaves the real stamp alone.
+--
+-- Returns the notice id so a caller can assert against the row it just settled rather than
+-- re-deriving it.
+create or replace function harness_rs.accept_notice(p_estate uuid, p_at timestamptz default null)
+returns uuid language plpgsql as $$
+declare v_id uuid;
+begin
+  -- The CURRENT generation of this estate's episode, matched structurally rather than by newest.
+  select o.id into v_id
+    from public.owner_notice_outbox o
+   where o.estate_id = p_estate and o.channel = 'email' and o.superseded_by is null
+   limit 1;
+  if v_id is null then
+    raise exception 'harness_rs.accept_notice: estate % has no current owner notice to settle — the '
+      'fixture cannot produce an acceptance fact and every clock assertion built on it would be '
+      'measuring an absent value', p_estate;
+  end if;
+  -- ★ THE SETTLE PATH IS CALLED FOR REAL; THE CLAIM STEP DELIBERATELY IS NOT, AND THAT WAS FOUND BY
+  -- EXECUTION. `claim_owner_notices(n)` takes a BATCH SIZE and no estate — it is database-wide by
+  -- design — so calling it here dragged every other fixture's queued notice into `processing`. §6's
+  -- purge assertion then removed 5 rows where it expects exactly 1, failing a section that has
+  -- nothing to do with Phase D. A fixture helper must not move rows belonging to its neighbours.
+  --
+  -- Nothing is lost: `notice_accepted_at` is written by `record_owner_notice_outcome` and by no other
+  -- path, so this settles through the real production writer. Claiming is the worker's bookkeeping
+  -- about WHO is sending, not the fact this helper exists to produce — and §9 already proves the
+  -- claim/reclaim contract on its own fixtures.
+  perform public.record_owner_notice_outcome(v_id, 'providerAccepted');
+  if (select notice_accepted_at from public.owner_notice_outbox where id = v_id) is null then
+    raise exception 'harness_rs.accept_notice: providerAccepted did not stamp notice_accepted_at on '
+      '% — the settle path has stopped writing the one fact Phase D turns on', v_id;
+  end if;
+  if p_at is not null then
+    update public.owner_notice_outbox set notice_accepted_at = p_at where id = v_id;
+  end if;
+  return v_id;
+end $$;
+
 -- =================================================================================================
 -- 0 · THE INSTRUMENT IS READING THE REAL THING
 -- =================================================================================================
@@ -396,12 +447,67 @@ begin
   end if;
   raise notice '  ok   STAGE D (challenge_window): owner notified (committed, honest copy); payload byte-identical';
 
-  -- ── RELEASE IS REFUSED: window not elapsed ────────────────────────────────────────────────────
+  -- ── ★ PHASE 11-OC / PHASE D · D7 — THE WINDOW OPENED ON A `queued` NOTICE ────────────────────
+  --
+  -- Asserted HERE, immediately after the door accepted it, because it is the load-bearing ABSENCE in
+  -- Phase D: `begin_challenge_window` must NOT require provider acceptance. The drain is
+  -- asynchronous, so the initial notice is still `queued` at this instant on every real path — and a
+  -- window door that demanded acceptance would make the OWNER'S OWN PROTECTION unavailable until a
+  -- worker had run. This assertion fails if anybody ever "tightens" that door to match the release
+  -- door, which reads like consistency and is the exact inversion Phase D refuses.
+  select status into v_res from public.owner_notice_outbox where estate_id = S;
+  if v_res <> 'queued' then
+    raise exception 'FAIL[OC/D7 control]: the notice is % rather than queued, so the fixture cannot '
+      'observe that the window opened WITHOUT provider acceptance', v_res;
+  end if;
+  if (select notice_accepted_at from public.owner_notice_outbox where estate_id = S) is not null then
+    raise exception 'FAIL[OC/D7 control]: the notice already carries an acceptance fact, so this '
+      'fixture cannot prove the window opens without one';
+  end if;
+  raise notice '  ok   OC/D7 · the challenge window OPENED on a queued, never-accepted notice';
+
+  -- ── ★ RELEASE IS REFUSED: THERE IS NO ACCEPTANCE FACT AT ALL (D1/D6) ─────────────────────────
+  --
+  -- This is the Phase D cutover observed on the canonical happy path. Before Phase D this same
+  -- estate refused with `release_window_not_elapsed` — a refusal about the CLOCK, which quietly
+  -- conceded that the notice itself qualified. It never did: nothing had been sent.
+  v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, 'premature'));
+  if position('notice_never_accepted' in v_res) = 0 then
+    raise exception 'FAIL[OC/D1]: release with NO provider acceptance got %', v_res;
+  end if;
+  raise notice '  ok   OC/D1 · release refuses while the notice has no acceptance fact';
+
+  -- ── THE SETTLE PATH RUNS: providerAccepted, and ONLY now does an acceptance fact exist ────────
+  v_notice := harness_rs.accept_notice(S);
+
+  -- ── RELEASE IS REFUSED: window not elapsed (the acceptance is seconds old) ────────────────────
   v_res := harness_rs.as_admin(ADMIN2_S, format('select public.authorize_release(%L, %L)', S, 'premature'));
   if position('release_window_not_elapsed' in v_res) = 0 then
     raise exception 'FAIL: premature release got %', v_res;
   end if;
   raise notice '  ok   release refuses before the 7-day window elapses';
+
+  -- ── ★ THE ANCHOR MOVED, AND THIS IS THE FIXTURE THAT CAN OBSERVE IT (D5, invariant I) ────────
+  --
+  -- ★ A TRANSFORMATION TEST MUST USE INPUT THE TRANSFORMATION CHANGES. Ageing `owner_notified_at`
+  -- to eight days is EXACTLY what the pre-Phase-D suite did to release this estate. If the clock
+  -- were still anchored on provenance, the very next call would succeed. It must not: the acceptance
+  -- fact is seconds old, and the seven days run from THAT.
+  --
+  -- Without this step the whole cutover would be untested on the happy path — ageing both fields
+  -- together (the obvious edit) passes identically with the anchor moved and with it left alone.
+  update public.estate_lifecycle
+     set owner_notified_at = now() - interval '8 days'
+   where estate_id = S;
+  v_res := harness_rs.as_admin(ADMIN2_S,
+    format('select public.authorize_release(%L, %L)', S, 'provenance aged, acceptance fresh'));
+  if position('release_window_not_elapsed' in v_res) = 0 then
+    raise exception 'FAIL[OC/D5]: owner_notified_at was aged to 8 days and release got % — the '
+      'release clock is STILL anchored on provenance, which is stamped when the row is queued and '
+      'says nothing about whether a message ever left the building', v_res;
+  end if;
+  raise notice '  ok   OC/D5 · an 8-day-old owner_notified_at does NOT release: the anchor is the '
+    'acceptance fact, and provenance cannot substitute for it';
 
   -- ── AUTHORITY BRACKET so far: nothing manufactured through B, C, D ────────────────────────────
   auth_after := harness_rs.authority_snapshot(S);
@@ -410,11 +516,16 @@ begin
   end if;
   raise notice '  ok   no grant, membership or designation moved through stages B-D';
 
-  -- ── STAGE F · released (elapse the window by ageing the notice, then release) ─────────────────
-  -- Ageing `owner_notified_at` is the deterministic equivalent of waiting: the duration is read
-  -- LIVE from configuration, so a notice 8 days old under a 7-day window is exactly an elapsed one.
-  update public.estate_lifecycle
-     set owner_notified_at = now() - interval '8 days'
+  -- ── STAGE F · released (elapse the window by ageing the ACCEPTANCE, then release) ─────────────
+  -- Ageing the ACCEPTANCE FACT is the deterministic equivalent of waiting: the duration is read LIVE
+  -- from configuration, so an acceptance 8 days old under a 7-day window is exactly an elapsed one.
+  -- No sleep, no wall clock, no flake.
+  --
+  -- ★ PHASE D MOVED THIS LINE FROM `estate_lifecycle.owner_notified_at` TO
+  -- `owner_notice_outbox.notice_accepted_at`, and the step immediately above proves the move is real
+  -- rather than cosmetic: provenance is ALREADY aged to eight days here and release is still refused.
+  update public.owner_notice_outbox
+     set notice_accepted_at = now() - interval '8 days'
    where estate_id = S;
 
   -- ★ D1 — THE VERIFIER MAY NOT RELEASE. ADMIN_S decided the death case; their release attempt must
@@ -857,13 +968,24 @@ begin
       perform harness_rs.as_admin(ADMIN_T, format('select public.dispatch_owner_safety_notice(%L)', E));
       perform harness_rs.as_admin(ADMIN_T, format('select public.begin_challenge_window(%L)', E));
 
-      -- ★ THE BOUNDARY, EXACTLY: notified_at + duration = now().
+      -- ★ THE BOUNDARY, EXACTLY: notice_accepted_at + duration = now().
+      --
+      -- ★ PHASE D MOVED THE ANCHOR, AND THE FIXTURE HAD TO MOVE WITH IT — otherwise this section
+      -- would refuse for the wrong reason (`notice_never_accepted`, because nothing was ever
+      -- settled) and would report a green tiebreak while never reaching the comparison it exists to
+      -- test. That is a control that cannot fail, and it is exactly what the first Phase D replay
+      -- produced here before this line changed.
+      --
+      -- Provenance is deliberately left ANCIENT below, so the boundary can only be coming from the
+      -- acceptance fact.
+      perform harness_rs.accept_notice(E, now() - v_dur);
       update public.estate_lifecycle
-         set owner_notified_at = now() - v_dur
+         set owner_notified_at = now() - v_dur - interval '30 days'
        where estate_id = E;
-      select owner_notified_at into v_notified from public.estate_lifecycle where estate_id = E;
+      select o.notice_accepted_at into v_notified
+        from public.owner_notice_outbox o where o.estate_id = E and o.superseded_by is null;
       if v_notified + v_dur is distinct from now() then
-        raise exception 'FAIL: the boundary fixture is not exact (notified+duration=%, now=%)',
+        raise exception 'FAIL: the boundary fixture is not exact (accepted+duration=%, now=%)',
           v_notified + v_dur, now();
       end if;
 
@@ -912,9 +1034,10 @@ begin
     perform harness_rs.as_admin(ADMIN_T, format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case));
     perform harness_rs.as_admin(ADMIN_T, format('select public.dispatch_owner_safety_notice(%L)', E2));
     perform harness_rs.as_admin(ADMIN_T, format('select public.begin_challenge_window(%L)', E2));
-    update public.estate_lifecycle
-       set owner_notified_at = now() - v_dur - interval '1 second'
-     where estate_id = E2;
+    -- ★ ONE SECOND PAST THE BOUNDARY, ON THE ACCEPTANCE ANCHOR. Provenance is left UNAGED here on
+    -- purpose: if the clock were still reading `owner_notified_at` this control would refuse, so a
+    -- passing control is itself evidence that the anchor moved.
+    perform harness_rs.accept_notice(E2, now() - v_dur - interval '1 second');
     perform harness_rs.as_admin(ADMIN2_T, format('select public.authorize_release(%L, %L)', E2, 'control'));
     if public.estate_lifecycle_state(E2) <> 'released' then
       raise exception 'FAIL[TIE CONTROL]: release one second past the boundary did not succeed — '
@@ -930,7 +1053,7 @@ end $rs3$;
 do $rs4$
 declare
   OWNER_R uuid; EXEC_R uuid; ADMIN_R uuid; ADMIN2_R uuid; R1 uuid;
-  v_case uuid; v_res text;
+  v_case uuid; v_res text; v_status text;
 begin
   raise notice '4 · release guards';
 
@@ -992,17 +1115,34 @@ begin
      set owner_notified_at = now() - interval '30 days',
          safety_notification_id = gen_random_uuid()
    where estate_id = R1;
-  -- ★ THE EMAIL-CHANNEL PRECONDITION AT THE RELEASE DOOR, exercised on its own. Every other path
-  -- leaves a live notice row behind, so this guard had never fired: cancelling the notice while the
-  -- lifecycle facts stay intact is the only state that isolates it.
-  update public.owner_notice_outbox set status = 'cancelled' where estate_id = R1;
-  if position('owner_channel_unreachable' in
-       harness_rs.as_admin(ADMIN2_R, format('select public.authorize_release(%L, %L)', R1, 'probe'))) = 0 then
-    raise exception 'FAIL: release did not refuse with the owner notice CANCELLED — the email '
-      'channel precondition is not enforced at the release door';
-  end if;
+  -- ★ THE OWNER-NOTICE PRECONDITION AT THE RELEASE DOOR, exercised on its own.
+  --
+  -- ★ PHASE 11-OC / PHASE D RETARGETED THIS ASSERTION, AND THE NEW SENTINEL IS THE FINDING.
+  -- Before Phase D this refused with `owner_channel_unreachable`, and reaching that refusal required
+  -- a fixture to CANCEL the notice by direct UPDATE — because `status <> 'cancelled'` was the only
+  -- way the predicate could ever be false, and nothing in production writes `'cancelled'`. The guard
+  -- was reachable exclusively from a test.
+  --
+  -- Under Phase D the same estate refuses with `notice_never_accepted`, and it refuses for a reason
+  -- that has nothing to do with the status: no generation of this episode ever reached provider
+  -- acceptance. That is why the loop below walks EVERY status in the CHECK constraint and requires
+  -- the identical refusal from all six. The release authority is VOCABULARY-INDEPENDENT — a seventh
+  -- status added tomorrow cannot become release-qualifying by not being `'cancelled'`, because no
+  -- status string participates in the decision at all (D2).
+  for v_status in select unnest(array['queued', 'processing', 'dispatched', 'outcomeUncertain',
+                                      'failedPermanent', 'cancelled']) loop
+    update public.owner_notice_outbox
+       set status = v_status, notice_accepted_at = null where estate_id = R1;
+    v_res := harness_rs.as_admin(ADMIN2_R, format('select public.authorize_release(%L, %L)', R1, 'probe'));
+    if position('notice_never_accepted' in v_res) = 0 then
+      raise exception 'FAIL[OC/D2]: with the owner notice at status % and NO acceptance fact, '
+        'release got % — a status string is deciding release authority, so a seventh status could '
+        'become release-qualifying merely by not being cancelled', v_status, v_res;
+    end if;
+  end loop;
   update public.owner_notice_outbox set status = 'queued' where estate_id = R1;
-  raise notice '  ok   release refuses when the owner email notice is cancelled (D4 at the door)';
+  raise notice '  ok   OC/D2 · release refuses on ALL SIX notice statuses with no acceptance fact — '
+    'the authority is the FACT, never the vocabulary';
 
   update public.death_verification_cases set status = 'rejected' where estate_id = R1;
   if position('no_verified_case' in
@@ -1103,7 +1243,7 @@ end $rs5$;
 do $rs6$
 declare
   OWNER_U uuid; EXEC_U uuid; ADMIN_U uuid; U uuid;
-  v_case uuid; v_res text; n int; v_census jsonb; v_audit int; v_purged int;
+  v_case uuid; v_res text; n int; v_census jsonb; v_audit int; v_purged int; v_expect int;
 begin
   raise notice '6 · dispatch failure, rollback, and outbox safety';
 
@@ -1214,10 +1354,31 @@ begin
             'death_process.window_opened', 'processing', v_epis, 2, 'prior_failed_permanent');
   end;
 
+  -- ★ THE EXPECTED COUNT IS DERIVED FROM THE PURGE'S OWN PREDICATE, NEVER HARDCODED, AND PHASE D IS
+  -- WHY. `purge_outbox_rows` is DATABASE-WIDE: it deletes every settled row older than the cutoff,
+  -- across every estate the suite has built. This assertion used to read `<> 1`, which was true only
+  -- because no OTHER section had ever settled a notice — an accidental property of neighbouring
+  -- fixtures, not a fact about the purge. Phase D made four earlier estates settle theirs
+  -- (`providerAccepted` is now required to reach a release), and the magic number failed a section
+  -- that has nothing to do with the cutover.
+  --
+  -- Deriving it is strictly stronger: the purge must remove EXACTLY the settled set, whatever its
+  -- size, and the two named observations below — U's settled row gone, U's in-flight row alive — are
+  -- what actually carry the safety claim. A count that only ever expects 1 cannot notice a widened
+  -- DELETE the moment a second settled row exists anywhere.
+  select count(*) into v_expect from public.owner_notice_outbox
+   where status in ('dispatched', 'failedPermanent', 'cancelled')
+     and requested_at < now() + interval '1 day';
+  if v_expect < 2 then
+    raise exception 'FAIL[control]: only % settled row(s) exist, so this fixture cannot distinguish '
+      'a correctly scoped purge from one that deletes a single row and stops', v_expect;
+  end if;
+
   select public.purge_outbox_rows('owner_notice_outbox', now() + interval '1 day', 'harness sweep')
     into v_purged;
-  if v_purged <> 1 then
-    raise exception 'FAIL: the purge removed % row(s), expected exactly the 1 SETTLED row', v_purged;
+  if v_purged <> v_expect then
+    raise exception 'FAIL: the purge removed % row(s), expected exactly the % SETTLED rows',
+      v_purged, v_expect;
   end if;
   -- The in-flight message survived: it is still on its way to a living owner.
   select count(*) into n from public.owner_notice_outbox where estate_id = U and status = 'processing';
@@ -1228,10 +1389,13 @@ begin
   if (select count(*) from public.outbox_purge_audit) <> v_audit + 1 then
     raise exception 'FAIL: the purge wrote no audit row — a silent purge is impossible by design';
   end if;
+  -- The count in the audit is the count the purge reported — derived alongside it, for the reason
+  -- given above: a hardcoded 1 describes a neighbouring fixture rather than this routine.
   if not exists (select 1 from public.outbox_purge_audit
-                  where outbox_name = 'owner_notice_outbox' and row_count = 1
+                  where outbox_name = 'owner_notice_outbox' and row_count = v_expect
                     and btrim(reason) <> '' and actor_id is not null) then
-    raise exception 'FAIL: the purge audit row is missing its count, reason or actor';
+    raise exception 'FAIL: the purge audit row is missing its count (expected %), reason or actor',
+      v_expect;
   end if;
   raise notice '  ok   PURGE: in-flight rows refused; settled rows removed WITH an attributed audit row';
 
@@ -2297,6 +2461,7 @@ declare
   v_acc timestamptz; v_disp timestamptz; v_status text; v_gen int; v_cid uuid;
   v_succ uuid;
   v_sum bigint;
+  v_src text;
 begin
   raise notice ' ';
   raise notice '10 · Phase 11-OC / Phase A: the acceptance fact and the case episode';
@@ -2575,17 +2740,49 @@ begin
   raise notice '  ok   6 · readiness census: admits Y, refuses Z (outcomeUncertain), buckets '
     'partition the total, no uuid and no address';
 
-  -- ── 7 · THE RELEASE DOOR IS STILL THE PRE-PHASE-D DOOR ───────────────────────────────────────
+  -- ── 7 · THE RELEASE DOOR'S POSTURE MATCHES THE MIGRATIONS THAT ARE ACTUALLY APPLIED ──────────
   --
-  -- Phase A must not have changed when a release may proceed. Asserted on the deployed body, the same
-  -- way migrations 0056/0057/0058 assert it, so a Phase D cutover pasted early fails HERE too.
-  if (select prosrc from pg_proc p join pg_namespace nsp on nsp.oid = p.pronamespace
-       where nsp.nspname = 'public' and p.proname = 'authorize_release') not like
-      '%status <> ''cancelled''%' then
-    raise exception 'FAIL[OC]: authorize_release no longer carries the pre-Phase-D predicate — the '
-      'cutover has landed inside Phase A, ahead of its blast-radius census and its remedy';
+  -- ★ SUPERSEDED BY PHASE D — R13, and amended here for the same reason as migrations 0056-0059.
+  --
+  -- ORIGINAL: Phase A must not have changed when a release may proceed, so the deployed
+  -- `authorize_release` must still carry `status <> 'cancelled'`. Correct until 0060 removed that
+  -- text by design, at which point an unconditional pin fails every run.
+  --
+  -- SUPERSEDING: the door must carry EXACTLY ONE owner-notice posture, and WHICH one is decided by a
+  -- CATALOG fact — `owner_notice_release_authority` exists if and only if Phase D is deployed. That
+  -- keeps the original hazard caught (an acceptance predicate pasted into `release_safety.sql`
+  -- without its migration lands in the pre-cutover branch and still fails) while surviving the
+  -- cutover, and it additionally catches a HALF-cutover, which the original could not.
+  --
+  -- ★ COMMENTS ARE STRIPPED FIRST. A plpgsql body is stored verbatim, so the Phase D banner — which
+  -- QUOTES the superseded predicate in order to say it is gone — would otherwise read as the
+  -- predicate still being present. Measured on the first Phase D replay. String literals stay: the
+  -- thing being matched IS a quoted literal.
+  select prosrc into v_src from pg_proc p join pg_namespace nsp on nsp.oid = p.pronamespace
+   where nsp.nspname = 'public' and p.proname = 'authorize_release';
+  v_src := regexp_replace(v_src, E'--[^\n]*', '', 'g');
+  if v_src not like '%raise exception%' then
+    raise exception 'FAIL[OC control]: the stripped authorize_release body contains no code — the '
+      'preprocessing has eaten the routine and this assertion is inspecting an empty string';
   end if;
-  raise notice '  ok   7 · Phase A left the release door unchanged (asserted on the deployed body)';
+  if to_regprocedure('public.owner_notice_release_authority(uuid)') is null then
+    if v_src not like '%status <> ''cancelled''%' then
+      raise exception 'FAIL[OC]: authorize_release no longer carries the pre-Phase-D predicate and '
+        'the Phase D authority is NOT deployed — the cutover has landed inside Phase A, ahead of '
+        'its blast-radius census and its remedy';
+    end if;
+    raise notice '  ok   7 · pre-Phase-D posture: the release door is unchanged by Phases A and C';
+  else
+    if v_src not like '%public.owner_notice_release_authority(%' then
+      raise exception 'FAIL[OC/D]: the Phase D authority is deployed but authorize_release does not '
+        'consume it — the door is on the superseded predicate while the schema says otherwise';
+    end if;
+    if v_src like '%status <> ''cancelled''%' then
+      raise exception 'FAIL[OC/D]: authorize_release carries BOTH postures — a half-applied cutover';
+    end if;
+    raise notice '  ok   7 · post-Phase-D posture: the release door consumes the acceptance '
+      'authority and the superseded predicate is GONE (asserted on the deployed body)';
+  end if;
 
   -- ── 8 · EPISODE SCOPE — AN ACCEPTED NOTICE FROM A PRIOR CASE AUTHORIZES NOTHING (D3, R4) ───────
   --

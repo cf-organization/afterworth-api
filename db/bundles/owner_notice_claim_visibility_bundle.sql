@@ -132,6 +132,10 @@ do $$
 declare
   v_type text;
   v_nullable text;
+  -- Phase D supersession bookkeeping — see the banner beside the release-precondition guard below.
+  v_def  text;
+  v_old  boolean;
+  v_new  boolean;
 begin
   select data_type, is_nullable into v_type, v_nullable
     from information_schema.columns
@@ -162,15 +166,56 @@ begin
     raise exception '0057 FAILED: the processing/claimed index is absent';
   end if;
 
-  -- ★ AND THE RELEASE PRECONDITION IS UNTOUCHED BY THIS MIGRATION. Asserted here rather than
-  -- promised in prose: OB-2 is a separate decision and this artifact must not have made it.
-  if not exists (
-    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and p.proname = 'authorize_release'
-       and p.prosrc like '%o.status <> ''cancelled''%'
-  ) then
-    raise exception '0057 FAILED: authorize_release no longer carries the OB-2 precondition this '
-      'migration is required to leave alone — OB-1 has silently implemented OB-2';
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ SUPERSEDED BY MIGRATION 0060 (PHASE 11-OC / PHASE D) — AMENDED 2026-08-17, ASSERTION LAYER
+  --   ONLY. NO DEPLOYED SCHEMA BEHAVIOUR OF THIS MIGRATION CHANGED.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ORIGINAL INVARIANT (correct when written): OB-1 adds `claimed_at` and a reclaim predicate, and
+  -- must not have implemented OB-2 as a side effect. Asserted by requiring `authorize_release` to
+  -- still carry the pre-OB-2 predicate text `o.status <> 'cancelled'`.
+  --
+  -- SUPERSEDING INVARIANT (OB-2, migration 0060): the release door consults
+  -- `owner_notice_release_authority` and no status string whatsoever, so the pinned literal is gone
+  -- by design and exact-text pinning would fail every replay from 0060 onward.
+  --
+  -- WHY EXACT-TEXT PINNING IS NO LONGER VALID, AND WHY THE GUARD SURVIVES ANYWAY. `prosrc` includes
+  -- comments, so re-satisfying the old check by planting the literal in one would convert a live
+  -- guard into a decoration that inspects nothing. Deleting it would let a future edit remove the
+  -- owner-notice precondition entirely with nothing objecting. So the check becomes a
+  -- supersession-aware disjunction: the door must carry the OB-1 predicate **or** the OB-2 authority
+  -- — never neither, and never both. That is strictly stronger than what this migration originally
+  -- asserted, because the original could not fail on the absence of both.
+  --
+  -- The OB-2 branch is anchored on `to_regprocedure`, a CATALOG fact about a function that must
+  -- genuinely exist, precisely so a comment cannot supply it. Runtime semantics are proven where
+  -- they can be observed — 0060 §4 by execution, and the SQL suite §12 against the real door.
+  select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'authorize_release';
+  if v_def is null then
+    raise exception '0057 FAILED: authorize_release does not exist, so the OB-2 precondition this '
+      'migration is required to leave alone cannot be inspected at all';
+  end if;
+  -- ★ COMMENTS STRIPPED BEFORE MATCHING. Postgres stores a plpgsql body verbatim, so prose could
+  -- otherwise satisfy either branch — which is precisely the "plant the literal in a comment" R13
+  -- fix this programme refused. Stripping makes it unavailable rather than merely forbidden. String
+  -- literals are NOT stripped: the predicate being looked for IS a quoted literal.
+  v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+  if v_def not like '%raise exception%' then
+    raise exception '0057 FAILED: the stripped authorize_release body contains no code — the '
+      'preprocessing has eaten the routine and this guard is inspecting an empty string';
+  end if;
+  v_old := v_def like '%o.status <> ''cancelled''%';
+  v_new := to_regprocedure('public.owner_notice_release_authority(uuid)') is not null
+           and v_def like '%public.owner_notice_release_authority(%';
+  if not (v_old or v_new) then
+    raise exception '0057 FAILED: authorize_release carries NEITHER the OB-1 owner-notice predicate '
+      'nor the OB-2 acceptance authority — the precondition has been removed rather than superseded, '
+      'and an estate can release with no provable owner notice of any kind';
+  end if;
+  if v_old and v_new then
+    raise exception '0057 FAILED: authorize_release carries BOTH postures — a half-applied Phase D '
+      'cutover, which is neither posture and cannot be reasoned about';
   end if;
 
   -- ★ OB-4: the settle path must actually be able to write its audit row. Asserted by EXECUTING an
@@ -194,8 +239,9 @@ begin
     raise exception '0057 FAILED: the audit source vocabulary is not exactly four values: %', v_type;
   end if;
 
-  raise notice '0057 OK: claimed_at present and nullable, reclaim index present, OB-2 untouched, '
-    'audit source admits worker (proved by execution)';
+  raise notice '0057 OK: claimed_at present and nullable, reclaim index present, the release door '
+    'carries exactly ONE owner-notice posture (OB-1 status <> cancelled, or the OB-2 acceptance '
+    'authority — never neither, never both), audit source admits worker (proved by execution)';
 end $$;
 
 

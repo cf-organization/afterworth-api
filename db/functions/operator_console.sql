@@ -161,11 +161,13 @@ comment on function public.admin_list_death_verification_cases(text, timestamptz
 -- affordance TRUTHFUL; it grants nothing. UI affordance is not permission.
 --
 -- ★ WINDOW FACTS ARE FACTS, NOT A COUNTDOWN. `release_eligible_at` and `elapsed` are what an
--- operator needs in order to know whether a release call will be refused. The duration is read LIVE
--- through `challenge_window_duration()`, the same way `authorize_release` reads it, so the console
--- cannot display a deadline the routine disagrees with. `elapsed` uses STRICT `>` for the same
--- reason the routine does: at the exact boundary instant release refuses and the owner's challenge
--- still succeeds, and a console that rounded the other way would offer an action that is refused.
+-- operator needs in order to know whether a release call will be refused. Since Phase 11-OC / Phase
+-- D they are not computed here at all: they are read from `owner_notice_release_authority`, the same
+-- function `authorize_release` consults, so the console cannot display a deadline the routine
+-- disagrees with — not because it copies the routine's arithmetic carefully, but because there is
+-- only one piece of arithmetic. `elapsed` is STRICT `>` inside that authority for the reason the
+-- routine needs it: at the exact boundary instant release refuses and the owner's challenge still
+-- succeeds, and a console that rounded the other way would offer an action that is refused.
 -- Nothing here ranks, scores, urges, estimates, or performs urgency.
 --
 -- ★ DECISION AND REVIEW NOTES ARE INCLUDED, AS A WORKFLOW REQUIREMENT RATHER THAN A CONVENIENCE.
@@ -191,6 +193,7 @@ declare
   v_c        public.death_verification_cases%rowtype;
   v_l        public.estate_lifecycle%rowtype;
   v_duration interval;
+  v_auth     jsonb;
   v_out      jsonb;
 begin
   perform public.admin_require_gate();
@@ -203,6 +206,10 @@ begin
 
   select * into v_l from public.estate_lifecycle l where l.estate_id = v_c.estate_id;
   v_duration := public.challenge_window_duration();
+  -- ★ PHASE D — ONE CONSULTATION, TWO CONSUMERS BELOW. Both `window` and `release_authority` read
+  -- this single verdict, so the dates the console renders and the verdict it acts on can never
+  -- describe different evaluations of the same estate.
+  v_auth := public.owner_notice_release_authority(p_case);
 
   select jsonb_build_object(
     'case', jsonb_build_object(
@@ -240,15 +247,52 @@ begin
       'released_at',                 v_l.released_at,
       'updated_at',                  v_l.updated_at
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE D — THE WINDOW FACTS COME FROM THE RELEASE AUTHORITY, NOT FROM HERE.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- This object used to compute its own clock: `owner_notified_at + duration`, and `elapsed` from
+    -- the same anchor. That was a faithful mirror of the pre-Phase-D door — and being a faithful
+    -- mirror is exactly the problem, because it was a SECOND implementation of the release clock.
+    -- When Phase D re-anchored the door on `notice_accepted_at`, a console still computing from
+    -- `owner_notified_at` would have shown an eligibility date up to several days too early and
+    -- offered AUTHORIZE RELEASE on an estate the server refuses.
+    --
+    -- So both fields are now read from `owner_notice_release_authority` — the SAME function
+    -- `authorize_release` consults — and this projection performs no clock arithmetic of its own.
+    -- The `viewer_is_reviewer_a` discipline applied to a date: the server answers, the client
+    -- renders, and the routine re-checks independently regardless.
+    --
+    -- ★ THE SHAPE IS PRESERVED so an older console keeps parsing. `duration`, `configured`,
+    -- `release_eligible_at` and `elapsed` all still exist and still mean what their names say —
+    -- they are simply now computed once, in the authority, from the acceptance fact.
     'window', jsonb_build_object(
       'duration',            v_duration::text,
       -- NULL duration means NOT CONFIGURED, which means the window never elapses and release
       -- refuses. The console must be able to say that, rather than render a blank date.
       'configured',          v_duration is not null,
-      'release_eligible_at', case when v_l.owner_notified_at is not null and v_duration is not null
-                                  then v_l.owner_notified_at + v_duration end,
-      'elapsed',             coalesce(now() > v_l.owner_notified_at + v_duration, false)
+      -- NULL until there is an acceptance fact to anchor on. A console must render that as "not yet
+      -- eligible", never as a blank it fills in from provenance.
+      'release_eligible_at', v_auth -> 'release_eligible_at',
+      'elapsed',             coalesce((v_auth ->> 'elapsed')::boolean, false)
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE D — RELEASE AUTHORITY IS THE SERVER'S ANSWER, NOT THE CLIENT'S GUESS.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- The console must offer AUTHORIZE RELEASE exactly when `authorize_release` would accept it on
+    -- owner-notice grounds. That rule is not a status list: it turns on the CURRENT case episode, on
+    -- the CURRENT generation, on the acceptance FACT rather than the status, and on a strict clock
+    -- anchored to that fact. A TypeScript mirror of it would be a second policy governing an
+    -- IRREVERSIBLE act — the highest-stakes place in this product for a console and a door to drift.
+    --
+    -- It carries a NAMED refusal code rather than a sentence, so the console owns the operator copy
+    -- and the server owns the policy. No address, no owner identity, on any branch.
+    --
+    -- ★ IT IS NOT A PERMISSION. The two-person rule, the admin gate, the lifecycle state and the
+    -- audit reason are all re-checked inside `authorize_release` every single time. This field makes
+    -- the affordance TRUTHFUL; it grants nothing.
+    'release_authority', v_auth,
     -- ────────────────────────────────────────────────────────────────────────────────────────
     -- ★ PHASE 11-OC — THE EPISODE, NOT JUST A LIST OF ROWS.
     -- ────────────────────────────────────────────────────────────────────────────────────────
@@ -357,4 +401,7 @@ comment on function public.admin_get_death_verification_case(uuid) is
   'window facts, owner-notice dispatch status (NEVER the recipient address) and evidence METADATA. '
   'viewer_is_reviewer_a is derived from auth.uid() INSIDE this definer so the console can state '
   'release ineligibility truthfully — it grants nothing; authorize_release re-checks independently. '
-  'Carries no asset, valuation, beneficiary, designation, grant, document byte or storage path.';
+  'Phase 11-OC/D: `window` and `release_authority` both come from owner_notice_release_authority, '
+  'the SAME verdict the release door consults, so the console performs no notice qualification, no '
+  'episode matching and no clock arithmetic of its own. Carries no asset, valuation, beneficiary, '
+  'designation, grant, document byte or storage path.';
