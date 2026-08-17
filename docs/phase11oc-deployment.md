@@ -204,12 +204,17 @@ before that class can ever be remediated.
 
 ## Not implemented, and deliberately so
 
-**Phase C** (`reissue_owner_safety_notice`) and **Phase D** (the release-door cutover, the
-`release_eligible_at()` derivation and the clock re-anchor) are specified in
-`docs/phase11oc-release-acceptance-authority.md` §5–§8 but are **not built**.
+~~**Phase C** (`reissue_owner_safety_notice`)~~ **is now BUILT** — see
+`docs/phase11oc-phase-c-owner-notice-reissue.md`. It is merged and **NOT DEPLOYED**; the artifact is
+`db/bundles/owner_notice_reissue_bundle.sql` and it is pasted after the Phase A bundle.
 
-Phase B is now complete, so the ordering constraint is no longer "wait for the census" — it is §B.6:
-**Phase C must precede Phase D**, on operability grounds rather than on today's legacy count.
+**Phase D** (the release-door cutover, the `release_eligible_at()` derivation and the clock re-anchor)
+is specified in `docs/phase11oc-release-acceptance-authority.md` §5–§8 but is **not built**.
+
+Phase B is complete and **Phase C is now built**, so the ordering constraint §B.6 stated —
+**Phase C must precede Phase D**, on operability grounds rather than on today's legacy count — is
+satisfied in the repository. It is NOT yet satisfied in production: Phase C must also be DEPLOYED
+before Phase D is, because a cutover that lands ahead of its own remedy is the state §B.6 forbids.
 
 **R13 remains PENDING.** Phase D will break the historical self-checks in migrations **0056** (two
 guards) and **0057** (one), plus four mutation fixtures — seven pinning sites, enumerated in

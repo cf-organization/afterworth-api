@@ -189,6 +189,93 @@ describe("owner notice drain — the happy path", () => {
     expect(key).not.toContain(ESTATE);
     expect(key).not.toContain(OWNER_ADDRESS);
   });
+
+  /**
+   * ★ PHASE 11-OC / PHASE C — THE DISTINCTION THE IDEMPOTENCY DOMAIN ENCODES, AND WHY NO CODE
+   * CHANGE WAS REQUIRED TO GET IT.
+   *
+   *     ACCIDENTAL RETRY   → same row, same id, SAME key      → the provider no-ops a repeat
+   *     DELIBERATE REISSUE → new row, new id,  NEW key        → a genuinely new message
+   *
+   * `reissue_owner_safety_notice` APPENDS a generation rather than requeuing the terminal row, so the
+   * successor has its own primary key and therefore its own idempotency domain — for free, as a
+   * property of the id rather than of a flag anybody remembers to set. The two assertions below pin
+   * both halves, because a "fix" that requeued the old row would silently collapse them into one and
+   * the second warning would never leave the building.
+   *
+   * ★ AND THIS IS AT-LEAST-ONCE, NOT EXACTLY-ONCE. The provider's dedupe retention is a vendor
+   * property this repository does not pin; the key makes a repeat CHEAP to ignore, never impossible
+   * to deliver twice.
+   */
+  it("gives a DELIBERATE re-notice its own idempotency domain, because it is a new row", async () => {
+    const gen1 = makeRow({ id: "44444444-4444-4444-8444-444444444444" });
+    const gen2 = makeRow({
+      id: "55555555-5555-4555-8555-555555555555",
+      notice_kind: "death_process.window_renotice",
+    });
+
+    const a = provider(accepted);
+    await claimAndDeliverOwnerNotices(makeFakeAdmin([gen1]).admin, {}, { send: a.send });
+    const b = provider(accepted);
+    await claimAndDeliverOwnerNotices(makeFakeAdmin([gen2]).admin, {}, { send: b.send });
+
+    expect(String(a.sent[0].idempotencyKey)).toBe(`afterworth/owner-notice/${gen1.id}`);
+    expect(String(b.sent[0].idempotencyKey)).toBe(`afterworth/owner-notice/${gen2.id}`);
+    expect(a.sent[0].idempotencyKey).not.toBe(b.sent[0].idempotencyKey);
+    // The key is derived from the ROW, never from the kind or a generation counter — so it cannot
+    // drift apart from the identity the database actually assigns.
+    expect(String(b.sent[0].idempotencyKey)).not.toContain("renotice");
+  });
+
+  /**
+   * ★ THE SECOND WARNING SAYS THE SAME THING AS THE FIRST, AND THAT IS A PRODUCT DECISION.
+   *
+   * `renderOwnerNoticeEmail` takes ONLY the link — no kind, no generation, no attempt count, no
+   * failure class — so it is structurally incapable of telling a recipient "this is our second
+   * attempt to reach you". Internal state is not user copy, and on this channel the rule is sharper
+   * than usual: the recipient may be the target of a false claim, and narrating our delivery troubles
+   * would spend their attention on our problem instead of theirs.
+   *
+   * Asserted by BYTE EQUALITY across the two kinds rather than by reading the template, because the
+   * claim is about what the drain sends, not about what the renderer's signature looks like.
+   */
+  it("sends byte-identical copy for a re-notice and for the initial notice", async () => {
+    const a = provider(accepted);
+    await claimAndDeliverOwnerNotices(
+      makeFakeAdmin([makeRow()]).admin, {}, { send: a.send });
+    const b = provider(accepted);
+    await claimAndDeliverOwnerNotices(
+      makeFakeAdmin([makeRow({ notice_kind: "death_process.window_renotice" })]).admin,
+      {}, { send: b.send });
+
+    expect(b.sent[0].subject).toBe(a.sent[0].subject);
+    expect(b.sent[0].html).toBe(a.sent[0].html);
+    expect(b.sent[0].text).toBe(a.sent[0].text);
+    // Nothing in the message names the internal vocabulary, on either kind.
+    for (const field of [b.sent[0].subject, b.sent[0].html, b.sent[0].text]) {
+      expect(String(field)).not.toContain("renotice");
+      expect(String(field)).not.toContain("generation");
+      expect(String(field)).not.toContain("failedPermanent");
+    }
+  });
+
+  /**
+   * ★ THE DRAIN IS KIND-AGNOSTIC BY CONSTRUCTION, AND THAT IS WHY PHASE C NEEDED NO WORKER CHANGE.
+   * `claim_owner_notices` applies no kind filter and this module branches on none, so a re-notice is
+   * claimed, sent and settled by exactly the code path the initial notice uses. A kind check here
+   * would be a second vocabulary to keep in step with the SQL one.
+   */
+  it("claims and settles a re-notice through the identical path", async () => {
+    const rows = [makeRow({ notice_kind: "death_process.window_renotice" })];
+    const { admin, calls } = makeFakeAdmin(rows);
+    const counters = await claimAndDeliverOwnerNotices(admin, {}, { send: provider(accepted).send });
+
+    expect(counters.claimed).toBe(1);
+    expect(counters.dispatched).toBe(1);
+    expect(rows[0].status).toBe("dispatched");
+    // No kind was passed to the claim RPC — the server decides what is claimable.
+    expect(Object.keys(calls[0].args)).toEqual(["p_max"]);
+  });
 });
 
 describe("owner notice drain — an ambiguous send is never turned into two emails", () => {

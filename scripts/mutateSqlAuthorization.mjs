@@ -1874,7 +1874,7 @@ const MUTATIONS = Object.freeze([
       + 'a protective notice REMOVES release authority and hands an operator a suppression lever. '
       + 'Killed by §10.6 direction 1.',
     file: 'db/functions/outbox_safety.sql',
-    from: "           exists (\n             select 1 from public.owner_notice_outbox a\n              where a.case_id = cc.case_id\n                and a.channel = 'email'\n                and a.notice_kind = 'death_process.window_opened'\n                and a.notice_accepted_at is not null\n           ) as accepted_any,",
+    from: "           exists (\n             select 1 from public.owner_notice_outbox a\n              where a.case_id = cc.case_id\n                and a.channel = 'email'\n                and a.notice_kind = any (public.owner_notice_episode_kinds())\n                and a.notice_accepted_at is not null\n           ) as accepted_any,",
     to: "           (o.notice_accepted_at is not null) as accepted_any,",
   },
   {
@@ -1884,8 +1884,8 @@ const MUTATIONS = Object.freeze([
       + 'one — reproducing, inside the measuring device, the exact defect Phase D exists to close. '
       + 'An operator would then read a rollout as safe because the census agreed with the bug.',
     file: 'db/functions/outbox_safety.sql',
-    from: "              where a.case_id = cc.case_id\n                and a.channel = 'email'\n                and a.notice_kind = 'death_process.window_opened'\n                and a.notice_accepted_at is not null",
-    to: "              where a.estate_id = cc.estate_id\n                and a.channel = 'email'\n                and a.notice_kind = 'death_process.window_opened'\n                and a.notice_accepted_at is not null",
+    from: "              where a.case_id = cc.case_id\n                and a.channel = 'email'\n                and a.notice_kind = any (public.owner_notice_episode_kinds())\n                and a.notice_accepted_at is not null",
+    to: "              where a.estate_id = cc.estate_id\n                and a.channel = 'email'\n                and a.notice_kind = any (public.owner_notice_episode_kinds())\n                and a.notice_accepted_at is not null",
   },
   {
     id: 'p11oc-episode-wall-removed',
@@ -1897,16 +1897,18 @@ const MUTATIONS = Object.freeze([
     from: "  if new.case_id is null then\n    raise exception 'owner_notice_case_required' using errcode = 'P0001';\n  end if;",
     to: "  if false then\n    raise exception 'owner_notice_case_required' using errcode = 'P0001';\n  end if;",
   },
-  {
-    id: 'p11oc-one-current-generation-not-enforced',
-    why: 'THE PARTIAL UNIQUE INDEX DROPPED, so nothing structurally identifies the active generation '
-      + 'and the release door would have to trust a max() the writer merely promises to maintain. A '
-      + 'concurrent double-reissue then produces two rows that both believe they are current. §10.4 '
-      + 'must object.',
-    file: 'db/migrations/0058_20260817_owner_notice_acceptance_episode.sql',
-    from: "create unique index if not exists owner_notice_outbox_one_current_per_case_idx\n  on public.owner_notice_outbox (case_id, channel, notice_kind)\n  where superseded_by is null;",
-    to: "create index if not exists owner_notice_outbox_one_current_per_case_idx\n  on public.owner_notice_outbox (case_id, channel, notice_kind)\n  where superseded_by is null;",
-  },
+  /*
+   * ★ THE PHASE A ENTRY `p11oc-one-current-generation-not-enforced` MOVED TO `p11occ-*` BELOW, AND THE
+   * MOVE IS RECORDED RATHER THAN SILENT. Migration 0059 DROPS the per-KIND index 0058 creates and
+   * replaces it with a per-EPISODE one, so a mutation of 0058's `create unique index` can no longer
+   * reach the database at all: the mutated index is dropped moments later and the suite passes. That
+   * verdict would be NOT_DETECTED, and it would send someone to rewrite tests that are fine.
+   *
+   * The invariant did not weaken. It got STRONGER — `(case_id, channel)` instead of
+   * `(case_id, channel, notice_kind)` — and its mutation follows it to the artifact that owns it.
+   * `p11occ-one-current-per-episode-not-enforced` and `p11occ-episode-index-keeps-the-kind` together
+   * cover everything the retired entry covered, plus the cross-kind direction it could not see.
+   */
   {
     id: 'p11oc-superseded-fk-not-deferrable',
     why: 'THE ORDERING THAT MAKES SUPERSESSION WRITABLE AT ALL, REMOVED. Measured against Postgres: '
@@ -1928,6 +1930,313 @@ const MUTATIONS = Object.freeze([
     file: 'db/functions/release_safety.sql',
     from: "     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'",
     to: "     where o.estate_id = p_estate and o.channel = 'email' and o.notice_accepted_at is not null",
+  },
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // PHASE 11-OC / PHASE C — the operator re-notice
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // ★ EVERY ONE OF THESE IS AIMED AT A RUNTIME FIXTURE, NOT AT A BUILD CONTROL. The Phase C bundle
+  // deliberately carries no needle for the eligibility ladder, the lock order, the successor's reset
+  // fields, the audit, or the episode kind SET — precisely so these mutations reach Postgres rather
+  // than being refused by the builder. A builder that rejects a mutated input converts DETECTED into
+  // HARNESS_FAILURE, which this programme has now done to itself seven times.
+  //
+  // ★ ONE HONEST GAP, STATED RATHER THAN PAPERED OVER. There is no mutation removing a single
+  // `for update`. The door takes TWO locks — the case row (episode identity) and the current
+  // generation — and either alone serializes two operators: with the case lock gone the loser parks
+  // on the notice row, and with the notice lock gone it parks on the case row. Both paths end in the
+  // same named refusal. A single-lock mutation is therefore genuinely harmless, and a matrix entry
+  // that can only ever report NOT_DETECTED would be a false finding about the suite rather than a
+  // real one about the code. The redundancy is deliberate; §11.13B proves the blocking by executing
+  // two real sessions, and `p11occ-supersession-skipped` proves the index catches the race underneath.
+  {
+    id: 'p11occ-permit-queued',
+    why: 'A QUEUED notice re-noticed. The ordinary drain still owns that row and is about to send it; '
+      + 'appending a generation retires a live warning that was on its way out, and the owner ends up '
+      + 'behind one queue position instead of ahead of it. §11.5 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_row.status = 'queued' then\n    v_refusal := 'notice_still_queued';        -- the ordinary drain still owns it",
+    to: "  elsif v_row.status = 'queued' then\n    v_reason := 'prior_failed_permanent';",
+  },
+  {
+    id: 'p11occ-permit-processing',
+    why: 'A PROCESSING notice re-noticed. A worker may be mid-send; OB-1 visibility/reclaim owns that '
+      + 'row until the timeout. Retiring it while it is in flight is how the same message gets sent '
+      + 'twice under two different idempotency keys. §11.5 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_row.status = 'processing' then\n    v_refusal := 'notice_still_processing';    -- OB-1 visibility/reclaim still owns it",
+    to: "  elsif v_row.status = 'processing' then\n    v_reason := 'prior_failed_permanent';",
+  },
+  {
+    id: 'p11occ-permit-accepted-dispatched',
+    why: 'A notice the provider ACCEPTED re-noticed. There is nothing to remedy: the acceptance fact '
+      + 'exists and Phase D would already admit this estate. What the mutation buys is a second email '
+      + 'to a living person about their own death process, on an operator button with no upper bound. '
+      + '§11.5 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_row.status = 'dispatched' and v_row.notice_accepted_at is not null then\n    v_refusal := 'notice_already_accepted';    -- provider acceptance is established; nothing to remedy",
+    to: "  elsif v_row.status = 'dispatched' and v_row.notice_accepted_at is not null then\n    v_reason := 'legacy_no_acceptance_record';",
+  },
+  {
+    id: 'p11occ-legacy-dispatched-refused',
+    why: 'THE LOAD-BEARING ELIGIBILITY, DELETED. `dispatched` with a NULL acceptance stamp is every '
+      + 'pre-Phase-A row, and it is exactly the population Phase D blocks. Refusing it on the strength '
+      + 'of its STATUS leaves that class with no route to a remedy at all — which is the whole reason '
+      + 'Phase C precedes Phase D rather than following it. §11.1 case C3 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "    v_reason := 'legacy_no_acceptance_record';",
+    to: "    v_refusal := 'notice_not_reissuable';",
+  },
+  {
+    id: 'p11occ-permit-released',
+    why: 'RE-NOTICE FROM `released`. The disclosure has already happened and cannot be undone; mailing '
+      + 'the owner a warning about a process that concluded is a false alarm they can do nothing '
+      + 'about, sent by the product that already released their estate. §11.6 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_state not in ('owner_notification_dispatched', 'challenge_window') then",
+    to: "  elsif v_state not in ('owner_notification_dispatched', 'challenge_window', 'released') then",
+  },
+  {
+    id: 'p11occ-permit-challenge-halted',
+    why: 'RE-NOTICE FROM `challenge_halted`. The owner has ALREADY halted this process — they acted, '
+      + 'and the halt is terminal. Sending them another "a release process is waiting" email says the '
+      + 'thing they stopped is still running. §11.6 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_state not in ('owner_notification_dispatched', 'challenge_window') then",
+    to: "  elsif v_state not in ('owner_notification_dispatched', 'challenge_window', 'challenge_halted') then",
+  },
+  {
+    id: 'p11occ-caller-case-overrides-canonical',
+    why: 'THE CALLER’S CASE TRUSTED AS THE EPISODE. The canonical current case is still resolved and '
+      + 'then simply not compared, so an operator can append a generation to an ABANDONED death '
+      + 'process — and the notice it queues warns an owner about a case nobody is running, while the '
+      + 'case that IS running stays un-remediated. §11.7 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  elsif v_canonical <> p_case then",
+    to: "  elsif false then",
+  },
+  {
+    id: 'p11occ-episode-authority-is-estate',
+    why: 'ESTATE SCOPE INSTEAD OF CASE SCOPE for the current generation — the defect one level up from '
+      + 'OB-2, reproduced inside the remedy. A case with no notice of its own would be "remediated" by '
+      + 'appending to a DIFFERENT case’s episode on the same estate, and the release predicate would '
+      + 'then read a generation belonging to a process that was abandoned. §11.8 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  select * into v_row\n    from public.owner_notice_outbox o\n   where o.case_id = p_case\n     and o.channel = 'email'",
+    to: "  select * into v_row\n    from public.owner_notice_outbox o\n   where o.estate_id = v_c.estate_id\n     and o.channel = 'email'",
+  },
+  {
+    id: 'p11occ-reads-a-retired-generation',
+    why: 'THE DOOR READS A SUPERSEDED ROW. Reissuing from a retired generation would branch the '
+      + 'episode: the generation number would be computed from a row that is not live, and the '
+      + 'supersession chain would fork. §11.1 must object — the assessment can no longer find the '
+      + 'current generation at all.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "     and o.notice_kind = any (public.owner_notice_episode_kinds())\n     and o.superseded_by is null\n   limit 1;",
+    to: "     and o.notice_kind = any (public.owner_notice_episode_kinds())\n     and o.superseded_by is not null\n   limit 1;",
+  },
+  {
+    id: 'p11occ-successor-reuses-the-prior-row-id',
+    why: 'THE SUCCESSOR TAKES THE PREDECESSOR’S ID. `lib/ownerNotices/drain.ts` builds the provider '
+      + 'Idempotency-Key from the ROW id, so a re-notice under the old id would replay the FIRST '
+      + 'message’s key and the provider would no-op it — the second warning would never leave the '
+      + 'building while the console reported success. §11.1 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  v_new := gen_random_uuid();",
+    to: "  v_new := v_prior.id;",
+  },
+  {
+    id: 'p11occ-supersession-skipped',
+    why: 'THE PREDECESSOR IS NOT RETIRED. Two rows would then satisfy `superseded_by is null` for one '
+      + 'episode and nothing would say which the release door should read. This is also the proof '
+      + 'that the per-episode unique index is a WALL and not decoration: with the retirement gone the '
+      + 'INSERT must be refused by the database. §11.1 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  update public.owner_notice_outbox\n     set superseded_by = v_new\n   where id = v_prior.id;",
+    to: "  update public.owner_notice_outbox\n     set superseded_by = superseded_by\n   where id = v_prior.id;",
+  },
+  {
+    id: 'p11occ-generation-does-not-increment',
+    why: 'TWO GENERATIONS SHARING A NUMBER. `generation` is how an operator and an investigator order '
+      + 'the episode; a repeat makes the chain unreadable and makes "which attempt reached the owner" '
+      + 'unanswerable. §11.1 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  v_gen := v_prior.generation + 1;",
+    to: "  v_gen := v_prior.generation;",
+  },
+  {
+    id: 'p11occ-admin-gate-skipped',
+    why: 'THE GATE DELETED FROM THE DOOR. Any signed-in client — the estate OWNER, the EXECUTOR who '
+      + 'initiated the death process, any stranger — could queue mail to a living owner about their '
+      + 'own death. The executor case is the sharpest: they are the party a false claim is made BY, '
+      + 'and this is the control that warns the owner about them. §11.10 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  perform public.admin_require_gate();\n  v_uid := auth.uid();",
+    to: "  v_uid := auth.uid();",
+  },
+  {
+    id: 'p11occ-freshness-gate-widened',
+    why: 'THE 15-MINUTE FRESHNESS BOUND WIDENED TO ~3 YEARS, in the gate every admin door shares. A '
+      + 'forgotten open tab, or a stolen session token, becomes a writer to a safety queue. Aimed at '
+      + 'the shared gate because Phase C has no freshness code of its own — which is the point: the '
+      + 'door inherits it, and §11.10’s stale-AAL2 assertion is what proves the inheritance is live.',
+    file: 'db/functions/admin_require_gate.sql',
+    from: "coalesce((auth.jwt() ->> 'iat')::bigint, 0) > 900",
+    to: "coalesce((auth.jwt() ->> 'iat')::bigint, 0) > 90000000",
+  },
+  {
+    id: 'p11occ-recipient-from-user-editable-profile',
+    why: 'THE ADDRESS RESOLVED FROM `profiles` INSTEAD OF `auth.users`. `profiles.email` is '
+      + 'user-editable in principle; `auth.users.email` is the address the account authenticates with, '
+      + 'which a claimant cannot repoint. This is the closest a mutation can come to "the caller '
+      + 'chooses the recipient" — the door has no recipient PARAMETER at all, and §11.0(b) pins the '
+      + 'signature so adding one fails there. §11.1 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  select u.email into v_recipient from auth.users u where u.id = v_owner;",
+    to: "  select p.email into v_recipient from public.profiles p where p.id = v_owner;",
+  },
+  {
+    id: 'p11occ-blank-reason-accepted',
+    why: 'THE REASON REQUIREMENT DELETED. The audit row is the only thing that lets somebody '
+      + 'reconstructing a disputed release tell a legitimate remediation from an operator mailing a '
+      + 'living person repeatedly, and a blank reason makes every such row identical. §11.9 must '
+      + 'object on the empty string, on whitespace, and on NULL.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  if p_reason is null or p_reason !~ '[^[:space:]]' then",
+    to: "  if false then",
+  },
+  {
+    id: 'p11occ-audit-omitted',
+    why: 'AN EARLY RETURN BEFORE THE AUDIT — the shape a refactor actually produces. The row is '
+      + 'written, the console reports success, and NOTHING records who queued a safety message or '
+      + 'why. §11.4 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  -- ★ THE AUDIT IS A DISTINCT ACTION, NEVER `owner_notice_dispatched`.",
+    to: "  return jsonb_build_object('status', 'queued', 'notice_id', v_new, 'generation', v_gen,\n"
+      + "    'notice_kind', public.owner_notice_reissue_kind(), 'notice_accepted_at', null,\n"
+      + "    'reissue_reason', v_reason, 'prior_notice_id', v_prior.id,\n"
+      + "    'prior_generation', v_prior.generation, 'prior_status', v_prior.status);\n"
+      + "  -- ★ THE AUDIT IS A DISTINCT ACTION, NEVER `owner_notice_dispatched`.",
+  },
+  {
+    id: 'p11occ-audit-reuses-the-dispatch-action',
+    why: 'THE REISSUE RECORDED AS A DISPATCH. `owner_notice_dispatched` means "an operator opened the '
+      + 'window and started the challenge clock"; a reissue did neither. The trail would assert a '
+      + 'lifecycle transition that never happened, and anyone counting dispatches would count this '
+      + 'one. §11.4 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "'death_process.owner_notice_reissued', 'owner_notice_outbox', v_new,",
+    to: "'death_process.owner_notice_dispatched', 'owner_notice_outbox', v_new,",
+  },
+  {
+    id: 'p11occ-audit-points-at-the-wrong-generation',
+    why: 'THE AUDIT NAMES THE PREDECESSOR AS THE NEW ROW. The supersession chain then cannot be '
+      + 'reconstructed from the audit alone, which is the one artifact guaranteed to outlive the '
+      + 'outbox rows a purge will eventually remove. §11.4 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "            'new_notice_id',      v_new,",
+    to: "            'new_notice_id',      v_prior.id,",
+  },
+  {
+    id: 'p11occ-acceptance-copied-into-the-new-row',
+    why: 'THE MOST DANGEROUS EDIT IN THE PHASE. A successor born with an acceptance timestamp means '
+      + 'pressing an operator button MANUFACTURES the exact fact Phase D makes release-authoritative '
+      + '— a console control that unblocks a release without any provider ever accepting anything. '
+      + '§11.2 and §11.3 must both object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "     'queued', now(), 0, null, null, null, null, null,",
+    to: "     'queued', now(), 0, null, null, null, null, now(),",
+  },
+  {
+    id: 'p11occ-new-row-starts-dispatched',
+    why: 'A NEW WARNING BORN `dispatched`. The drain never claims it, so the message is never sent, '
+      + 'and every surface reports the owner was reached. A successful reissue means NEW WARNING '
+      + 'QUEUED and nothing stronger. §11.2 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "     'queued', now(), 0, null, null, null, null, null,",
+    to: "     'dispatched', now(), 0, null, null, null, null, null,",
+  },
+  {
+    id: 'p11occ-predecessor-forensics-overwritten',
+    why: 'THE RETIRED ROW REWRITTEN. Its terminal status and failure_class are the EVIDENCE that the '
+      + 'reissue was warranted; erasing them leaves an episode that looks like it was re-noticed for '
+      + 'no reason, which is exactly what an operator acting improperly would want it to look like. '
+      + '§11.2 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "     set superseded_by = v_new\n   where id = v_prior.id;",
+    to: "     set superseded_by = v_new, status = 'cancelled', failure_class = null\n   where id = v_prior.id;",
+  },
+  {
+    id: 'p11occ-renotice-keeps-the-initial-kind',
+    why: 'A SECOND WARNING RECORDED AS THE INITIAL WINDOW-OPENING EVENT. `window_opened` names a '
+      + 'lifecycle transition that happened ONCE and stamped owner_notified_at; a second row carrying '
+      + 'it makes the outbox assert the window opened twice, in the table an investigator reads to '
+      + 'reconstruct what the owner was told. §11.0 must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  select 'death_process.window_renotice'::text;",
+    to: "  select 'death_process.window_opened'::text;",
+  },
+  {
+    id: 'p11occ-door-does-not-consult-the-shared-assessment',
+    why: 'THE DOOR STOPS ASKING THE FUNCTION THE CONSOLE RENDERS. This is the console/server '
+      + 'divergence written on the server side: the projection would keep showing a correct refusal '
+      + 'while the door accepted anyway. Every §11 refusal fixture must object — the assessment and '
+      + 'the door disagree in the dangerous direction.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  v_verdict := public.owner_notice_reissue_assessment(p_case);",
+    to: "  v_verdict := jsonb_build_object('eligible', true, 'reissue_reason', 'prior_failed_permanent');",
+  },
+  {
+    id: 'p11occ-unreachable-owner-not-checked',
+    why: 'A ROW MANUFACTURED FOR AN OWNER WITH NO ADDRESS, to make the console feel like it worked. '
+      + 'The next drain claims it, fails, and settles failedPermanent — leaving the episode with a '
+      + 'SECOND dead generation and the evidence of the first one retired, i.e. strictly worse than '
+      + 'before the button was pressed. §11.8b must object.',
+    file: 'db/functions/owner_notice_reissue.sql',
+    from: "  if v_refusal is null and not v_resolvable then",
+    to: "  if false then",
+  },
+  {
+    id: 'p11occ-readiness-blind-to-the-renotice-kind',
+    why: 'THE CENSUS REVERTED TO THE SINGLE PHASE A `notice_kind` LITERAL, which is the edit that '
+      + 'looks like removing a needless indirection. It makes the instrument blind to the remedy: a '
+      + 're-noticed estate whose provider ACCEPTED would still report as refused, however many times '
+      + 'it was re-noticed, and Phase C would be inert inside the very census built to prove it '
+      + 'works. §11.3 reading 3 must object.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "                and a.notice_kind = any (public.owner_notice_episode_kinds())",
+    to: "                and a.notice_kind = 'death_process.window_opened'",
+  },
+  {
+    id: 'p11occ-readiness-current-generation-blind-to-renotice',
+    why: 'THE SAME LITERAL IN THE CURRENT-GENERATION JOIN. A remediated estate reports '
+      + '`no_current_notice` — an estate that was just re-noticed described as one that was never '
+      + 'dispatched, which would send an operator to dispatch a window that is already open. §11.3 '
+      + 'reading 2 must object.',
+    file: 'db/functions/outbox_safety.sql',
+    from: "       and o.notice_kind = any (public.owner_notice_episode_kinds())",
+    to: "       and o.notice_kind = 'death_process.window_opened'",
+  },
+  {
+    id: 'p11occ-one-current-per-episode-not-enforced',
+    why: 'THE PER-EPISODE UNIQUE INDEX MADE ORDINARY. Nothing then structurally identifies the active '
+      + 'generation, so the release door would have to trust a max() the writer merely promises to '
+      + 'maintain, and a concurrent double-reissue produces two rows that both believe they are '
+      + 'current. Inherits the retired `p11oc-one-current-generation-not-enforced`. §11.12 must object.',
+    file: 'db/migrations/0059_20260817_owner_notice_reissue.sql',
+    from: "create unique index if not exists owner_notice_outbox_one_current_per_episode_idx\n  on public.owner_notice_outbox (case_id, channel)\n  where superseded_by is null;",
+    to: "create index if not exists owner_notice_outbox_one_current_per_episode_idx\n  on public.owner_notice_outbox (case_id, channel)\n  where superseded_by is null;",
+  },
+  {
+    id: 'p11occ-episode-index-keeps-the-kind',
+    why: 'THE PHASE A INDEX SHAPE RESTORED — and it reads like tightening the key rather than '
+      + 'loosening it. With `notice_kind` back in the index an episode may hold one CURRENT '
+      + '`window_opened` row AND one CURRENT `window_renotice` row: two live generations, with nothing '
+      + 'to say which the release door should read. This is the exact reason migration 0059 replaced '
+      + 'it, and §11.12’s cross-kind probe must object.',
+    file: 'db/migrations/0059_20260817_owner_notice_reissue.sql',
+    from: "create unique index if not exists owner_notice_outbox_one_current_per_episode_idx\n  on public.owner_notice_outbox (case_id, channel)\n  where superseded_by is null;",
+    to: "create unique index if not exists owner_notice_outbox_one_current_per_episode_idx\n  on public.owner_notice_outbox (case_id, channel, notice_kind)\n  where superseded_by is null;",
   },
 ]);
 

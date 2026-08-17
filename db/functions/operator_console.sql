@@ -249,6 +249,25 @@ begin
                                   then v_l.owner_notified_at + v_duration end,
       'elapsed',             coalesce(now() > v_l.owner_notified_at + v_duration, false)
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC — THE EPISODE, NOT JUST A LIST OF ROWS.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- Phase A gave a notice an episode (`case_id`), a position in it (`generation`), a retirement
+    -- link (`superseded_by`) and the one fact release turns on (`notice_accepted_at`). Without those
+    -- four the console can render only a status — and a status is precisely what this phase proved is
+    -- not enough: `dispatched` means "provider accepted" for a row written after Phase A and means
+    -- "we do not know" for a row written before it. A console that labelled both the same way would
+    -- state, on the one screen where it matters, that a living owner was reached when nobody knows.
+    --
+    -- `is_current` is projected rather than left to the client to derive from `superseded_by`,
+    -- because a retired generation and a live one must never be shown with the same weight, and a
+    -- null-check is exactly the kind of derivation a UI gets wrong once and then keeps.
+    --
+    -- ★ STILL NO ADDRESS. `recipient` is NOT selected, here or anywhere in this file. An operator's
+    -- workflow never requires a living owner's address, and a projection that never carries it cannot
+    -- leak it through a log, a screenshot, or a future console feature. Every field added here is a
+    -- workflow fact about a queue row; none of them is contact detail.
     'owner_notice', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id',            o.id,
@@ -258,14 +277,39 @@ begin
                'requested_at',  o.requested_at,
                'dispatched_at', o.dispatched_at,
                'attempts',      o.attempts,
-               'failure_class', o.failure_class
-               -- `recipient` is NOT selected, here or anywhere in this file. An operator's workflow
-               -- never requires a living owner's address, and a projection that never carries it
-               -- cannot leak it through a log, a screenshot, or a future console feature.
+               'failure_class', o.failure_class,
+               -- The episode this row belongs to. NULL on a pre-Phase-A row, which is the honest
+               -- answer: those belong to no provable episode and are never guessed into one.
+               'case_id',            o.case_id,
+               'generation',         o.generation,
+               'superseded_by',      o.superseded_by,
+               'is_current',         o.superseded_by is null,
+               -- THE FACT. NULL is a real answer and the console must render it as one.
+               'notice_accepted_at', o.notice_accepted_at,
+               'claimed_at',         o.claimed_at
              ) order by o.requested_at desc)
         from public.owner_notice_outbox o
        where o.estate_id = v_c.estate_id
     ), '[]'::jsonb),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE C — ACTION AVAILABILITY IS THE SERVER'S ANSWER, NOT THE CLIENT'S GUESS.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- The console must offer "Re-send owner safety notice" exactly when
+    -- `reissue_owner_safety_notice` would accept it. The eligibility rule is not a status list — it
+    -- turns on the lifecycle state, on whether this case is still the CURRENT episode, on the
+    -- acceptance FACT (not the status), and on whether an address resolves. A TypeScript mirror of
+    -- that would be a second policy, and the first time the two drifted an operator would either be
+    -- offered a control the door refuses or denied one an estate needs.
+    --
+    -- So the verdict comes from `owner_notice_reissue_assessment`, the SAME function the door
+    -- consults, and the console renders it. This is the `viewer_is_reviewer_a` discipline applied to
+    -- an action: the server answers, the client displays, and the routine re-checks independently
+    -- regardless. UI affordance is not permission — this grants nothing.
+    --
+    -- It carries a NAMED refusal code rather than a sentence, so the console owns the operator copy
+    -- and the server owns the policy. Counts and codes only; no address on any branch.
+    'owner_notice_reissue', public.owner_notice_reissue_assessment(v_c.id),
     'evidence', coalesce((
       select jsonb_agg(jsonb_build_object(
                'evidence_id',   x.id,

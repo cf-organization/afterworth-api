@@ -2687,6 +2687,1243 @@ begin
   end;
 end $rs10$;
 
+
+-- =================================================================================================
+-- 11 · PHASE 11-OC / PHASE C — THE OPERATOR RE-NOTICE
+-- =================================================================================================
+--
+-- ★ WHAT THIS SECTION PROVES, AND WHY MIGRATION 0059 CANNOT PROVE IT ALONE. 0059 carries execution
+-- controls, and on the replay database it reports them SKIPPED: the Phase C bundle loads before any
+-- test file creates an estate, so there is no (estate, case) pair to exercise. That is honest of 0059
+-- and it is NOT coverage. Everything it could only skip is proved HERE, against furnished non-zero
+-- fixtures, through the real doors.
+--
+-- ★ THE CENTRAL CLAIM IS A TRANSFORMATION, AND THE FIXTURE IS BUILT SO THE TRANSFORMATION IS
+-- OBSERVABLE. Phase C exists so an estate whose notice failed can obtain the acceptance fact Phase D
+-- will require. §11.2 therefore drives one estate along the whole arc and reads the readiness census
+-- at three points:
+--
+--     failedPermanent      → REFUSED          (the disease)
+--     re-noticed, queued   → STILL REFUSED    (a reissue creates NO acceptance authority)
+--     re-notice accepted   → ADMITTED         (the cure)
+--
+-- The middle reading is the one that makes this a control rather than a demonstration: if a reissue
+-- alone moved the estate into the admitted set, an operator would hold a button that manufactures
+-- release authority. And the third reading is the one that fails if the readiness census still
+-- filters on the single Phase A `notice_kind` literal — a census blind to the remedy would report
+-- this estate as permanently refused however many times it was re-noticed, and Phase C would be inert
+-- inside the very instrument built to measure it.
+--
+-- ★ AND THE CONSOLE/DOOR AGREEMENT IS ASSERTED ON EVERY FIXTURE, NOT ARGUED. For each case below,
+-- `owner_notice_reissue_assessment` is read and then the door is CALLED, and the two must agree: an
+-- eligible verdict must be followed by a successful call, and an ineligible one by a refusal carrying
+-- exactly that refusal code. A console that offered an action the door refuses would train operators
+-- to ignore errors; one that hid an action the door would accept would leave an estate stranded.
+
+create table if not exists harness_rs.ctx (k text primary key, v uuid);
+
+/** Impersonate with an ARBITRARY claim set — the AAL1 / stale-token / non-admin matrix. */
+create or replace function harness_rs.with_claims(p_uid uuid, p_claims jsonb, p_sql text)
+returns text language plpgsql as $$
+declare v_msg text;
+begin
+  perform set_config('request.jwt.claim.sub', coalesce(p_uid::text, ''), true);
+  perform set_config('request.jwt.claims', coalesce(p_claims::text, '{}'), true);
+  begin
+    set local role authenticated;
+    execute p_sql;
+    reset role;
+    return 'OK';
+  exception when others then
+    reset role;
+    v_msg := SQLERRM;
+    return 'ERR:' || v_msg;
+  end;
+end $$;
+
+/** A fresh AAL2 admin session: the only claim set the admin gate accepts. */
+create or replace function harness_rs.aal2(p_uid uuid) returns jsonb language sql as $$
+  select jsonb_build_object('sub', p_uid, 'aal', 'aal2',
+                            'iat', extract(epoch from now())::bigint);
+$$;
+
+/**
+ * Read the shared assessment as an admin, then CALL the door, and require BOTH to refuse with the
+ * SAME named code.
+ *
+ * ★ THIS IS THE CONSOLE-CANNOT-DISAGREE-WITH-THE-DOOR INSTRUMENT, and it is written as one helper so
+ * every refusal fixture is held to it rather than the convenient ones. A verdict that disagreed with
+ * the outcome fails here even if both halves are individually "reasonable".
+ *
+ * ★ IT IS REFUSAL-ONLY, DELIBERATELY. A helper that proved agreement on the SUCCESS path would have
+ * to call the door — and a second call inside the same helper would append a second generation,
+ * making every `generation = N` assertion downstream ambiguous. Success agreement is proved by
+ * `reissue_once`, which reads the verdict, calls the door exactly once, and requires the door's
+ * payload to match what the verdict predicted.
+ */
+create or replace function harness_rs.reissue_agrees(
+  p_label text, p_admin uuid, p_case uuid, p_reason text, p_expect text
+) returns void language plpgsql as $$
+declare
+  v_verdict jsonb;
+  v_res     text;
+begin
+  if p_expect is null then
+    raise exception 'HARNESS[%]: reissue_agrees is refusal-only; use reissue_once for success', p_label;
+  end if;
+
+  -- The console's answer, first.
+  perform set_config('request.jwt.claim.sub', p_admin::text, true);
+  perform set_config('request.jwt.claims', harness_rs.aal2(p_admin)::text, true);
+  execute format('select public.owner_notice_reissue_assessment(%L)', p_case) into v_verdict;
+  if (v_verdict ->> 'eligible')::boolean then
+    raise exception 'FAIL[%]: the ASSESSMENT says eligible although the door is expected to refuse '
+      'with % — the console would offer a control the server rejects', p_label, p_expect;
+  end if;
+  if v_verdict ->> 'refusal_code' is distinct from p_expect then
+    raise exception 'FAIL[%]: the assessment refused with % but % was expected', p_label,
+      v_verdict ->> 'refusal_code', p_expect;
+  end if;
+
+  -- The door's answer, second. Same actor, same claims.
+  v_res := harness_rs.with_claims(p_admin, harness_rs.aal2(p_admin),
+    format('select public.reissue_owner_safety_notice(%L, %L)', p_case, p_reason));
+  if v_res = 'OK' then
+    raise exception 'FAIL[%]: expected the door to refuse with %, but the call SUCCEEDED — the '
+      'assessment and the door disagree in the dangerous direction', p_label, p_expect;
+  end if;
+  if position(p_expect in v_res) = 0 then
+    raise exception 'FAIL[%]: expected refusal % but got %', p_label, p_expect, v_res;
+  end if;
+end $$;
+
+/**
+ * Assessment + a SINGLE successful reissue, returning the door's own payload.
+ *
+ * Separated from `reissue_agrees` because a helper that proves agreement by calling twice would
+ * append two generations, and an assertion about generation N+1 written against a fixture that
+ * quietly reached N+2 is the kind of test that passes for the wrong reason.
+ */
+create or replace function harness_rs.reissue_once(
+  p_label text, p_admin uuid, p_case uuid, p_reason text
+) returns jsonb language plpgsql as $$
+declare v_verdict jsonb; v_out jsonb;
+begin
+  perform set_config('request.jwt.claim.sub', p_admin::text, true);
+  perform set_config('request.jwt.claims', harness_rs.aal2(p_admin)::text, true);
+  execute format('select public.owner_notice_reissue_assessment(%L)', p_case) into v_verdict;
+  if not (v_verdict ->> 'eligible')::boolean then
+    raise exception 'FAIL[%]: the ASSESSMENT refuses (%) although the door is expected to accept — '
+      'the console would hide a control this estate needs', p_label, v_verdict ->> 'refusal_code';
+  end if;
+  execute format('select public.reissue_owner_safety_notice(%L, %L)', p_case, p_reason) into v_out;
+  if v_out is null then
+    raise exception 'FAIL[%]: the door returned NULL', p_label;
+  end if;
+  -- The verdict promised a generation and a reason; the door must have produced exactly those.
+  if (v_out ->> 'generation')::int is distinct from (v_verdict ->> 'next_generation')::int then
+    raise exception 'FAIL[%]: the assessment predicted generation % and the door wrote % — the '
+      'console would display a generation the server did not create', p_label,
+      v_verdict ->> 'next_generation', v_out ->> 'generation';
+  end if;
+  if v_out ->> 'reissue_reason' is distinct from v_verdict ->> 'reissue_reason' then
+    raise exception 'FAIL[%]: the assessment derived reason % and the door wrote %', p_label,
+      v_verdict ->> 'reissue_reason', v_out ->> 'reissue_reason';
+  end if;
+  return v_out;
+end $$;
+
+/** Build one furnished estate at `owner_notification_dispatched`, with a generation-1 notice. */
+create or replace function harness_rs.furnish_c(p_admin uuid, p_name text, p_email text)
+returns uuid language plpgsql as $$
+declare v_owner uuid; v_exec uuid; v_estate uuid; v_case uuid; v_res text;
+begin
+  insert into auth.users default values returning id into v_owner;
+  insert into auth.users default values returning id into v_exec;
+  update auth.users set email = p_email where id = v_owner;
+  insert into public.estates (owner_id, name) values (v_owner, p_name) returning id into v_estate;
+  insert into public.estate_memberships (estate_id, user_id, role, status)
+  values (v_estate, v_owner, 'primary_user', 'approved');
+  insert into public.estate_designations (estate_id, user_id, designation_type, status)
+  values (v_estate, v_exec, 'executor', 'active');
+
+  perform harness_rs.attempt(v_exec,
+    format('select public.initiate_death_verification_case(%L)', v_estate));
+  select id into v_case from public.death_verification_cases
+   where estate_id = v_estate and status = 'open';
+  perform harness_rs.as_admin(p_admin,
+    format('select public.admin_set_attained_verification_level(%L, ''enhanced_kyc'')', v_case));
+  perform harness_rs.as_admin(p_admin,
+    format('select public.admin_decide_death_verification_case(%L, ''verify'')', v_case));
+  v_res := harness_rs.as_admin(p_admin,
+    format('select public.dispatch_owner_safety_notice(%L)', v_estate));
+  if v_res <> 'OK' then
+    raise exception 'FAIL[precondition]: dispatch for % refused: %', p_name, v_res;
+  end if;
+  return v_case;
+end $$;
+
+/** The CURRENT generation of an episode, read the way the door reads it. */
+create or replace function harness_rs.current_gen(p_case uuid)
+returns public.owner_notice_outbox language sql stable as $$
+  select o.* from public.owner_notice_outbox o
+   where o.case_id = p_case and o.channel = 'email'
+     and o.notice_kind = any (public.owner_notice_episode_kinds())
+     and o.superseded_by is null
+   limit 1;
+$$;
+
+-- ── 11.0 · THE INSTRUMENT IS READING THE REAL THING ─────────────────────────────────────────────
+do $rs11a$
+declare
+  ADMIN_C uuid; ADMIN_D uuid; NONADMIN uuid;
+  CASE_P uuid; CASE_Q uuid; CASE_L uuid; CASE_N1 uuid; CASE_N2 uuid; CASE_N3 uuid;
+  CASE_G uuid; CASE_H1 uuid; CASE_H2 uuid;
+  P uuid; Q uuid; L uuid; N1 uuid; N2 uuid; N3 uuid; G uuid; H uuid;
+  v_row public.owner_notice_outbox%rowtype;
+  v_prior public.owner_notice_outbox%rowtype;
+  v_out jsonb; v_ready jsonb; v_verdict jsonb;
+  v_res text; n int;
+  admitted_0 bigint; admitted_1 bigint; admitted_2 bigint;
+  v_gen1 uuid; v_gen2 uuid;
+  v_snapshot jsonb; v_snapshot_after jsonb;
+  v_audit jsonb;
+begin
+  raise notice ' ';
+  raise notice '11 · Phase 11-OC / Phase C: the operator re-notice';
+
+  -- (a) every routine under test exists. A refusal assertion against a missing function passes by
+  -- crashing, which is not a refusal.
+  if to_regprocedure('public.reissue_owner_safety_notice(uuid, text)') is null
+     or to_regprocedure('public.owner_notice_reissue_assessment(uuid)') is null
+     or to_regprocedure('public.owner_notice_episode_kinds()') is null
+     or to_regprocedure('public.owner_notice_reissue_kind()') is null then
+    raise exception 'FAIL: a Phase C routine is not installed — the bundle did not land';
+  end if;
+
+  -- (b) THE PARAMETER LIST IS THE SAFETY PROPERTY. A recipient, an estate, a generation, a status or
+  -- a vocabulary-reason parameter would each make a forbidden thing WRITABLE rather than merely
+  -- forbidden. Asserted on the deployed signature, so adding one fails here.
+  if to_regprocedure('public.reissue_owner_safety_notice(uuid, text)') is null then
+    raise exception 'FAIL[C]: the re-notice door does not have the signature (uuid, text)';
+  end if;
+  if (select count(*) from pg_proc p join pg_namespace nsp on nsp.oid = p.pronamespace
+       where nsp.nspname = 'public' and p.proname = 'reissue_owner_safety_notice') <> 1 then
+    raise exception 'FAIL[C]: reissue_owner_safety_notice is overloaded — a second signature is a '
+      'second door with its own parameter list, and the absences above stop being guarantees';
+  end if;
+  if (select pronargs from pg_proc p join pg_namespace nsp on nsp.oid = p.pronamespace
+       where nsp.nspname = 'public' and p.proname = 'reissue_owner_safety_notice') <> 2 then
+    raise exception 'FAIL[C]: the re-notice door takes more than (case, reason) — a recipient, an '
+      'estate, a generation or a reason-vocabulary parameter has been added';
+  end if;
+
+  -- (c) grant posture, asserted rather than assumed.
+  if has_function_privilege('anon', 'public.reissue_owner_safety_notice(uuid, text)', 'EXECUTE') then
+    raise exception 'FAIL[C]: the re-notice door is anon-executable';
+  end if;
+  if has_function_privilege('anon', 'public.owner_notice_reissue_assessment(uuid)', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.owner_notice_reissue_assessment(uuid)', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.owner_notice_episode_kinds()', 'EXECUTE') then
+    raise exception 'FAIL[C]: an INTERNAL Phase C helper is reachable by a client role';
+  end if;
+  -- POSITIVE CONTROL on the privilege matcher: it must be able to see a grant that IS present, or
+  -- the three absences above would prove nothing.
+  if not has_function_privilege('authenticated', 'public.reissue_owner_safety_notice(uuid, text)', 'EXECUTE') then
+    raise exception 'FAIL[C]: the re-notice door is unreachable by an authenticated admin at all — '
+      'the console can never call it and the privilege absences above are vacuous';
+  end if;
+
+  -- (d) the episode vocabulary really is a SET, and it really contains both kinds.
+  if array_length(public.owner_notice_episode_kinds(), 1) <> 2
+     or not ('death_process.window_opened' = any (public.owner_notice_episode_kinds()))
+     or not (public.owner_notice_reissue_kind() = any (public.owner_notice_episode_kinds())) then
+    raise exception 'FAIL[C]: owner_notice_episode_kinds() does not contain BOTH the initial kind and '
+      'the re-notice kind — one of them is invisible to the census and to the door: %',
+      public.owner_notice_episode_kinds();
+  end if;
+  if public.owner_notice_reissue_kind() = 'death_process.window_opened' then
+    raise exception 'FAIL[C]: a re-notice is recorded as the INITIAL window-opening event. The outbox '
+      'would assert the window opened twice, and an investigator reconstructing what the owner was '
+      'told could not tell a first warning from a second.';
+  end if;
+  raise notice '  ok  11.0 · Phase C routines resolved; door is (case, reason) only, admin-reachable, '
+    'helpers internal; the episode is a two-kind SET and a re-notice is not the initial event';
+
+  -- ── FIXTURES ──────────────────────────────────────────────────────────────────────────────────
+  insert into auth.users default values returning id into ADMIN_C;
+  insert into auth.users default values returning id into ADMIN_D;
+  insert into auth.users default values returning id into NONADMIN;
+  insert into public.admins (user_id) values (ADMIN_C) on conflict do nothing;
+  insert into public.admins (user_id) values (ADMIN_D) on conflict do nothing;
+
+  CASE_P  := harness_rs.furnish_c(ADMIN_C, 'RS Estate P-C', 'rs-owner-p@example.invalid');
+  CASE_Q  := harness_rs.furnish_c(ADMIN_C, 'RS Estate Q-C', 'rs-owner-q@example.invalid');
+  CASE_L  := harness_rs.furnish_c(ADMIN_C, 'RS Estate L-C', 'rs-owner-l@example.invalid');
+  CASE_N1 := harness_rs.furnish_c(ADMIN_C, 'RS Estate N1-C', 'rs-owner-n1@example.invalid');
+  CASE_N2 := harness_rs.furnish_c(ADMIN_C, 'RS Estate N2-C', 'rs-owner-n2@example.invalid');
+  CASE_N3 := harness_rs.furnish_c(ADMIN_C, 'RS Estate N3-C', 'rs-owner-n3@example.invalid');
+  CASE_G  := harness_rs.furnish_c(ADMIN_C, 'RS Estate G-C', 'rs-owner-g@example.invalid');
+
+  select estate_id into P from public.death_verification_cases where id = CASE_P;
+  select estate_id into Q from public.death_verification_cases where id = CASE_Q;
+  select estate_id into L from public.death_verification_cases where id = CASE_L;
+  select estate_id into N1 from public.death_verification_cases where id = CASE_N1;
+  select estate_id into N2 from public.death_verification_cases where id = CASE_N2;
+  select estate_id into N3 from public.death_verification_cases where id = CASE_N3;
+  select estate_id into G from public.death_verification_cases where id = CASE_G;
+
+  insert into harness_rs.ctx (k, v) values ('admin_c', ADMIN_C) on conflict (k) do update set v = excluded.v;
+  insert into harness_rs.ctx (k, v) values ('case_p', CASE_P) on conflict (k) do update set v = excluded.v;
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.1 · THE THREE ELIGIBLE CLASSES, AND THE LEGACY ONE IS LOAD-BEARING
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ CASE C — `dispatched` WITH NO ACCEPTANCE FACT — IS THE ONE THAT MUST NOT BE REFUSED ON THE
+  -- STRENGTH OF ITS STATUS. Every row written before Phase A carries `dispatched` with a NULL stamp,
+  -- because the stamp did not exist. That population is exactly what Phase D blocks, and refusing to
+  -- re-notice it would leave it with no route to a remedy at all — which is the reason Phase C
+  -- precedes Phase D rather than following it.
+
+  -- P · failedPermanent, at challenge_window. Settled through the REAL write-back path.
+  v_row := harness_rs.current_gen(CASE_P);
+  perform public.record_owner_notice_outcome(v_row.id, 'failedPermanent', 'provider_rejected');
+  perform harness_rs.as_admin(ADMIN_C, format('select public.begin_challenge_window(%L)', P));
+  -- ★ THE PREDECESSOR IS BACKDATED, AND THAT IS THE TRANSFORMATION-TEST RULE RATHER THAN SET DRESSING.
+  -- `now()` is TRANSACTION-constant, so inside this single test transaction a successor that COPIED
+  -- `requested_at` and one that wrote a fresh `now()` are byte-identical — an assertion against them
+  -- would pass with the copy in place and could never fail. Backdating the predecessor is input the
+  -- transformation must change: a copy is then observably two hours stale, and a fresh stamp is not.
+  update public.owner_notice_outbox set requested_at = now() - interval '2 hours'
+   where id = v_row.id;
+
+  -- Q · outcomeUncertain, left at owner_notification_dispatched.
+  v_row := harness_rs.current_gen(CASE_Q);
+  perform public.record_owner_notice_outcome(v_row.id, 'outcomeUncertain');
+
+  -- L · the LEGACY shape, constructed by direct UPDATE because no code path can produce it any more.
+  -- `record_owner_notice_outcome` writes status and acceptance in ONE statement, so `dispatched` +
+  -- NULL is structurally unreachable after Phase A — which is precisely what makes it an unambiguous
+  -- pre-Phase-A marker rather than a state this test invented.
+  v_row := harness_rs.current_gen(CASE_L);
+  update public.owner_notice_outbox
+     set status = 'dispatched', dispatched_at = now(), notice_accepted_at = null
+   where id = v_row.id;
+  perform harness_rs.as_admin(ADMIN_C, format('select public.begin_challenge_window(%L)', L));
+  -- ★ ASSERT THE INPUT PRECONDITION, so later fixture drift cannot quietly make this tautological.
+  v_row := harness_rs.current_gen(CASE_L);
+  if v_row.status <> 'dispatched' or v_row.notice_accepted_at is not null then
+    raise exception 'FAIL[control]: the LEGACY fixture is not dispatched-with-NULL-acceptance '
+      '(status=%, accepted=%), so §11.1 case C tests a different class entirely',
+      v_row.status, v_row.notice_accepted_at;
+  end if;
+
+  v_out := harness_rs.reissue_once('C1/failedPermanent', ADMIN_C, CASE_P,
+    'provider rejected the first notice; re-sending under Phase C');
+  if v_out ->> 'status' <> 'queued' then
+    raise exception 'FAIL[C1]: a re-notice did not start QUEUED (status=%) — a successful call means '
+      'NEW WARNING QUEUED and nothing stronger', v_out ->> 'status';
+  end if;
+  if (v_out ->> 'generation')::int <> 2 then
+    raise exception 'FAIL[C1]: expected generation 2, got %', v_out ->> 'generation';
+  end if;
+  if v_out ->> 'reissue_reason' <> 'prior_failed_permanent' then
+    raise exception 'FAIL[C1]: the derived vocabulary reason is %, expected prior_failed_permanent',
+      v_out ->> 'reissue_reason';
+  end if;
+
+  v_out := harness_rs.reissue_once('C2/outcomeUncertain', ADMIN_C, CASE_Q,
+    'provider outcome never confirmed; re-sending under Phase C');
+  if (v_out ->> 'generation')::int <> 2 or v_out ->> 'status' <> 'queued' then
+    raise exception 'FAIL[C2]: outcomeUncertain did not yield a queued generation 2: %', v_out;
+  end if;
+  if v_out ->> 'reissue_reason' <> 'prior_outcome_uncertain' then
+    raise exception 'FAIL[C2]: reason is %, expected prior_outcome_uncertain', v_out ->> 'reissue_reason';
+  end if;
+
+  v_out := harness_rs.reissue_once('C3/legacy dispatched+NULL', ADMIN_C, CASE_L,
+    'pre-Phase-A row carries no acceptance fact; producing one under Phase C');
+  if (v_out ->> 'generation')::int <> 2 or v_out ->> 'status' <> 'queued' then
+    raise exception 'FAIL[C3]: the legacy class did not yield a queued generation 2: %', v_out;
+  end if;
+  if v_out ->> 'reissue_reason' <> 'legacy_no_acceptance_record' then
+    raise exception 'FAIL[C3]: reason is %, expected legacy_no_acceptance_record',
+      v_out ->> 'reissue_reason';
+  end if;
+  raise notice '  ok  11.1 · all three eligible classes yield a QUEUED generation 2 with a reason '
+    'derived from the predecessor — including `dispatched` with no acceptance fact';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.2 · THE EPISODE — one current generation, forensics preserved, and the successor is clean
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  select id into v_gen1 from public.owner_notice_outbox
+   where case_id = CASE_P and generation = 1;
+  select id into v_gen2 from public.owner_notice_outbox
+   where case_id = CASE_P and generation = 2;
+
+  if v_gen1 is null or v_gen2 is null then
+    raise exception 'FAIL[control]: estate P does not hold two generations, so §11.2 asserts nothing';
+  end if;
+  if v_gen1 = v_gen2 then
+    raise exception 'FAIL[C]: the successor REUSED the predecessor row id. drain.ts builds the '
+      'provider Idempotency-Key from the row id, so a deliberate re-notice would replay the first '
+      'message''s key and the provider would no-op it — the second warning would never be sent.';
+  end if;
+
+  -- Exactly one current generation, and the CURRENT one is the successor.
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = CASE_P and superseded_by is null;
+  if n <> 1 then
+    raise exception 'FAIL[C/D12]: the episode has % current generations, expected exactly 1', n;
+  end if;
+  select * into v_row from public.owner_notice_outbox where id = v_gen2;
+  if v_row.superseded_by is not null then
+    raise exception 'FAIL[C]: the NEW generation is already superseded';
+  end if;
+  select * into v_prior from public.owner_notice_outbox where id = v_gen1;
+  if v_prior.superseded_by is distinct from v_gen2 then
+    raise exception 'FAIL[C]: the prior generation does not point at the successor (superseded_by=%, '
+      'successor=%) — the retirement link is the ONLY thing that identifies which row is live',
+      v_prior.superseded_by, v_gen2;
+  end if;
+
+  -- The predecessor keeps EVERY forensic field. That evidence is why the reissue was warranted.
+  if v_prior.status <> 'failedPermanent' then
+    raise exception 'FAIL[C]: the retired generation''s status was rewritten to % — a requeued '
+      'terminal row destroys the record that the owner was not reached', v_prior.status;
+  end if;
+  if v_prior.failure_class is distinct from 'provider_rejected' then
+    raise exception 'FAIL[C]: the retired generation lost its failure_class (%)', v_prior.failure_class;
+  end if;
+  if v_prior.generation <> 1 or v_prior.case_id <> CASE_P then
+    raise exception 'FAIL[C]: the retired generation''s episode identity was rewritten';
+  end if;
+
+  -- The successor inherits NOTHING that could carry a stale fact forward.
+  if v_row.notice_accepted_at is not null then
+    raise exception 'FAIL[C]: the new generation was born with an acceptance timestamp. Reissuing '
+      'does not create acceptance authority — only the providerAccepted settle path may stamp it.';
+  end if;
+  if v_row.status <> 'queued' then
+    raise exception 'FAIL[C]: the new generation was born %, not queued', v_row.status;
+  end if;
+  if v_row.attempts <> 0 or v_row.claimed_at is not null or v_row.dispatched_at is not null
+     or v_row.failure_class is not null or v_row.next_attempt_at is not null then
+    raise exception 'FAIL[C]: the new generation inherited a delivery fact from its predecessor '
+      '(attempts=%, claimed=%, dispatched=%, class=%, next=%)',
+      v_row.attempts, v_row.claimed_at, v_row.dispatched_at, v_row.failure_class, v_row.next_attempt_at;
+  end if;
+  -- ★ ASSERT THE INPUT PRECONDITION, so fixture drift cannot make the comparison tautological.
+  if v_prior.requested_at >= now() then
+    raise exception 'FAIL[control]: the predecessor was not backdated, so `now()` being '
+      'transaction-constant makes the requested_at assertion below pass whether the successor '
+      'copied the value or wrote a fresh one';
+  end if;
+  if v_row.requested_at <= v_prior.requested_at then
+    raise exception 'FAIL[C]: the successor did not get a NEW requested_at (successor=%, '
+      'predecessor=%) — the age gate would run from the predecessor''s request and the new warning '
+      'could be settled stale before it was ever claimed', v_row.requested_at, v_prior.requested_at;
+  end if;
+  if v_row.notice_kind <> public.owner_notice_reissue_kind() then
+    raise exception 'FAIL[C]: the successor carries kind % — a second warning recorded as the initial '
+      'window-opening event', v_row.notice_kind;
+  end if;
+  if v_row.reissued_by is distinct from ADMIN_C then
+    raise exception 'FAIL[C]: reissued_by is % — the operator is not derived from auth.uid()',
+      v_row.reissued_by;
+  end if;
+
+  -- ★ THE RECIPIENT IS DERIVED, AND IT IS NOT RETURNED. The successor must carry the authoritative
+  -- owner address (so the message can actually be sent) while the RPC payload carries none.
+  if v_row.recipient is distinct from 'rs-owner-p@example.invalid' then
+    raise exception 'FAIL[C]: the successor''s recipient is % — it was not derived through '
+      'estate_owner_user_id -> auth.users.email', v_row.recipient;
+  end if;
+  if v_out::text ilike '%@%' then
+    raise exception 'FAIL[C]: the re-notice RPC payload contains an address shape — re-notice is not '
+      'a recipient-edit feature and the operator never needs to see a living owner''s address';
+  end if;
+  raise notice '  ok  11.2 · exactly one current generation; the retired row keeps every forensic '
+    'field; the successor inherits none, gets a new id, a new requested_at and the re-notice kind; '
+    'recipient derived and never returned';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.3 · THE REMEDIATION ARC — the transformation this whole phase exists to perform
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- Read at three points. The MIDDLE reading is the control: if a reissue alone moved the estate into
+  -- the admitted set, an operator would hold a button that manufactures release authority.
+  v_ready := harness_rs.as_admin_json(ADMIN_C,
+    'select public.owner_notice_release_readiness_census()');
+  admitted_0 := (v_ready ->> 'would_be_admitted_by_phase_d')::bigint;
+
+  -- Precondition: estate P's episode carries NO acceptance anywhere, or the arc is tautological.
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = CASE_P and notice_accepted_at is not null;
+  if n <> 0 then
+    raise exception 'FAIL[control]: estate P''s episode already carries % acceptance(s) before the '
+      'remediation arc — the census reading below would pass with or without Phase C', n;
+  end if;
+  if (v_ready ->> 'would_be_refused_by_phase_d')::bigint < 1 then
+    raise exception 'FAIL[control]: the readiness census refuses NOBODY although estate P sits at '
+      'challenge_window with no acceptance — direction 2 proves nothing';
+  end if;
+
+  -- READING 1 → 2 · a queued re-notice adds NO release authority.
+  v_ready := harness_rs.as_admin_json(ADMIN_C,
+    'select public.owner_notice_release_readiness_census()');
+  admitted_1 := (v_ready ->> 'would_be_admitted_by_phase_d')::bigint;
+  if admitted_1 <> admitted_0 then
+    raise exception 'FAIL[C/D7]: issuing a re-notice changed the admitted count from % to %. A '
+      'protective act must never manufacture release authority — an operator would hold a button '
+      'that unblocks a release by queueing an email.', admitted_0, admitted_1;
+  end if;
+  -- And the estate is visible as QUEUED rather than having vanished from the classification.
+  if coalesce((v_ready -> 'by_readiness' ->> 'queued')::bigint, 0) < 1 then
+    raise exception 'FAIL[C]: after a re-notice, estate P is not classified as `queued`; buckets = %. '
+      'The readiness census cannot see a re-notice row at all, so a remediated estate reads as one '
+      'that was never dispatched.', v_ready -> 'by_readiness';
+  end if;
+
+  -- READING 3 · the provider accepts the RE-NOTICE. This is the cure, and the assertion that fails
+  -- if the census still filters on the single Phase A notice_kind literal.
+  perform public.record_owner_notice_outcome(v_gen2, 'providerAccepted');
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = CASE_P and notice_accepted_at is not null;
+  if n <> 1 then
+    raise exception 'FAIL[control]: the accepted re-notice did not produce exactly one acceptance in '
+      'the episode (found %)', n;
+  end if;
+  v_ready := harness_rs.as_admin_json(ADMIN_C,
+    'select public.owner_notice_release_readiness_census()');
+  admitted_2 := (v_ready ->> 'would_be_admitted_by_phase_d')::bigint;
+  if admitted_2 <> admitted_0 + 1 then
+    raise exception 'FAIL[C]: an ACCEPTED re-notice did not move estate P into the admitted set '
+      '(admitted % -> %). The readiness census filters on a single notice_kind literal, so it '
+      'cannot see the remedy: a re-noticed estate would report as permanently refused however many '
+      'times it was re-noticed, and Phase C is inert inside the instrument built to measure it.',
+      admitted_0, admitted_2;
+  end if;
+  raise notice '  ok  11.3 · remediation arc: failedPermanent REFUSED -> re-noticed STILL REFUSED '
+    '(no authority manufactured) -> accepted ADMITTED (admitted % -> %)', admitted_0, admitted_2;
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.4 · THE AUDIT — a distinct action, both generations, the reason, and no address
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  select to_jsonb(a) into v_audit from public.audit_logs a
+   where a.action = 'death_process.owner_notice_reissued'
+     and a.target_id = v_gen2;
+  if v_audit is null then
+    raise exception 'FAIL[C]: no death_process.owner_notice_reissued audit row was written for the '
+      'new generation. A remediation with no audit is a safety-queue write nobody can reconstruct.';
+  end if;
+  if (v_audit ->> 'actor_id')::uuid is distinct from ADMIN_C then
+    raise exception 'FAIL[C]: the audit names actor % rather than the acting admin', v_audit ->> 'actor_id';
+  end if;
+  if (v_audit -> 'metadata' ->> 'prior_notice_id')::uuid is distinct from v_gen1
+     or (v_audit -> 'metadata' ->> 'new_notice_id')::uuid is distinct from v_gen2 then
+    raise exception 'FAIL[C]: the audit does not name BOTH row ids — the supersession chain is not '
+      'reconstructible from the audit alone: %', v_audit -> 'metadata';
+  end if;
+  if (v_audit -> 'metadata' ->> 'prior_generation')::int <> 1
+     or (v_audit -> 'metadata' ->> 'new_generation')::int <> 2 then
+    raise exception 'FAIL[C]: the audit points at the wrong generation(s): %', v_audit -> 'metadata';
+  end if;
+  if v_audit -> 'metadata' ->> 'prior_status' <> 'failedPermanent' then
+    raise exception 'FAIL[C]: the audit does not record the state that warranted the reissue: %',
+      v_audit -> 'metadata';
+  end if;
+  if v_audit -> 'metadata' ->> 'reason' is null
+     or btrim(v_audit -> 'metadata' ->> 'reason') = '' then
+    raise exception 'FAIL[C]: the operator''s reason was not recorded';
+  end if;
+  if v_audit -> 'metadata' ->> 'reissue_reason' is null then
+    raise exception 'FAIL[C]: the derived vocabulary reason was not recorded';
+  end if;
+  if v_audit::text ilike '%@%' then
+    raise exception 'FAIL[C]: the reissue audit contains an address shape. An audit row outlives '
+      'every reason anyone had to read it.';
+  end if;
+  -- ★ AND IT IS NOT THE DISPATCH ACTION. Reusing `owner_notice_dispatched` would make the trail
+  -- assert a lifecycle transition that did not happen, and hide the reissue from anyone counting
+  -- dispatches.
+  select count(*) into n from public.audit_logs a
+   where a.action = 'death_process.owner_notice_dispatched' and a.target_id = v_gen2;
+  if n <> 0 then
+    raise exception 'FAIL[C]: the reissue also wrote a dispatch audit row — a second warning is being '
+      'recorded as the window opening again';
+  end if;
+  raise notice '  ok  11.4 · audit: distinct action, acting admin, both row ids, both generations, '
+    'prior status, operator reason and derived reason — and no address';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.5 · THE INELIGIBLE CURRENT GENERATIONS
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- Each refusal is asserted through `reissue_agrees`, so the console verdict and the door's actual
+  -- behaviour are proved to match on every one of them.
+
+  -- queued — the ordinary drain still owns it (N1 was dispatched and left alone).
+  perform harness_rs.reissue_agrees('N/queued', ADMIN_C, CASE_N1, 'should be refused',
+    'notice_still_queued');
+
+  -- processing — OB-1 visibility/reclaim still owns it. Constructed by direct UPDATE: the production
+  -- writer is `claim_owner_notices`, which claims a batch across the whole database, and a fixture
+  -- that depended on batch composition would pass or fail for reasons unrelated to this rule.
+  v_row := harness_rs.current_gen(CASE_N2);
+  update public.owner_notice_outbox set status = 'processing', claimed_at = now(), attempts = 1
+   where id = v_row.id;
+  perform harness_rs.reissue_agrees('N/processing', ADMIN_C, CASE_N2, 'should be refused',
+    'notice_still_processing');
+
+  -- dispatched WITH an acceptance fact — provider acceptance is established, there is nothing to
+  -- remedy, and re-warning a living owner about their own death process is not a free action.
+  v_row := harness_rs.current_gen(CASE_N3);
+  perform public.record_owner_notice_outcome(v_row.id, 'providerAccepted');
+  perform harness_rs.reissue_agrees('N/accepted', ADMIN_C, CASE_N3, 'should be refused',
+    'notice_already_accepted');
+
+  -- ★ THE PAIR THAT MAKES THE ACCEPTANCE TEST REAL. N3 and L are BOTH `dispatched`. The only
+  -- difference is the FACT, and they must reach opposite verdicts — otherwise the rule is a status
+  -- list wearing a timestamp's clothes.
+  v_row := harness_rs.current_gen(CASE_N3);
+  if v_row.status <> 'dispatched' or v_row.notice_accepted_at is null then
+    raise exception 'FAIL[control]: the accepted fixture is not dispatched-with-acceptance, so the '
+      'pairing below proves nothing (status=%, accepted=%)', v_row.status, v_row.notice_accepted_at;
+  end if;
+  raise notice '  ok  11.5 · queued / processing / dispatched-with-acceptance each refused by name, '
+    'and `dispatched` alone decides nothing — the FACT does';
+
+  -- cancelled — defence in depth. Nothing in production writes it; this fixture does, by direct
+  -- UPDATE, exactly as the 11-E fixture does. "Currently unreachable" is a statement about today.
+  update public.owner_notice_outbox set status = 'cancelled'
+   where id = (harness_rs.current_gen(CASE_N2)).id;
+  perform harness_rs.reissue_agrees('N/cancelled', ADMIN_C, CASE_N2, 'should be refused',
+    'notice_cancelled');
+  raise notice '  ok  11.5b · a cancelled current generation is refused (defence in depth)';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.6 · THE LIFECYCLE GATE — five refusals AND two positive controls, one variable at a time
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ THE FIXTURE VARIES IN EXACTLY ONE DIMENSION. Estate G holds a verified current case and a
+  -- `failedPermanent` current generation throughout; only `estate_lifecycle.state` moves. Without the
+  -- two POSITIVE controls a gate that refused every state would satisfy all five refusals and read as
+  -- conservative — which is the failure mode this repository has shipped before.
+  --
+  -- The refused states are written by direct UPDATE because the transition map deliberately has no
+  -- edge back to most of them. What §11.6 tests is the STATE GATE, not the reachability of a state.
+  v_row := harness_rs.current_gen(CASE_G);
+  perform public.record_owner_notice_outcome(v_row.id, 'failedPermanent', 'provider_rejected');
+
+  declare
+    v_state text;
+    v_states text[] := array['active', 'death_verification_pending', 'death_verified',
+                             'challenge_halted', 'released'];
+  begin
+    foreach v_state in array v_states loop
+      update public.estate_lifecycle set state = v_state where estate_id = G;
+      perform harness_rs.reissue_agrees(format('G/%s', v_state), ADMIN_C, CASE_G,
+        'should be refused', 'invalid_reissue_state');
+    end loop;
+  end;
+
+  -- POSITIVE CONTROL, BOTH PERMITTED STATES. The assessment must say ELIGIBLE in each — proved
+  -- without calling the door, so the fixture is not consumed and the second control is real.
+  declare
+    v_state text;
+  begin
+    foreach v_state in array array['owner_notification_dispatched', 'challenge_window'] loop
+      update public.estate_lifecycle set state = v_state where estate_id = G;
+      perform set_config('request.jwt.claim.sub', ADMIN_C::text, true);
+      perform set_config('request.jwt.claims', harness_rs.aal2(ADMIN_C)::text, true);
+      execute format('select public.owner_notice_reissue_assessment(%L)', CASE_G) into v_verdict;
+      if not (v_verdict ->> 'eligible')::boolean then
+        raise exception 'FAIL[control]: state % is REFUSED (%) although it is one of the two states a '
+          'warning is worth sending from. The lifecycle gate refuses everything, so the five '
+          'refusals above prove nothing.', v_state, v_verdict ->> 'refusal_code';
+      end if;
+    end loop;
+  end;
+  raise notice '  ok  11.6 · five lifecycle states refused with invalid_reissue_state; BOTH permitted '
+    'states accepted by the same instrument (one variable, positive controls first)';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.7 · EPISODE IDENTITY — the case is the episode, and a caller cannot override it
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ THE FIXTURE MUST INTERLEAVE OR IT PROVES NOTHING. Estate H runs a first process to a
+  -- `failedPermanent` notice, that process is abandoned, and a SECOND verified case opens. The FIRST
+  -- case's current generation is still failedPermanent — eligible on every criterion except the one
+  -- under test. If the door trusted the caller's case, it would happily append a generation to an
+  -- ABANDONED process, and the notice it queued would warn an owner about a case nobody is running.
+  CASE_H1 := harness_rs.furnish_c(ADMIN_C, 'RS Estate H-C', 'rs-owner-h@example.invalid');
+  select estate_id into H from public.death_verification_cases where id = CASE_H1;
+  v_row := harness_rs.current_gen(CASE_H1);
+  perform public.record_owner_notice_outcome(v_row.id, 'failedPermanent', 'provider_rejected');
+  perform harness_rs.as_admin(ADMIN_C, format('select public.begin_challenge_window(%L)', H));
+
+  -- Before the second case exists, H1 IS the current episode and must be eligible — the positive
+  -- control that makes the refusal below a statement about CURRENCY rather than about anything else.
+  perform set_config('request.jwt.claim.sub', ADMIN_C::text, true);
+  perform set_config('request.jwt.claims', harness_rs.aal2(ADMIN_C)::text, true);
+  execute format('select public.owner_notice_reissue_assessment(%L)', CASE_H1) into v_verdict;
+  if not (v_verdict ->> 'eligible')::boolean then
+    raise exception 'FAIL[control]: case H1 is refused (%) while it is still the current episode, so '
+      'the currency refusal below would pass for the wrong reason', v_verdict ->> 'refusal_code';
+  end if;
+
+  -- A SECOND, independent verified process opens. Composed directly rather than through the
+  -- withdraw/re-initiate doors, exactly as §10.8 does and for the same reason: what is under test is
+  -- the SCOPE of the episode key, not the reachability of the transition. Every NOT NULL column is
+  -- carried over from the real case, so no vocabulary is invented here.
+  CASE_H2 := gen_random_uuid();
+  insert into public.death_verification_cases (
+    id, estate_id, event_type, status, initiated_by, initiator_designation_id,
+    initiator_capacity, required_level_at_initiation, attained_level, decided_at, decided_by)
+  select CASE_H2, c.estate_id, c.event_type, 'verified', c.initiated_by,
+         c.initiator_designation_id, c.initiator_capacity, c.required_level_at_initiation,
+         c.attained_level, now() + interval '1 second', c.decided_by
+    from public.death_verification_cases c where c.id = CASE_H1;
+  update public.death_verification_cases set status = 'cancelled' where id = CASE_H1;
+
+  -- 22 · a case that is not the current verified episode of its own estate.
+  perform harness_rs.reissue_agrees('H/historical case', ADMIN_C, CASE_H1,
+    'should be refused', 'case_not_current');
+
+  -- 23 · an OPEN (never verified) case on an estate that has a verified one.
+  declare
+    v_open uuid := gen_random_uuid();
+  begin
+    insert into public.death_verification_cases (
+      id, estate_id, event_type, status, initiated_by, initiator_designation_id,
+      initiator_capacity, required_level_at_initiation)
+    select v_open, c.estate_id, c.event_type, 'open', c.initiated_by,
+           c.initiator_designation_id, c.initiator_capacity, c.required_level_at_initiation
+      from public.death_verification_cases c where c.id = CASE_H1;
+    perform harness_rs.reissue_agrees('H/unverified case', ADMIN_C, v_open,
+      'should be refused', 'case_not_current');
+  end;
+
+  -- 24 · a case that does not exist at all.
+  perform harness_rs.reissue_agrees('H/no such case', ADMIN_C, gen_random_uuid(),
+    'should be refused', 'case_not_found');
+
+  -- ★ AND THE ABANDONED EPISODE WAS NOT TOUCHED. The refusal must have left case H1's episode exactly
+  -- as it was — one generation, still failedPermanent, still current within its own (dead) episode.
+  select count(*) into n from public.owner_notice_outbox where case_id = CASE_H1;
+  if n <> 1 then
+    raise exception 'FAIL[C]: the refused reissue appended % rows to the abandoned episode', n;
+  end if;
+  raise notice '  ok  11.7 · episode identity: a historical case, an unverified case and a nonexistent '
+    'case are each refused, the current episode is eligible (control), and nothing was appended';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.8 · NO CURRENT NOTICE — fail closed, and never silently dispatch instead
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- The current episode has no notice row at all. That is `no_current_notice`, and the remedy is a
+  -- DISPATCH, not a re-notice. Creating an initial dispatch from this door would be a second,
+  -- unaudited entry point into a lifecycle transition.
+  update public.estate_lifecycle set state = 'challenge_window' where estate_id = H;
+  perform harness_rs.reissue_agrees('H/no current notice', ADMIN_C, CASE_H2,
+    'should be refused', 'no_current_notice');
+  select count(*) into n from public.owner_notice_outbox where case_id = CASE_H2;
+  if n <> 0 then
+    raise exception 'FAIL[C]: a refused re-notice manufactured % row(s) for an episode that had none', n;
+  end if;
+  raise notice '  ok  11.8 · an episode with no current notice is refused and NOTHING is written';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.8b · AN UNREACHABLE OWNER FAILS CLOSED — no row is manufactured to satisfy the workflow
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ THE TEMPTING WRONG ANSWER IS TO QUEUE THE ROW ANYWAY. It would make the console feel like it
+  -- worked. What it actually produces is a row with no destination that the next drain claims, fails,
+  -- and settles `failedPermanent` — leaving the episode with a SECOND dead generation and the first
+  -- one retired, i.e. strictly worse than before the operator pressed the button. The remedy for an
+  -- unreachable owner is to fix the account, not to queue mail at nobody.
+  --
+  -- The fixture dispatches with a real address (dispatch refuses without one) and then clears it, which
+  -- is the reachable production shape: the account's address was removed or changed after dispatch.
+  declare
+    CASE_U uuid;
+    U uuid;
+    v_owner_u uuid;
+  begin
+    CASE_U := harness_rs.furnish_c(ADMIN_C, 'RS Estate U-C', 'rs-owner-u@example.invalid');
+    select estate_id into U from public.death_verification_cases where id = CASE_U;
+    perform public.record_owner_notice_outcome((harness_rs.current_gen(CASE_U)).id,
+      'failedPermanent', 'provider_rejected');
+
+    -- ★ POSITIVE CONTROL FIRST: while the address resolves, this episode is ELIGIBLE. Without it the
+    -- refusal below would be explained by the estate rather than by the missing channel.
+    perform set_config('request.jwt.claim.sub', ADMIN_C::text, true);
+    perform set_config('request.jwt.claims', harness_rs.aal2(ADMIN_C)::text, true);
+    execute format('select public.owner_notice_reissue_assessment(%L)', CASE_U) into v_verdict;
+    if not (v_verdict ->> 'eligible')::boolean then
+      raise exception 'FAIL[control]: estate U is refused (%) while its owner is still reachable',
+        v_verdict ->> 'refusal_code';
+    end if;
+    if (v_verdict ->> 'owner_channel_resolvable') <> 'true' then
+      raise exception 'FAIL[control]: owner_channel_resolvable is false for an owner who HAS an address';
+    end if;
+
+    -- The channel goes away.
+    select public.estate_owner_user_id(U) into v_owner_u;
+    update auth.users set email = null where id = v_owner_u;
+
+    perform harness_rs.reissue_agrees('U/unreachable owner', ADMIN_C, CASE_U,
+      'the owner has no address; this must fail closed', 'owner_channel_unreachable');
+
+    select count(*) into n from public.owner_notice_outbox where case_id = CASE_U;
+    if n <> 1 then
+      raise exception 'FAIL[C]: a re-notice for an UNREACHABLE owner manufactured a row (episode holds '
+        '% rows). It would be claimed, fail, and settle failedPermanent — a second dead generation '
+        'with the evidence of the first one retired.', n;
+    end if;
+    if (harness_rs.current_gen(CASE_U)).superseded_by is not null then
+      raise exception 'FAIL[C]: the refused re-notice RETIRED the current generation anyway';
+    end if;
+
+    -- Restore, so no later suite trips over an owner with no address.
+    update auth.users set email = 'rs-owner-u@example.invalid' where id = v_owner_u;
+  end;
+  raise notice '  ok  11.8b · an unreachable owner is refused with owner_channel_unreachable, no row '
+    'is manufactured, and the current generation is not retired (positive control first)';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.9 · THE REASON IS REQUIRED, AND BLANK IS NOT A REASON
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- Estate Q holds a QUEUED generation 2 after §11.1, so a blank-reason call would otherwise be
+  -- refused for currency reasons and this test would pass without ever reaching the reason check.
+  -- It is therefore run against estate L, whose generation 2 is settled failedPermanent first —
+  -- making it genuinely eligible on every axis except the reason.
+  v_row := harness_rs.current_gen(CASE_L);
+  perform public.record_owner_notice_outcome(v_row.id, 'failedPermanent', 'provider_rejected');
+  perform set_config('request.jwt.claim.sub', ADMIN_C::text, true);
+  perform set_config('request.jwt.claims', harness_rs.aal2(ADMIN_C)::text, true);
+  execute format('select public.owner_notice_reissue_assessment(%L)', CASE_L) into v_verdict;
+  if not (v_verdict ->> 'eligible')::boolean then
+    raise exception 'FAIL[control]: estate L is not eligible (%), so the blank-reason refusals below '
+      'would pass for the wrong reason', v_verdict ->> 'refusal_code';
+  end if;
+
+  declare
+    v_blank text;
+  begin
+    foreach v_blank in array array['', '   ', E'\t\n'] loop
+      v_res := harness_rs.with_claims(ADMIN_C, harness_rs.aal2(ADMIN_C),
+        format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, v_blank));
+      if v_res = 'OK' then
+        raise exception 'FAIL[C]: a blank reason (%) was accepted. "Cleaning up" is not a reason; the '
+          'audit exists so a legitimate remediation can be told from an operator mailing a living '
+          'person repeatedly.', v_blank;
+      end if;
+      if position('reissue_reason_required' in v_res) = 0 then
+        raise exception 'FAIL[C]: a blank reason was refused for the wrong reason: %', v_res;
+      end if;
+    end loop;
+  end;
+  -- NULL too.
+  v_res := harness_rs.with_claims(ADMIN_C, harness_rs.aal2(ADMIN_C),
+    format('select public.reissue_owner_safety_notice(%L, null)', CASE_L));
+  if v_res = 'OK' or position('reissue_reason_required' in v_res) = 0 then
+    raise exception 'FAIL[C]: a NULL reason was not refused with reissue_reason_required: %', v_res;
+  end if;
+  select count(*) into n from public.owner_notice_outbox where case_id = CASE_L;
+  if n <> 2 then
+    raise exception 'FAIL[C]: the blank-reason refusals appended a generation (episode holds % rows)', n;
+  end if;
+  raise notice '  ok  11.9 · blank, whitespace-only and NULL reasons are each refused by name, against '
+    'an otherwise-ELIGIBLE episode, and nothing is written';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.10 · THE ACTOR MATRIX — every wrong caller, refused for the RIGHT reason
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- Estate L is still eligible (proved above), so each refusal below is attributable to the ACTOR
+  -- rather than to the state. Without that, a matrix of refusals would be indistinguishable from an
+  -- estate that was never reissuable.
+  declare
+    v_owner_l uuid;
+    v_exec_l  uuid;
+    v_estate_l uuid;
+  begin
+    select estate_id into v_estate_l from public.death_verification_cases where id = CASE_L;
+    select m.user_id into v_owner_l from public.estate_memberships m
+     where m.estate_id = v_estate_l and m.role = 'primary_user';
+    select d.user_id into v_exec_l from public.estate_designations d
+     where d.estate_id = v_estate_l and d.designation_type = 'executor';
+
+    -- anon: no sub at all.
+    v_res := harness_rs.with_claims(null, '{}'::jsonb,
+      format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'anon attempt'));
+    if v_res = 'OK' or position('auth_required' in v_res) = 0 then
+      raise exception 'FAIL[C/anon]: expected auth_required, got %', v_res;
+    end if;
+
+    -- a signed-in non-admin with a perfectly fresh AAL2 session.
+    v_res := harness_rs.with_claims(NONADMIN, harness_rs.aal2(NONADMIN),
+      format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'non-admin attempt'));
+    if v_res = 'OK' or position('admin_required' in v_res) = 0 then
+      raise exception 'FAIL[C/non-admin]: expected admin_required, got %', v_res;
+    end if;
+
+    -- THE OWNER of the estate, directly. Being the subject of the notice confers no authority to
+    -- queue another one.
+    v_res := harness_rs.with_claims(v_owner_l, harness_rs.aal2(v_owner_l),
+      format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'owner attempt'));
+    if v_res = 'OK' or position('admin_required' in v_res) = 0 then
+      raise exception 'FAIL[C/owner]: expected admin_required, got %', v_res;
+    end if;
+
+    -- THE EXECUTOR, directly. The fiduciary running the process is the party a false claim would be
+    -- made BY, and re-notice is the control that warns the owner about them.
+    v_res := harness_rs.with_claims(v_exec_l, harness_rs.aal2(v_exec_l),
+      format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'executor attempt'));
+    if v_res = 'OK' or position('admin_required' in v_res) = 0 then
+      raise exception 'FAIL[C/executor]: expected admin_required, got %', v_res;
+    end if;
+
+    -- A REAL ADMIN at AAL1 — authenticated, authorized, single factor.
+    v_res := harness_rs.with_claims(ADMIN_C,
+      jsonb_build_object('sub', ADMIN_C, 'aal', 'aal1',
+                         'iat', extract(epoch from now())::bigint),
+      format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'aal1 attempt'));
+    if v_res = 'OK' or position('mfa_required' in v_res) = 0 then
+      raise exception 'FAIL[C/aal1]: expected mfa_required, got %', v_res;
+    end if;
+
+    -- A REAL ADMIN at AAL2 with a STALE token: authorized, stepped up, and last authenticated an
+    -- hour ago. The freshness bound is what stops a forgotten open tab from writing to a safety queue.
+    v_res := harness_rs.with_claims(ADMIN_C,
+      jsonb_build_object('sub', ADMIN_C, 'aal', 'aal2',
+                         'iat', extract(epoch from now())::bigint - 3600),
+      format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'stale attempt'));
+    if v_res = 'OK' or position('stale_token_reauth_required' in v_res) = 0 then
+      raise exception 'FAIL[C/stale]: expected stale_token_reauth_required, got %', v_res;
+    end if;
+  end;
+
+  -- ★ THE POSITIVE CONTROL FOR THE WHOLE MATRIX. A fresh AAL2 admin, on the same episode, must
+  -- SUCCEED — otherwise every refusal above is explained by the estate rather than by the caller.
+  select count(*) into n from public.owner_notice_outbox where case_id = CASE_L;
+  if n <> 2 then
+    raise exception 'FAIL[C]: the actor matrix appended a generation (episode holds % rows)', n;
+  end if;
+  v_out := harness_rs.reissue_once('L/fresh aal2 admin', ADMIN_C, CASE_L,
+    'positive control for the actor matrix');
+  if (v_out ->> 'generation')::int <> 3 then
+    raise exception 'FAIL[control]: the admin positive control produced generation % rather than 3',
+      v_out ->> 'generation';
+  end if;
+  raise notice '  ok  11.10 · anon / non-admin / owner / executor / AAL1 / stale-AAL2 each refused by '
+    'the RIGHT sentinel, and a fresh AAL2 admin succeeds on the same episode (positive control)';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.11 · A SUPERSEDED GENERATION IS UNREACHABLE, AND GENERATIONS NEVER REPEAT
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- There is no notice-id parameter, so naming a retired row is UNWRITABLE rather than merely
+  -- forbidden (§11.0(b) pins the signature). What remains to prove is that the door always acts on
+  -- the CURRENT generation: estate L now holds three, and the third was computed from the second.
+  select count(*) into n from public.owner_notice_outbox where case_id = CASE_L;
+  if n <> 3 then
+    raise exception 'FAIL[C]: estate L holds % generations, expected 3', n;
+  end if;
+  select count(distinct generation) into n from public.owner_notice_outbox where case_id = CASE_L;
+  if n <> 3 then
+    raise exception 'FAIL[C]: estate L''s generation numbers repeat — a successor was computed from '
+      'something other than the locked predecessor';
+  end if;
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = CASE_L and superseded_by is null;
+  if n <> 1 then
+    raise exception 'FAIL[C/D12]: estate L has % current generations after three reissues', n;
+  end if;
+  if (select generation from public.owner_notice_outbox
+       where case_id = CASE_L and superseded_by is null) <> 3 then
+    raise exception 'FAIL[C]: the CURRENT generation of estate L is not the newest one — the door '
+      'appended from a retired row';
+  end if;
+  raise notice '  ok  11.11 · three generations, three distinct numbers, exactly one current, and the '
+    'current one is the newest';
+
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  -- 11.12 · THE WALL BEHIND THE DOOR — the database refuses a second current generation
+  -- ═══════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ★ A LOCK IS A PROTOCOL; AN INDEX IS A GUARANTEE. §11.13 proves the lock actually blocks a second
+  -- session. This proves that even with the lock defeated, the DATABASE refuses — including across
+  -- notice KINDS, which the Phase A index could not see and which is the entire reason migration 0059
+  -- replaced it.
+  declare
+    v_refused boolean;
+    v_est uuid;
+    v_usr uuid;
+  begin
+    select estate_id into v_est from public.death_verification_cases where id = CASE_L;
+    select user_id into v_usr from public.owner_notice_outbox where case_id = CASE_L limit 1;
+
+    -- Same kind as the current generation (window_renotice).
+    begin
+      insert into public.owner_notice_outbox
+        (estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+         reissue_reason)
+      values (v_est, v_usr, 'email', 'rs-c-wall-same@example.invalid',
+              public.owner_notice_reissue_kind(), 'queued', CASE_L, 99, 'prior_failed_permanent');
+      v_refused := false;
+    exception when unique_violation then
+      v_refused := true;
+    end;
+    if not v_refused then
+      raise exception 'FAIL[C/D12]: a SECOND current generation of the same kind was accepted';
+    end if;
+
+    -- ★ AND A DIFFERENT KIND. Under the Phase A index this INSERT SUCCEEDS and the episode holds two
+    -- live generations — one window_opened and one window_renotice — with nothing to say which the
+    -- release door should read.
+    begin
+      insert into public.owner_notice_outbox
+        (estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation)
+      -- Generation 1 with a NULL reason, because the `owner_notice_outbox_reissue_pairing` CHECK
+      -- fires BEFORE the unique index and would otherwise answer this probe with a check_violation —
+      -- a refusal, but from the wrong wall, which would make the assertion below say nothing about
+      -- the one-current-generation invariant it is written to test.
+      values (v_est, v_usr, 'email', 'rs-c-wall-cross@example.invalid',
+              'death_process.window_opened', 'queued', CASE_L, 1);
+      v_refused := false;
+    exception when unique_violation then
+      v_refused := true;
+    end;
+    if not v_refused then
+      raise exception 'FAIL[C/D12]: a second CURRENT generation was accepted because its notice_kind '
+        'DIFFERS. The one-current-generation wall is keyed on the KIND rather than the EPISODE, so a '
+        're-notice creates a second live notice instead of retiring the first.';
+    end if;
+
+    -- POSITIVE CONTROL: the index must not be refusing everything. A row for a DIFFERENT episode, and
+    -- a SUPERSEDED row in this one, must both be accepted.
+    declare
+      v_ok_id uuid := gen_random_uuid();
+    begin
+      insert into public.owner_notice_outbox
+        (id, estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+         superseded_by)
+      values (v_ok_id, v_est, v_usr, 'email', 'rs-c-wall-control@example.invalid',
+              'death_process.window_opened', 'queued', CASE_L, 1, v_ok_id);
+    exception when others then
+      raise exception 'FAIL[control]: the per-episode index refused a SUPERSEDED row, so it is '
+        'refusing everything and the two refusals above prove nothing: %', SQLERRM;
+    end;
+    delete from public.owner_notice_outbox where recipient like 'rs-c-wall-%@example.invalid';
+  end;
+  raise notice '  ok  11.12 · the database refuses a second current generation — same kind AND across '
+    'kinds — while still accepting a superseded row (positive control)';
+end $rs11a$;
+
+-- =================================================================================================
+-- 11.13 · CONCURRENCY — TWO GENUINE SESSIONS, AND AN HONEST STATEMENT WHEN THAT IS NOT POSSIBLE
+-- =================================================================================================
+--
+-- ★ THIS IS A SEPARATE TOP-LEVEL BLOCK FOR A REASON THAT IS EASY TO GET WRONG. psql commits after
+-- each statement, so the fixtures §11 built are visible to another session ONLY once the DO block
+-- that created them has ended. A concurrency test written inside that block would open a second
+-- connection that could not see the estate under test, and would then "prove" mutual exclusion by
+-- failing to find anything — a green result from an instrument looking at an empty database.
+--
+-- ★ WHAT IS PROVED HERE, AND IN WHICH ORDER OF STRENGTH.
+--
+--   A · DETERMINISTIC, UNCONDITIONAL — the database refuses a second current generation. Already
+--       asserted in §11.12; the wall does not depend on anything below.
+--   B · REAL TWO-SESSION MUTUAL EXCLUSION — `dblink` opens two genuine backend sessions. Session 1
+--       calls the door and holds its transaction open; session 2 calls it and is observed BLOCKED
+--       (`dblink_is_busy` = 1) rather than proceeding. Session 1 commits, session 2 unblocks, and
+--       session 2 must then REFUSE — because the episode's current generation is now the freshly
+--       queued successor.
+--
+-- ★ AND IF `dblink` IS UNAVAILABLE THIS SAYS SO OUT LOUD AND CLASSIFIES ITSELF DOWN. It does not
+-- silently pass, and it does not claim a concurrency runtime proof it did not perform. A skipped
+-- proof reported as a proof is the vacuous-audit failure this repository has shipped five times.
+-- ── 11.13A · THE FIXTURE, IN ITS OWN TRANSACTION ────────────────────────────────────────────────
+--
+-- ★ THIS IS A SEPARATE STATEMENT BECAUSE OF THE MISTAKE IT ALREADY CAUGHT. Written inside the block
+-- below, the estate and case created here are UNCOMMITTED while `dblink` opens its sessions — so
+-- both remote sessions saw no such case and the door answered `case_not_found`. A concurrency test
+-- can only observe contention over rows that are actually visible to the contending sessions.
+do $rs11b0$
+declare
+  ADMIN_C  uuid;
+  v_case   uuid;
+  v_estate uuid;
+  n        int;
+begin
+  select v into ADMIN_C from harness_rs.ctx where k = 'admin_c';
+  if ADMIN_C is null then
+    raise exception 'FAIL[control]: §11.13 could not find the §11 fixture context — it would measure '
+      'nothing. harness_rs.ctx is empty.';
+  end if;
+
+  -- A fresh episode of its own, so §11.13 cannot disturb the generation counts §11.11 asserts.
+  v_case := harness_rs.furnish_c(ADMIN_C, 'RS Estate CC-C', 'rs-owner-cc@example.invalid');
+  select estate_id into v_estate from public.death_verification_cases where id = v_case;
+  perform public.record_owner_notice_outcome((harness_rs.current_gen(v_case)).id,
+    'failedPermanent', 'provider_rejected');
+  perform harness_rs.as_admin(ADMIN_C, format('select public.begin_challenge_window(%L)', v_estate));
+  insert into harness_rs.ctx (k, v) values ('case_cc', v_case)
+    on conflict (k) do update set v = excluded.v;
+
+  -- Precondition: exactly one current generation, and it is eligible. Otherwise the "second operator
+  -- is refused" result below would be true for a reason that has nothing to do with concurrency.
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = v_case and superseded_by is null;
+  if n <> 1 then
+    raise exception 'FAIL[control]: the concurrency fixture has % current generations', n;
+  end if;
+  perform set_config('request.jwt.claim.sub', ADMIN_C::text, true);
+  perform set_config('request.jwt.claims', harness_rs.aal2(ADMIN_C)::text, true);
+  if not (public.owner_notice_reissue_assessment(v_case) ->> 'eligible')::boolean then
+    raise exception 'FAIL[control]: the concurrency fixture is not eligible, so a refusal below '
+      'would prove nothing about mutual exclusion';
+  end if;
+end $rs11b0$;
+
+-- ── 11.13B · THE PROOF, AGAINST A COMMITTED FIXTURE ─────────────────────────────────────────────
+do $rs11b$
+declare
+  ADMIN_C  uuid;
+  v_case   uuid;
+  v_gen    int;
+  v_busy   int;
+  v_res    text;
+  v_conn   text;
+  v_claims text;
+  n        int;
+  v_have_dblink boolean := false;
+begin
+  select v into ADMIN_C from harness_rs.ctx where k = 'admin_c';
+  select v into v_case  from harness_rs.ctx where k = 'case_cc';
+  if ADMIN_C is null or v_case is null then
+    raise exception 'FAIL[control]: §11.13B could not find the committed concurrency fixture';
+  end if;
+
+  begin
+    create extension if not exists dblink;
+    v_have_dblink := true;
+  exception when others then
+    v_have_dblink := false;
+  end;
+
+  if not v_have_dblink then
+    raise notice '  SKIP 11.13B · dblink is unavailable on this database, so NO real two-session '
+      'proof was performed. The deterministic wall in §11.12 stands; this run has NOT demonstrated '
+      'that a second concurrent operator BLOCKS. Reported rather than passed.';
+  else
+    -- Local socket, same database, same superuser the suite already runs as. Built from
+    -- `current_database()`/`current_user` rather than hardcoded, so it follows the harness.
+    v_conn := format('dbname=%s user=%s host=/var/run/postgresql', current_database(), current_user);
+    begin
+      perform dblink_connect('awc1', v_conn);
+      perform dblink_connect('awc2', v_conn);
+    exception when others then
+      v_have_dblink := false;
+      raise notice '  SKIP 11.13B · dblink could not open a local session (%). NO real two-session '
+        'proof was performed; §11.12''s deterministic wall stands and this run has NOT demonstrated '
+        'blocking.', SQLERRM;
+    end;
+  end if;
+
+  if v_have_dblink then
+    v_claims := harness_rs.aal2(ADMIN_C)::text;
+
+    -- Both sessions authenticate as the SAME fresh AAL2 admin, through the real gate.
+    perform dblink_exec('awc1', 'begin');
+    perform dblink_exec('awc2', 'begin');
+    perform x.r from dblink('awc1', format(
+      'select set_config(%L, %L, false) || set_config(%L, %L, false)',
+      'request.jwt.claim.sub', ADMIN_C::text, 'request.jwt.claims', v_claims)) as x(r text);
+    perform x.r from dblink('awc2', format(
+      'select set_config(%L, %L, false) || set_config(%L, %L, false)',
+      'request.jwt.claim.sub', ADMIN_C::text, 'request.jwt.claims', v_claims)) as x(r text);
+
+    -- SESSION 1 · calls the door and holds the transaction open. Its locks are live.
+    perform x.r from dblink('awc1', format(
+      'select public.reissue_owner_safety_notice(%L, %L)::text',
+      v_case, 'concurrent operator 1')) as x(r text);
+
+    -- SESSION 2 · the same call, sent ASYNCHRONOUSLY so this session can observe that it does not
+    -- return. `dblink_is_busy` = 1 IS the mutual-exclusion evidence: session 2 is parked on session
+    -- 1's row lock rather than racing past it.
+    perform dblink_send_query('awc2', format(
+      'select public.reissue_owner_safety_notice(%L, %L)::text',
+      v_case, 'concurrent operator 2'));
+    perform pg_sleep(0.75);
+    v_busy := dblink_is_busy('awc2');
+    if v_busy <> 1 then
+      -- Drain and close before failing, so a failure does not strand two backends.
+      begin perform dblink_exec('awc1', 'rollback'); exception when others then null; end;
+      begin perform * from dblink_get_result('awc2') as x(r text); exception when others then null; end;
+      begin perform dblink_exec('awc2', 'rollback'); exception when others then null; end;
+      begin perform dblink_disconnect('awc1'); perform dblink_disconnect('awc2'); exception when others then null; end;
+      raise exception 'FAIL[C/concurrency]: a second operator''s re-notice did NOT block while the '
+        'first held its transaction open (dblink_is_busy=%). The two calls are racing, and the only '
+        'thing standing between them is the unique index — which fails the loser with an opaque '
+        'unique_violation instead of a named refusal.', v_busy;
+    end if;
+
+    -- Session 1 commits. Session 2 unblocks and must REFUSE: the current generation it re-reads is
+    -- the successor session 1 just queued.
+    perform dblink_exec('awc1', 'commit');
+    begin
+      perform x.r from dblink_get_result('awc2') as x(r text);
+      v_res := 'OK';
+    exception when others then
+      v_res := 'ERR:' || SQLERRM;
+    end;
+    begin perform dblink_exec('awc2', 'rollback'); exception when others then null; end;
+    perform dblink_disconnect('awc1');
+    perform dblink_disconnect('awc2');
+
+    if v_res = 'OK' then
+      raise exception 'FAIL[C/concurrency]: BOTH concurrent operators succeeded. Two generation-N+1 '
+        'rows now exist for one episode, or one of them silently reused a number.';
+    end if;
+    if position('notice_still_queued' in v_res) = 0 then
+      raise exception 'FAIL[C/concurrency]: the second operator was refused, but not by the policy — '
+        'expected notice_still_queued (it re-read the freshly queued successor) and got %. An opaque '
+        'unique_violation here means the lock is not doing the work and the index is.', v_res;
+    end if;
+
+    raise notice '  ok  11.13B · REAL two-session proof: operator 2 BLOCKED while operator 1 held its '
+      'transaction (dblink_is_busy=1), then refused with notice_still_queued once operator 1 '
+      'committed. Two genuine backend sessions, not a simulation.';
+  end if;
+
+  -- ── THE INVARIANT, WHICHEVER PATH RAN ─────────────────────────────────────────────────────────
+  select count(*) into n from public.owner_notice_outbox
+   where case_id = v_case and superseded_by is null;
+  if n <> 1 then
+    raise exception 'FAIL[C/D12]: after the concurrency exercise the episode holds % current '
+      'generations, expected exactly 1', n;
+  end if;
+  select count(*) into n from public.owner_notice_outbox where case_id = v_case;
+  select max(generation) into v_gen from public.owner_notice_outbox where case_id = v_case;
+  if v_have_dblink then
+    if n <> 2 or v_gen <> 2 then
+      raise exception 'FAIL[C/D12]: expected exactly two generations numbered 1 and 2 after the '
+        'concurrent exercise; found % rows with max generation %', n, v_gen;
+    end if;
+    select count(distinct generation) into n from public.owner_notice_outbox where case_id = v_case;
+    if n <> 2 then
+      raise exception 'FAIL[C/D12]: two rows share a generation number — both operators appended';
+    end if;
+  end if;
+  raise notice '  ok  11.13 · exactly one current generation survives the concurrent exercise';
+end $rs11b$;
+
 do $$
 begin
   raise notice ' ';

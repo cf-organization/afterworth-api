@@ -52,6 +52,22 @@ const READ_ONLY_FILES = [
    * probes were removed rather than the file being left ungoverned.
    */
   "scripts/verifyPhaseADeployment.mjs",
+  /**
+   * ★ PHASE 11-OC / PHASE C. The Phase C deployment verifier.
+   *
+   * It is the sharpest case this list has governed so far, because the thing it verifies IS a
+   * mutation RPC. The obvious design — probe `reissue_owner_safety_notice` with a nil uuid and read
+   * back its refusal sentinel — is refused for the reason this audit exists: "provably cannot write"
+   * would mean a human traced the branch, and a future edit that moved a side effect above the guard
+   * would silently make the verifier the thing that fired it. On this routine that side effect is an
+   * email to a living person about their own death process.
+   *
+   * So deployment is established from the READ side instead: the case-file projection carries
+   * `owner_notice_reissue`, computed by the assessment function the door and only the door shares.
+   * The script therefore never NAMES the writer in a call position at all, and this list is what
+   * keeps it that way.
+   */
+  "scripts/verifyPhaseCDeployment.mjs",
   "scripts/lib/t2Classification.mjs",
   "scripts/lib/branchBCheckpoint.mjs",
   "scripts/lib/branchBBaseline.mjs",

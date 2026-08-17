@@ -854,11 +854,23 @@ begin
            --
            -- This must match the Phase D predicate exactly, or the console and the door disagree about
            -- the same estate.
+           --
+           -- ★ PHASE C — THE EPISODE IS A KIND SET, NOT ONE LITERAL, AND THAT IS WHAT MAKES THE
+           -- REMEDY VISIBLE TO THE INSTRUMENT THAT MEASURES IT. A deliberate re-notice takes
+           -- `death_process.window_renotice` (migration 0059) so a second warning is never recorded
+           -- as the initial window-opening event. Left as the Phase A literal, this predicate could
+           -- not see a re-notice at all: a remediated estate would keep reporting as REFUSED however
+           -- many times it was re-noticed, its eventual provider acceptance would never be counted,
+           -- and Phase C would be inert in exactly the census built to prove Phase C works.
+           --
+           -- Read from `owner_notice_episode_kinds()` rather than restated, for the reason
+           -- `owner_notice_claim_visibility()` gives: two literals are two opinions about the same
+           -- bytes, and the door and the census must never hold different ones.
            exists (
              select 1 from public.owner_notice_outbox a
               where a.case_id = cc.case_id
                 and a.channel = 'email'
-                and a.notice_kind = 'death_process.window_opened'
+                and a.notice_kind = any (public.owner_notice_episode_kinds())
                 and a.notice_accepted_at is not null
            ) as accepted_any,
            -- Does the estate carry any unlinkable pre-Phase-A row? Only consulted when no current
@@ -866,10 +878,15 @@ begin
            (select count(*) from public.owner_notice_outbox z
              where z.estate_id = cc.estate_id and z.case_id is null) as orphan_rows
       from cur_case cc
+      -- Phase C: the CURRENT generation may be a re-notice, so the join reads the episode kind SET
+      -- for the same reason `accepted_any` above does. Left as one literal, a remediated estate would
+      -- report `no_current_notice` — an estate that has just been re-noticed described as one that
+      -- was never dispatched, which is the opposite of the truth and would send an operator to
+      -- dispatch a window that is already open.
       left join public.owner_notice_outbox o
         on o.case_id = cc.case_id
        and o.channel = 'email'
-       and o.notice_kind = 'death_process.window_opened'
+       and o.notice_kind = any (public.owner_notice_episode_kinds())
        and o.superseded_by is null
   ),
   classified as (

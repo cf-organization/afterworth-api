@@ -46,6 +46,13 @@ export const MUTATION_RPCS = Object.freeze([
   'claim_owner_notices',
   'record_owner_notice_outcome',
   'purge_outbox_rows',
+  // ★ PHASE 11-OC / PHASE C. The operator re-notice APPENDS a generation to a live safety queue and
+  // writes an audit row. A read-only instrument that named it could queue mail to a living owner as
+  // a side effect of measuring production — which is the failure this list exists to make unwritable
+  // rather than merely discouraged. `owner_notice_reissue_assessment` is deliberately NOT here: it is
+  // `stable`, so the engine itself forbids it a write, and it is the read a verifier legitimately
+  // needs to report how many episodes are remediable.
+  'reissue_owner_safety_notice',
   // grants
   'create_document_grant',
   'update_document_grant',
