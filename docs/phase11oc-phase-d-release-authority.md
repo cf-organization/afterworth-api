@@ -1,14 +1,15 @@
 # Phase 11-OC · PHASE D — the release door is re-anchored on provider acceptance
 
-**Status:** implemented and merged. **PRODUCTION DEPLOYMENT REQUIRED — not deployed.**
+**Status:** implemented, merged, and **DEPLOYED_AND_VERIFIED in production** (2026-08-18).
+See §12 for the deployment verification record.
 **Artifact:** `db/bundles/owner_notice_release_authority_bundle.sql`.
 **R13:** RESOLVED (§7). **Branch B:** NOT STARTED — gate closed (§11).
 
 ```
 PHASE A:   DEPLOYED_AND_VERIFIED
 PHASE C:   DEPLOYED_AND_VERIFIED
-PHASE D:   IMPLEMENTATION COMPLETE · DEPLOYMENT_REQUIRED
-OB-2 PRODUCTION POLICY: NOT YET ACTIVE until Phase D is pasted
+PHASE D:   DEPLOYED_AND_VERIFIED
+OB-2 PRODUCTION POLICY: ACTIVE — the release door now requires provider acceptance
 ```
 
 ---
@@ -431,3 +432,73 @@ it is worth ASKING.
 
 **Branch B remains NOT STARTED — gate closed.** No Branch-B identity, estate, designation, grant or
 case was created; only the schema the future drill will use.
+
+---
+
+## 12 · DEPLOYMENT VERIFICATION RECORD — 2026-08-18
+
+**Artifact pasted:** `db/bundles/owner_notice_release_authority_bundle.sql`
+**Source:** `da34bdd4a4d98135b2a20b43ae81ee9ad90eaf56`
+**SHA256:** `ff5f59bb0a2d7f45bc8f5deea8ac7a0355419045d88ff4eaa5a5d5654b444e31` · 129 411 bytes
+
+### 12.1 · The first attempt failed, and how
+
+Two attempts preceded the successful paste. Both are recorded because each was a real defect and
+neither was in the product.
+
+1. **`0060 FAILED: … null value in column "id" of relation "users"`.** §4's synthetic fixture used
+   `insert into auth.users default values`, which works only against the harness's simplified
+   `auth.users`. Fixed in #87 — §4 now writes nothing at all. See §8.0.
+2. **`syntax error at or near "\"` on `\set ON_ERROR_STOP on`.** The three *source files* were
+   pasted individually rather than the bundle. The two function files are pure SQL and applied; the
+   migration is not — `\set` is a psql client directive the web editor cannot execute, which is
+   exactly why the builder strips it and wraps the artifact in one transaction. This was a **handoff
+   defect, not a code defect**: the handoff listed the bundle's internal part order beside the file
+   path, which read like three paste steps.
+
+   **There is only ever ONE paste target: the bundle.** The part order is what the builder assembled,
+   never an instruction. It left production briefly `PHASE_D_DEPLOYED_BUT_UNCERTIFIED` — correct
+   semantics live, 0060's assertions unrun — and was resolved by pasting the real artifact, which is
+   always safe: `create or replace` is idempotent and the whole thing is one transaction.
+
+### 12.2 · Post-deployment verification, all read-only
+
+| Instrument | Result |
+|---|---|
+| `verifyPhaseDDeployment.mjs` | **`PHASE_D_DEPLOYED`, exit 0** — 7 cases in the scan set |
+| `release_authority` projected | present, full key set, refusal code from the Phase D vocabulary |
+| **Clock anchor, proven arithmetically** | `no acceptance fact ⇒ release_eligible_at is NULL`, on a case whose lifecycle **does** carry a dispatch timestamp — a Phase C server produces a date there |
+| Disclosure posture | no address; no field claims delivery, receipt or opening |
+| Privilege posture | anon `permission_denied`; real admin at AAL1 `mfa_required` |
+| Phase C remedy | still deployed, still gated — `owner_notice_reissue` projected, verifier exit 0 |
+| Readiness census | `estates_at_door=0`, admitted 0, refused 0 · `0+0=0` |
+| Row census | total 1, legacy-unaccepted 1, superseded 0 · `0+1=1` |
+| Source/deployment drift | **exit 0** — source and deployment agree exactly on all 4 reconcilable contracts |
+| Standing fixture | **23/23, exit 0**, lock FREE |
+| Branch B | `BRANCH_B_FIXTURE_ABSENT` |
+
+**No release writer was invoked.** Deployment is established from read-only contract and projection
+evidence, which is sufficient because the projection and the door consume the *same*
+`owner_notice_release_authority` — the projection is not a proxy for the door's rule, it **is** the
+door's rule evaluated on the same row.
+
+**The bundle committing IS the proof that every 0060 assertion passed**, including the behavioural
+block: the artifact is one transaction, so any failed assertion would have aborted it.
+
+### 12.3 · What remains unproved, stated plainly
+
+**That a real release succeeds in production.** Executing one would irreversibly disclose an estate;
+that is not a check, it is the act itself. `PRODUCTION_RUNTIME_PROOF_PENDING` — Branch B, separately
+authorized, against a synthetic estate, after a real seven-day window.
+
+**And `notice_accepted_at` remains PROVIDER ACCEPTANCE.** Not delivery, not receipt, not proof that a
+living owner read anything. Phase D protects on the strongest persisted provider fact available and
+claims no delivery attestation.
+
+### 12.4 · One stale sentence in a neighbouring instrument
+
+`verifyPhaseCDeployment.mjs` prints *"the current predicate is not NARROWER than Phase D (the cutover
+has not landed)"*. The **assertion is still correct** — it compares two counts, both 0 — but the
+parenthetical is now false, since the cutover has landed. It is the same class as the Phase D
+verifier's own overclaim (§6.2): prose that outlives the state it described. Recorded here rather
+than silently left, and worth correcting when that file is next touched.
