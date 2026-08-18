@@ -4225,6 +4225,96 @@ begin
   end if;
   raise notice '  ok  12.2 · A · an accepted notice on a PRIOR case: notice_episode_mismatch';
 
+  -- ── 12.2b · THE CURRENT-GENERATION LOOKUP IS SCOPED TO THE CASE, DETERMINISTICALLY ───────────
+  --
+  -- ★ FOUND BY MUTATION, AND THE PREVIOUS DETECTION WAS AN ACCIDENT. `p11ocd-episode-authority-is-
+  -- estate` rewrites the current-generation lookup from `o.case_id = p_case` to
+  -- `o.estate_id = v_c.estate_id`. It was reported DETECTED for two full matrix runs and then
+  -- NOT_DETECTED the moment migration 0060's synthetic fixture was removed — because 0060, not this
+  -- suite, was the thing catching it.
+  --
+  -- ★ WHY §12.2 CANNOT CATCH IT. That assertion asks about the PRIOR case, and the ladder refuses at
+  -- `v_canonical <> p_case` BEFORE the row lookup is ever consulted. The estate-scoped lookup is
+  -- never reached, so the mutation is invisible there.
+  --
+  -- ★ AND WHY §12.3 ONLY SOMETIMES DID. Estate P carries a current-generation row for the prior case
+  -- AND one for the current case. Under estate scope both match and the query ends `limit 1` with NO
+  -- `order by`, so which row is returned is a physical-order accident. A test that depends on which
+  -- of two equally-valid rows Postgres happens to hand back is not a control — it passes for a
+  -- reason unrelated to the rule, and stops passing when an unrelated fixture changes.
+  --
+  -- ★ SO THE FIXTURE MAKES THE TWO SCOPES GIVE DIFFERENT ANSWERS BY CONSTRUCTION. Estate W holds an
+  -- accepted notice on a PRIOR case and a CURRENT verified case with NO notice at all. Under case
+  -- scope there is exactly ONE possible answer — `no_current_notice`. Under estate scope there is
+  -- also exactly one — the prior case's accepted row. Neither depends on ordering, so the detection
+  -- cannot come and go.
+  declare
+    W uuid; v_wprior uuid; v_wcur uuid; v_wdesig uuid;
+  begin
+    insert into public.estates (owner_id, name) values (OWNER_P, 'RS Estate W-OCD') returning id into W;
+    insert into public.estate_memberships (estate_id, user_id, role, status)
+    values (W, OWNER_P, 'primary_user', 'approved');
+    insert into public.estate_designations (estate_id, user_id, designation_type, status)
+    values (W, EXEC_P, 'executor', 'active') returning id into v_wdesig;
+
+    -- The PRIOR episode: decided, then rejected, and its notice WAS accepted long enough ago to have
+    -- elapsed. This is the row an estate-scoped lookup would wrongly find.
+    insert into public.death_verification_cases
+      (estate_id, status, initiated_by, initiator_designation_id, initiator_capacity,
+       required_level_at_initiation, attained_level, decided_by, decided_at)
+    values (W, 'rejected', EXEC_P, v_wdesig, 'executor', 'enhanced_kyc', 'enhanced_kyc',
+            ADMIN_P, now() - interval '200 days')
+    returning id into v_wprior;
+    insert into public.owner_notice_outbox
+      (estate_id, user_id, channel, recipient, notice_kind, status, case_id, generation,
+       dispatched_at, notice_accepted_at)
+    values (W, OWNER_P, 'email', 'rs-owner-p@example.invalid', 'death_process.window_opened',
+            'dispatched', v_wprior, 1, now() - interval '199 days', now() - interval '199 days');
+
+    -- The CURRENT episode: verified, at the window, and carrying NO notice whatsoever.
+    insert into public.death_verification_cases
+      (estate_id, status, initiated_by, initiator_designation_id, initiator_capacity,
+       required_level_at_initiation, attained_level, decided_by, decided_at)
+    values (W, 'verified', EXEC_P, v_wdesig, 'executor', 'enhanced_kyc', 'enhanced_kyc',
+            ADMIN_P, now() - interval '20 days')
+    returning id into v_wcur;
+    insert into public.estate_lifecycle (estate_id, state, owner_notified_at,
+                                         safety_notification_id, challenge_window_started_at)
+    values (W, 'challenge_window', now() - interval '19 days', gen_random_uuid(),
+            now() - interval '19 days')
+    on conflict (estate_id) do update set state = 'challenge_window';
+
+    -- PRECONDITION: the two scopes must genuinely disagree, or this proves nothing.
+    if (select count(*) from public.owner_notice_outbox o
+         where o.case_id = v_wcur and o.superseded_by is null) <> 0 then
+      raise exception 'FAIL[12.2b precondition]: the current case already has a notice, so an '
+        'estate-scoped lookup would find the same row and the fixture cannot distinguish the scopes';
+    end if;
+    if (select count(*) from public.owner_notice_outbox o
+         where o.estate_id = W and o.superseded_by is null and o.notice_accepted_at is not null) <> 1 then
+      raise exception 'FAIL[12.2b precondition]: the estate does not carry exactly one accepted '
+        'current-generation row from the PRIOR case, so estate scope has no wrong answer to give';
+    end if;
+
+    v_auth := public.owner_notice_release_authority(v_wcur);
+    if (v_auth ->> 'refusal_code') is distinct from 'no_current_notice' then
+      raise exception 'FAIL[12.2b/D3]: the current case has NO notice of its own, yet the authority '
+        'answered % — the current-generation lookup is scoped to the ESTATE rather than the CASE, so '
+        'an accepted notice from a death process that was REJECTED 200 days ago supplies the '
+        'qualifying row for a live one', v_auth;
+    end if;
+    if (v_auth -> 'notice_id') is distinct from 'null'::jsonb then
+      raise exception 'FAIL[12.2b/D3]: the authority named notice % for a case that has none',
+        v_auth ->> 'notice_id';
+    end if;
+    if coalesce((v_auth ->> 'accepted')::boolean, false) then
+      raise exception 'FAIL[12.2b/D3]: the authority reports an acceptance fact for a case with no '
+        'notice — it is reading another episode''s row';
+    end if;
+    raise notice '  ok  12.2b · D3 · a current case with NO notice of its own answers '
+      'no_current_notice, even beside a 200-day-old ACCEPTED notice on a rejected prior case';
+  end;
+
   -- ── 12.3 · C/G/H — CURRENT EPISODE, NO ACCEPTANCE FACT, ACROSS EVERY STATUS ──────────────────
   --
   -- ★ THE LOOP IS THE POINT (D2). The authority must refuse identically for all six statuses in the

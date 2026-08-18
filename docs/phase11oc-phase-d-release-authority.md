@@ -150,6 +150,29 @@ Proven together in suite §12.4. **No manual SQL repair is required, or permitte
 | vitest (api) | 646 passed |
 | admin console | 105 passed · typecheck clean · lint clean |
 
+### 6.1b · A detection that was an accident, and is now deterministic
+
+`p11ocd-episode-authority-is-estate` rewrites the authority's current-generation lookup from
+`o.case_id = p_case` to `o.estate_id = v_c.estate_id`. It was reported **DETECTED for two full matrix
+runs** and then **NOT_DETECTED** the moment migration 0060's synthetic fixture was removed — because
+**0060, not the suite, had been catching it.**
+
+Two reasons the suite missed it, both worth recording:
+
+- **§12.2 cannot see it.** That assertion asks about the PRIOR case, and the ladder refuses at
+  `v_canonical <> p_case` *before* the row lookup is consulted. The estate-scoped query is never
+  reached.
+- **§12.3 only sometimes did.** Estate P carries a current-generation row for the prior case *and*
+  one for the current case. Under estate scope both match, and the query ends `limit 1` with **no
+  `order by`** — so which row comes back is a physical-order accident. A test that depends on which
+  of two equally-valid rows Postgres hands back is not a control: it passes for a reason unrelated to
+  the rule, and stops passing when an unrelated fixture changes.
+
+**§12.2b makes the two scopes disagree by construction.** Estate W holds an accepted notice on a
+*rejected prior* case and a *current verified* case with **no notice at all**. Case scope has exactly
+one possible answer (`no_current_notice`); estate scope has exactly one wrong one (the prior case's
+accepted row). Neither depends on ordering, so the detection cannot come and go.
+
 ### 6.2 · The verifier's own summary is now a tested surface
 
 `verifyPhaseDDeployment.mjs` shipped printing `PROVED: the Phase D release authority is deployed`
