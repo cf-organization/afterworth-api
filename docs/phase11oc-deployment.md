@@ -218,7 +218,8 @@ satisfied in the repository **and now in production**: Phase C was pasted and ve
 therefore discharged, and Phase D DEVELOPMENT is unblocked. Phase D **deployment** remains closed
 pending R13 resolution, the release-predicate and clock cutover, full replay and mutation proof.
 
-**R13 remains PENDING.** Phase D will break the historical self-checks in migrations **0056** (two
+**R13 is RESOLVED by Phase D** (see `docs/phase11oc-phase-d-release-authority.md` §7).
+Historically, and left here as the record of what was expected: Phase D will break the historical self-checks in migrations **0056** (two
 guards) and **0057** (one), plus four mutation fixtures — seven pinning sites, enumerated in
 `phase11oc-release-acceptance-authority.md` §7.3. Those guards are **deliberately unmodified**: they
 currently pass, and while they pass they are active evidence that the cutover has not happened. The

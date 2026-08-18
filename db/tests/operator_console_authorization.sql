@@ -347,18 +347,70 @@ begin
 
   v_json := harness_op.as_admin_json(ADMIN_A,
     format('select public.admin_get_death_verification_case(%L)', CASE_K));
-  -- The notice was dispatched moments ago, so the 7-day window CANNOT have elapsed…
+  if (v_json -> 'window' ->> 'configured') <> 'true' then
+    raise exception 'FAIL: the console reports the window unconfigured when policy holds 7 days';
+  end if;
+
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ PHASE 11-OC / PHASE D — TWO DISTINCT REFUSALS, AND THE CONSOLE MUST NAME BOTH THE SAME WAY
+  --   THE DOOR DOES. Before Phase D there was only one, and it was the WRONG one.
+  -- ══════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- STATE 1 · the notice was queued moments ago and NOTHING has been accepted. The old console said
+  -- "the window has not elapsed", which is a statement about the CLOCK and quietly conceded that the
+  -- notice itself qualified. It never did — no message had been sent at all.
   if (v_json -> 'window' ->> 'elapsed') <> 'false' then
     raise exception 'FAIL: the console reports an elapsed window seconds after dispatch';
   end if;
-  if (v_json -> 'window' ->> 'configured') <> 'true' then
-    raise exception 'FAIL: the console reports the window unconfigured when policy holds 7 days';
+  if (v_json -> 'release_authority' ->> 'ready') <> 'false'
+     or (v_json -> 'release_authority' ->> 'refusal_code') <> 'notice_never_accepted' then
+    raise exception 'FAIL[OC/D]: with no acceptance fact the projection reports ready=% code=% — '
+      'the console must refuse for the reason the door refuses, not for the clock',
+      v_json -> 'release_authority' ->> 'ready',
+      v_json -> 'release_authority' ->> 'refusal_code';
+  end if;
+  -- ★ AND THE ELIGIBILITY DATE IS NULL, NOT A DATE COMPUTED FROM PROVENANCE. A console that filled
+  -- this in from `owner_notified_at` would show operators a deadline the door does not recognise.
+  if (v_json -> 'window' -> 'release_eligible_at') is distinct from 'null'::jsonb then
+    raise exception 'FAIL[OC/D]: release_eligible_at is % with no acceptance fact — it must be NULL '
+      'until there is an acceptance instant to anchor on', v_json -> 'window' -> 'release_eligible_at';
+  end if;
+  perform harness_op.expect_err('release-no-acceptance', ADMIN_B, harness_op.aal2(ADMIN_B),
+    format('select public.authorize_release(%L, %L)', K, 'harness'), 'notice_never_accepted');
+  raise notice '  ok   5a · no acceptance fact: projection and door BOTH say notice_never_accepted, '
+    'and release_eligible_at is NULL rather than derived from provenance';
+
+  -- STATE 2 · the provider accepts, so the clock finally has something to run from — and only NOW is
+  -- "the window has not elapsed" a true description of this estate.
+  perform public.record_owner_notice_outcome(
+    (select o.id from public.owner_notice_outbox o
+      where o.estate_id = K and o.superseded_by is null limit 1), 'providerAccepted');
+  v_json := harness_op.as_admin_json(ADMIN_A,
+    format('select public.admin_get_death_verification_case(%L)', CASE_K));
+  if (v_json -> 'window' ->> 'elapsed') <> 'false' then
+    raise exception 'FAIL: the console reports an elapsed window seconds after acceptance';
+  end if;
+  if (v_json -> 'release_authority' ->> 'refusal_code') <> 'release_window_not_elapsed' then
+    raise exception 'FAIL[OC/D]: after acceptance the projection refuses with % rather than the '
+      'clock', v_json -> 'release_authority' ->> 'refusal_code';
+  end if;
+  -- ★ THE SERVER OWNS THE ARITHMETIC. The console is handed the instant; it derives nothing.
+  if (v_json -> 'window' -> 'release_eligible_at') is null
+     or (v_json -> 'window' -> 'release_eligible_at') = 'null'::jsonb then
+    raise exception 'FAIL[OC/D]: release_eligible_at is still NULL after a real provider acceptance';
+  end if;
+  if (v_json -> 'window' ->> 'release_eligible_at')::timestamptz
+     is distinct from (v_json -> 'release_authority' ->> 'notice_accepted_at')::timestamptz
+                      + public.challenge_window_duration() then
+    raise exception 'FAIL[OC/D]: the projected eligibility instant is not notice_accepted_at + the '
+      'configured window — the console is anchored on something the door does not use';
   end if;
   -- …and the release door agrees, which is the assertion that matters: a console that disagreed
   -- with the door would offer an action that fails, or hide one that would succeed.
   perform harness_op.expect_err('release-before-window', ADMIN_B, harness_op.aal2(ADMIN_B),
     format('select public.authorize_release(%L, %L)', K, 'harness'), 'release_window_not_elapsed');
-  raise notice '  ok   projection says not-elapsed and the door refuses for the same reason';
+  raise notice '  ok   5b · after acceptance: projection says not-elapsed, anchors the date on the '
+    'acceptance fact, and the door refuses for the same reason';
 
   -- ══════════════════════════════════════════════════════════════════════════════════════════════
   raise notice '6 · reading the case file MOVES NOTHING';

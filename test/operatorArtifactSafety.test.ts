@@ -114,7 +114,18 @@ describe("0 · the audit is reading something", () => {
     // that a running system reaches on its own, and the drain will never re-send a terminal row. With
     // no remedy, the first post-cutover provider failure produces a permanently unreleasable estate
     // whose only recovery is hand-written SQL against a safety table.
-    expect(artifacts.length).toBe(14);
+    //
+    // ★ 11-OC / PHASE D IS THE 15th, AND IT IS THE ONE THE PREVIOUS FOURTEEN WERE STAGED AROUND.
+    // It carries `release_safety.sql`, `operator_console.sql` and migration 0060: the canonical
+    // release authority, `authorize_release` re-anchored on the acceptance FACT rather than on a
+    // status nothing can falsify, `begin_challenge_window` re-scoped to the current episode WITHOUT
+    // requiring acceptance, and the projection reading the same authority the door does.
+    //
+    // ★ ITS PART ORDER IS INVERTED RELATIVE TO EVERY EARLIER PHASE, and that is not an oversight.
+    // Phase D contains no DDL, so its migration is an ASSERTION artifact and every assertion in it
+    // inspects the function bodies. A migration cannot certify a cutover that has not been pasted
+    // yet, so 0060 is LAST in the bundle rather than first.
+    expect(artifacts.length).toBe(15);
     for (const a of artifacts) expect(read(a).length).toBeGreaterThan(1000);
   });
 });

@@ -3,7 +3,8 @@
 **Status:** implemented, merged, and **DEPLOYED_AND_VERIFIED in production** (2026-08-17).
 See §14 for the deployment verification record.
 **Artifact:** `db/bundles/owner_notice_reissue_bundle.sql`.
-**Phase D:** not built. **R13:** pending Phase D. **Branch B:** not started.
+**Phase D:** IMPLEMENTED, deployment required — `docs/phase11oc-phase-d-release-authority.md`.
+**R13:** RESOLVED by Phase D. **Branch B:** not started, gate closed.
 
 ---
 

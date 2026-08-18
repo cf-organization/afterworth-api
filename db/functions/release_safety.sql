@@ -26,11 +26,20 @@
 -- Whether that class is sufficient to start a release clock in production is part of the window-
 -- duration product decision; until an operator configures a duration, no window can elapse.)
 --
--- ★ THE TIEBREAK IS STRUCTURAL (R14). Release requires the window STRICTLY elapsed:
--- `now() > owner_notified_at + duration`. At the exact boundary instant the release refuses while
--- the challenge still succeeds; both serialize on the lifecycle row lock; and the transition map
--- has no edge out of challenge_halted, so a committed challenge is final in 11-E — no resume, no
--- admin override (R: deliberately absent, a future product decision).
+-- ★ THE TIEBREAK IS STRUCTURAL (R14). Release requires the window STRICTLY elapsed. At the exact
+-- boundary instant the release refuses while the challenge still succeeds; both serialize on the
+-- lifecycle row lock; and the transition map has no edge out of challenge_halted, so a committed
+-- challenge is final in 11-E — no resume, no admin override (R: deliberately absent, a future
+-- product decision).
+--
+-- ★ PHASE 11-OC / PHASE D MOVED THE ANCHOR THAT THE STRICTNESS APPLIES TO, AND NOTHING ELSE ABOUT
+-- IT. The comparison was `now() > owner_notified_at + duration`; it is now
+-- `now() > notice_accepted_at + duration`, decided by `owner_notice_release_authority` below.
+-- `owner_notified_at` is stamped when the email row is QUEUED, so the seven days used to run while
+-- the message sat unsent and kept running when the provider rejected it outright. The seven-day
+-- POLICY is unchanged — `challenge_window_duration()` is untouched — only the instant it counts
+-- from. There is deliberately no fallback from acceptance to provenance: a coalesce would silently
+-- restore the defective clock for exactly the legacy population Phase D exists to refuse.
 --
 -- ★ CHALLENGE PROVENANCE IS PROTECTED (§17). The audit row records THAT the owner challenged and
 -- from which lifecycle state — never a channel, device, address, or location. `write_audit` does
@@ -84,9 +93,13 @@ comment on function public.challenge_window_duration() is
 -- the estate at `death_verified` where nothing can release, rather than starting a clock nobody can
 -- hear ticking.
 --
--- ★ D2 — THE CLOCK STARTS HERE. `owner_notified_at` is stamped at dispatch, so the seven days run
--- from the moment the owner was told; not from claim creation, evidence upload, verification, or
--- administrative review, none of which the owner can see.
+-- ★ D2 — `owner_notified_at` IS STAMPED HERE, AND SINCE PHASE 11-OC / PHASE D IT IS PROVENANCE
+-- RATHER THAN THE RELEASE CLOCK. It records the instant the operator initiated dispatch — not claim
+-- creation, evidence upload, verification or administrative review, none of which the owner can see
+-- — and that remains the right fact for this row to carry. What it is NOT is proof that a message
+-- left the building: it is written when the outbox row is QUEUED, before any worker has run. The
+-- seven days now run from `notice_accepted_at` on the accepted notice; see
+-- `owner_notice_release_authority`. This routine is unchanged by Phase D.
 create or replace function public.dispatch_owner_safety_notice(p_estate uuid)
  returns text
  language plpgsql
@@ -200,6 +213,224 @@ comment on function public.dispatch_owner_safety_notice(uuid) is
   'confirmation. An unresolvable owner address refuses the transition. Admin-gated; idempotent.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- owner_notice_release_authority(p_case) → jsonb                                       [INTERNAL]
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- ★ PHASE 11-OC · PHASE D — THE ONE PLACE THE RELEASE DOOR'S OWNER-NOTICE AUTHORITY IS DECIDED.
+--
+-- Before this phase, `authorize_release` asked TWO questions in two places and got the wrong answer
+-- to both. It asked "does an email row exist for this ESTATE with `status <> 'cancelled'`" — a
+-- predicate nothing in production can falsify, because `dispatch_owner_safety_notice` inserts that
+-- row in the same transaction as the transition and no production path ever writes `'cancelled'`.
+-- And it measured the seven days from `owner_notified_at`, which is stamped when the row is QUEUED:
+-- the clock ran while the message sat unsent, and kept running when the provider rejected it.
+--
+-- Phase D replaces both with ONE fact the database can actually prove:
+--
+--        THE CURRENT GENERATION OF THE CURRENT CASE EPISODE HAS `notice_accepted_at`.
+--
+-- ★ WHAT THAT FACT IS, AND WHAT IT IS NOT — stated here because this is the last place anybody
+-- reads before trusting it. `notice_accepted_at` is stamped by exactly one branch of exactly one
+-- routine (`record_owner_notice_outcome`, `providerAccepted`). It means the EMAIL PROVIDER ACCEPTED
+-- THE MESSAGE FOR DELIVERY. It is **not** delivered, not received, not opened, not read, and no
+-- caller, projection, console label or document may rename it into any of those. It is the
+-- strongest persisted provider fact this system currently has, and Phase D protects on that rather
+-- than on a weaker one — never on a stronger one it cannot observe.
+--
+-- ★ IT IS A SEPARATE FUNCTION FOR THE `owner_notice_reissue_assessment` REASON, WHICH IS NOT
+-- TIDINESS. Three callers need this verdict: the release door, the operator case file, and the
+-- deployment verifier. A second opinion in any of them — a status list in a projection, a `case`
+-- expression in the case file, a TypeScript mirror in the console — is a policy that drifts, and
+-- the failure mode is an operator being offered a release the server refuses, or (far worse) a
+-- console that says READY while the door's own rule says otherwise. So the door and the projection
+-- call the SAME function, and `db/tests/release_safety_authorization.sql` §12 asserts they agree on
+-- every fixture rather than assuming they must.
+--
+-- ★ FOUR INDEPENDENT AUTHORITIES, AND EVERY ONE OF THEM MUST HOLD.
+--
+--   1. EPISODE  — the notice must belong to the CURRENT death-verification case (D3). One estate may
+--                 legitimately run several death processes over time: `rejected` and `cancelled`
+--                 both return the lifecycle to `active`, and a later case opens a new episode. An
+--                 accepted notice from a PRIOR, REJECTED process authorizing a release under a NEW
+--                 case is the estate-scope defect this whole phase exists to close. The canonical
+--                 case is re-resolved HERE from the estate and the caller's `p_case` is compared
+--                 against it — never trusted as the episode.
+--
+--   2. GENERATION — the notice must be the STRUCTURALLY current generation (D4): the row nothing
+--                 supersedes. `superseded_by is null`, which is a partial-unique-indexed wall, not
+--                 `max(generation)`, not `max(requested_at)`, not "the newest timestamp", not array
+--                 order. A derived-max invariant cannot be expressed as a constraint, so a door
+--                 resting on one rests on an invariant only the writer maintains.
+--
+--   3. ACCEPTANCE — `notice_accepted_at is not null` on that row (D1). NOT `status = 'dispatched'`,
+--                 NOT `status <> 'cancelled'`, NOT a status allow-list of any shape. The authority
+--                 is VOCABULARY-INDEPENDENT on purpose: a seventh status added to the CHECK
+--                 constraint tomorrow must not become release-qualifying merely by not being
+--                 `'cancelled'`, and it cannot, because no status string appears in this decision.
+--
+--   4. CLOCK   — `now() > notice_accepted_at + challenge_window_duration()`, STRICTLY (D5). At the
+--                 exact boundary instant this refuses and the owner's challenge — serialized on the
+--                 same lifecycle row lock — still succeeds. `owner_notified_at` is PROVENANCE and is
+--                 never the anchor; there is deliberately no `coalesce` from one to the other,
+--                 because a fallback would silently restore the defective clock for exactly the
+--                 legacy population Phase D exists to refuse.
+--
+-- ★ CURRENT-GENERATION-ONLY AND EPISODE-EXISTENTIAL AGREE ON EVERY REACHABLE STATE, AND THAT WAS
+-- PROVEN BY READING THE SETTLE PATH RATHER THAN ASSUMED. `owner_notice_release_readiness_census`
+-- reads acceptance as an existential over the whole episode, and argues — correctly — that
+-- authority must be MONOTONE: if issuing a re-notice could REMOVE release authority, an operator
+-- would hold a lever that suppresses a release. This function reads only the current generation,
+-- which looks like it breaks that property. It does not, and the reason is structural:
+--
+--   · `record_owner_notice_outcome` no-ops on any row already `dispatched`, `outcomeUncertain`,
+--     `failedPermanent` or `cancelled`, so a settled row can never gain an acceptance stamp.
+--   · `owner_notice_reissue_assessment` permits a re-notice ONLY when the current generation is
+--     `failedPermanent`, `outcomeUncertain`, or `dispatched` with NULL acceptance — all settled,
+--     all NULL-acceptance at the instant of supersession. `queued` and `processing` (the only rows
+--     that can still gain acceptance) are refused, so they are never superseded.
+--
+-- Therefore a superseded row carrying `notice_accepted_at` is UNREACHABLE through the deployed
+-- doors, the two readings can differ only on a state the system cannot produce, and reading the
+-- current generation costs no monotonicity. It is nevertheless read strictly, because D4 asks for
+-- the structural invariant rather than for an argument that the loose one happens to be safe — and
+-- §12 mutation-proves that a hand-written superseded acceptance authorizes NOTHING.
+--
+-- ★ IT FAILS CLOSED, AND EVERY REFUSAL HAS A NAME FROM A CLOSED SET. There is no fall-through: a
+-- state this ladder does not recognise lands on an explicit code rather than joining a neighbouring
+-- branch. `notice_never_accepted` is deliberately NOT called `notice_not_delivered` — mailbox
+-- delivery is not known to this system and naming it would be the console inventing the one fact
+-- this phase exists to stop being invented.
+--
+-- ★ IT DISCLOSES NO IDENTITY. No recipient address, no owner user id, no estate name, no provider
+-- secret. Row ids, a generation number, two timestamps and a code — the facts an operator needs to
+-- know whether a release call will be refused, and nothing that describes a living person.
+create or replace function public.owner_notice_release_authority(p_case uuid)
+ returns jsonb
+ language plpgsql
+ security definer
+ stable
+ set search_path to 'public'
+as $function$
+declare
+  v_c         public.death_verification_cases%rowtype;
+  v_state     text;
+  v_canonical uuid;
+  v_row       public.owner_notice_outbox%rowtype;
+  v_duration  interval;
+  v_eligible  timestamptz;
+  v_elapsed   boolean := false;
+  v_refusal   text;
+begin
+  if p_case is null then
+    return jsonb_build_object('ready', false, 'refusal_code', 'case_not_found',
+                              'window_configured', false, 'elapsed', false);
+  end if;
+
+  select * into v_c from public.death_verification_cases c where c.id = p_case;
+  if not found then
+    return jsonb_build_object('ready', false, 'refusal_code', 'case_not_found',
+                              'window_configured', false, 'elapsed', false);
+  end if;
+
+  -- AUTHORITY 1 · THE EPISODE. Resolved canonically from the ESTATE and compared against the
+  -- caller's case — the identical derivation `authorize_release`, `dispatch_owner_safety_notice`,
+  -- `owner_notice_reissue_assessment` and the readiness census all use. A caller cannot nominate an
+  -- episode, so a historical case cannot be handed in as if it were current.
+  select c.id into v_canonical
+    from public.death_verification_cases c
+   where c.estate_id = v_c.estate_id and c.status = 'verified'
+   order by c.decided_at desc
+   limit 1;
+
+  select l.state into v_state from public.estate_lifecycle l where l.estate_id = v_c.estate_id;
+  v_state := coalesce(v_state, 'active');
+
+  -- AUTHORITY 2 · THE CURRENT GENERATION. Structural — `superseded_by is null` — never a max().
+  -- The kind SET comes from `owner_notice_episode_kinds()` rather than a literal, for the reason
+  -- Phase C gives: a literal here could not see a re-notice, so a remediated estate would be
+  -- refused by the door that its remedy was built to unblock.
+  select * into v_row
+    from public.owner_notice_outbox o
+   where o.case_id = p_case
+     and o.channel = 'email'
+     and o.notice_kind = any (public.owner_notice_episode_kinds())
+     and o.superseded_by is null
+   limit 1;
+
+  v_duration := public.challenge_window_duration();
+
+  -- AUTHORITY 4 · THE CLOCK, computed before the ladder so the projection can render the facts even
+  -- on a branch that refuses. STRICT `>`; the coalesce is the three-valued-logic discipline — a NULL
+  -- comparison must refuse, not pass.
+  if v_row.notice_accepted_at is not null and v_duration is not null then
+    v_eligible := v_row.notice_accepted_at + v_duration;
+    v_elapsed  := coalesce(now() > v_eligible, false);
+  end if;
+
+  -- ── THE REFUSAL LADDER, IN THE ORDER THE DOOR APPLIES IT ─────────────────────────────────────
+  if v_canonical is null then
+    v_refusal := 'no_verified_case';
+  elsif v_canonical <> p_case then
+    -- A historical case on an estate that has moved on, or a case that was never verified. Either
+    -- way the accepted notice it may carry authorizes NOTHING under the current process.
+    v_refusal := 'notice_episode_mismatch';
+  elsif v_state is distinct from 'challenge_window' then
+    -- The release door's own state guard, restated here so the projection refuses for the same
+    -- reason the routine will. `challenge_halted` lands here: release can never proceed from a halt.
+    v_refusal := 'invalid_release_state';
+  elsif v_row.id is null then
+    -- No notice names this episode at all. Fail closed: an estate with no provable notice is not an
+    -- estate whose owner was warned. Pre-Phase-A rows carry a NULL case_id and land here by design —
+    -- they belong to no provable episode and are never guessed into one.
+    v_refusal := 'no_current_notice';
+  elsif v_row.notice_accepted_at is null then
+    -- AUTHORITY 3 · THE LEGACY / UNSETTLED CLASS (D6). Covers every non-accepted shape at once and
+    -- WITHOUT consulting a status string: `queued` (never sent), `processing` (never settled),
+    -- `outcomeUncertain` (unknown), `failedPermanent` (definitively failed), `cancelled`, a
+    -- pre-Phase-A `dispatched` row whose stamp did not exist, and any seventh status a future CHECK
+    -- constraint admits. The remedy is a Phase C re-notice that PRODUCES the fact, never a backfill
+    -- that invents one and never a manual UPDATE of a safety table.
+    v_refusal := 'notice_never_accepted';
+  elsif v_duration is null then
+    -- NULL duration means NOT CONFIGURED, which means the window never elapses and release refuses.
+    v_refusal := 'release_window_not_configured';
+  elsif not v_elapsed then
+    v_refusal := 'release_window_not_elapsed';
+  end if;
+
+  return jsonb_build_object(
+    'ready',               v_refusal is null,
+    'refusal_code',        v_refusal,
+    'case_id',             p_case,
+    'case_is_current',     v_canonical is not null and v_canonical = p_case,
+    'lifecycle_state',     v_state,
+    'notice_id',           v_row.id,
+    'generation',          v_row.generation,
+    'notice_kind',         v_row.notice_kind,
+    -- THE FACT. NULL is a real answer and every consumer must render it as one.
+    'notice_accepted_at',  v_row.notice_accepted_at,
+    'accepted',            v_row.id is not null and v_row.notice_accepted_at is not null,
+    'window_duration',     v_duration::text,
+    'window_configured',   v_duration is not null,
+    -- Anchored on ACCEPTANCE, never on owner_notified_at. NULL until there is an acceptance fact to
+    -- anchor on, which is the honest answer rather than a date computed from provenance.
+    'release_eligible_at', v_eligible,
+    'elapsed',             v_elapsed);
+end $function$;
+revoke execute on function public.owner_notice_release_authority(uuid)
+  from public, anon, authenticated;
+
+comment on function public.owner_notice_release_authority(uuid) is
+  'THE owner-notice release authority (Phase 11-OC / Phase D), consumed by both authorize_release '
+  'and the operator case-file projection so the console can never offer a release the door refuses. '
+  'A release qualifies ONLY when the CURRENT generation (superseded_by is null) of the CURRENT case '
+  'episode carries notice_accepted_at, and now() > that instant + challenge_window_duration() '
+  'STRICTLY. No status string participates in the decision, so a future status cannot become '
+  'release-qualifying by not being cancelled. notice_accepted_at is PROVIDER ACCEPTANCE and never '
+  'mailbox delivery; owner_notified_at is provenance and is never the clock. Every refusal carries '
+  'a NAMED code from a closed set. Discloses no address and no identity. INTERNAL.';
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- begin_challenge_window(p_estate) → text                                      [admin, AAL2+fresh]
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 --
@@ -208,6 +439,21 @@ comment on function public.dispatch_owner_safety_notice(uuid) is
 -- the transition map — so this routine's only legal input is an estate whose owner has already been
 -- sent an email and an in-app notice. The guarantee "no window opens un-notified" is now carried by
 -- the state machine rather than by this function remembering to check.
+--
+-- ★ PHASE D CORRECTS ITS INERT PREDICATE AND DELIBERATELY DOES **NOT** IMPORT THE RELEASE POLICY.
+--
+-- This door used to ask for an email row on the ESTATE with `status <> 'cancelled'` — the same
+-- vacuous test the release door carried, and inert for the same reason. Phase D replaces it with
+-- the fact it actually needs: A COMMITTED OWNER-SAFETY EMAIL NOTICE EXISTS FOR THE CURRENT CASE
+-- EPISODE. Case-scoped, so an accepted notice from a PRIOR death process cannot satisfy it; the
+-- current generation, so the check anchors on the same structural invariant the release door uses.
+--
+-- ★ AND IT MUST NOT REQUIRE `notice_accepted_at` (D7). Opening the window releases NOTHING — no
+-- grant activates, no tier changes, no document becomes readable; the lifecycle moves and the
+-- owner's challenge becomes available. The initial notice is normally still `queued` at this instant
+-- because the drain runs asynchronously, so requiring provider acceptance here would make the window
+-- unopenable until a worker had run, and would gate the owner's own protection on an email provider.
+-- The irreversible door is `authorize_release`, and that is the one Phase D tightens.
 create or replace function public.begin_challenge_window(p_estate uuid)
  returns text
  language plpgsql
@@ -240,15 +486,10 @@ begin
   if v_row.owner_notified_at is null or v_row.safety_notification_id is null then
     raise exception 'owner_not_notified' using errcode = 'P0001';
   end if;
-  if not exists (
-    select 1 from public.owner_notice_outbox o
-     where o.estate_id = p_estate
-       and o.channel = 'email'
-       and o.status <> 'cancelled'
-  ) then
-    raise exception 'owner_channel_unreachable' using errcode = 'P0001';
-  end if;
 
+  -- ★ THE EPISODE IS RESOLVED BEFORE THE NOTICE IS LOOKED FOR, AND THAT ORDER IS THE FIX. The
+  -- pre-Phase-D body checked the outbox by ESTATE and resolved the case afterwards, so a notice
+  -- belonging to any death process this estate had ever run satisfied the guard.
   select c.id into v_case
     from public.death_verification_cases c
    where c.estate_id = p_estate and c.status = 'verified'
@@ -256,6 +497,25 @@ begin
    limit 1;
   if v_case is null then
     raise exception 'no_verified_case' using errcode = 'P0001';
+  end if;
+
+  -- ★ PHASE D (D7) — A COMMITTED EMAIL NOTICE FOR **THIS** EPISODE, AND NOTHING STRONGER.
+  --
+  -- Case-scoped, so a notice from a prior rejected process cannot open a window under a new case.
+  -- Current generation (`superseded_by is null`), so this anchors on the same structural invariant
+  -- the release door uses — and, because supersession always writes a successor, "a current
+  -- generation exists" is equivalent to "any generation exists" for the episode. NO status string
+  -- and NO `notice_accepted_at`: the initial dispatch is normally still `queued` at this instant
+  -- (the drain is asynchronous), and gating the owner's own protection on a provider would be a
+  -- release-door policy applied to a door that discloses nothing.
+  if not exists (
+    select 1 from public.owner_notice_outbox o
+     where o.case_id = v_case
+       and o.channel = 'email'
+       and o.notice_kind = any (public.owner_notice_episode_kinds())
+       and o.superseded_by is null
+  ) then
+    raise exception 'no_current_notice' using errcode = 'P0001';
   end if;
 
   perform public.apply_estate_lifecycle_transition(
@@ -276,10 +536,13 @@ revoke execute on function public.begin_challenge_window(uuid) from public, anon
 grant  execute on function public.begin_challenge_window(uuid) to authenticated;
 
 comment on function public.begin_challenge_window(uuid) is
-  'Opens the owner-challenge window (Phase 11-E, rewritten 11-F). Its ONLY legal input is '
-  'owner_notification_dispatched — the death_verified -> challenge_window edge was deleted, so a '
-  'window cannot open on an un-notified owner even by mistake. Admin-gated; idempotent; discloses '
-  'nothing.';
+  'Opens the owner-challenge window (Phase 11-E, rewritten 11-F, re-scoped 11-OC/D). Its ONLY legal '
+  'input is owner_notification_dispatched — the death_verified -> challenge_window edge was deleted, '
+  'so a window cannot open on an un-notified owner even by mistake. Phase D replaced the inert '
+  'estate-scoped status <> cancelled predicate with the fact it needs: a committed email notice for '
+  'the CURRENT case episode (no_current_notice otherwise). It deliberately does NOT require '
+  'notice_accepted_at — opening the window discloses nothing and the initial notice is normally '
+  'still queued. Admin-gated; idempotent; discloses nothing.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- authorize_release(p_estate, p_reason) → text                                 [admin, AAL2+fresh]
@@ -301,6 +564,42 @@ comment on function public.begin_challenge_window(uuid) is
 -- ★ AND IT STILL MANUFACTURES NOTHING (D5). No grant, no tier, no membership, no designation. The
 -- lifecycle moves and the ONE canonical predicate answers differently for grants the owner already
 -- authored.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- ★ PHASE 11-OC / PHASE D — THE OWNER-NOTICE CUTOVER. WHAT CHANGED, AND WHAT DELIBERATELY DID NOT.
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- EXACTLY TWO defective semantics are replaced, and every other guard in this routine is preserved
+-- verbatim. Phase D makes release STRICTLY HARDER on every path and easier on none.
+--
+--   REPLACED · the owner-notice precondition
+--       was:  an email row on this ESTATE with `status <> 'cancelled'`
+--       now:  `owner_notice_release_authority(v_case)` — the CURRENT generation of the CURRENT
+--             episode carries `notice_accepted_at`
+--
+--   REPLACED · the release clock anchor
+--       was:  `now() > owner_notified_at + duration`   (stamped when the row was QUEUED)
+--       now:  `now() > notice_accepted_at + duration`  (stamped when the PROVIDER ACCEPTED it)
+--
+--   PRESERVED · admin gate · non-blank reason · idempotent `released` replay · lifecycle must be
+--   `challenge_window` · `owner_notified_at`/`safety_notification_id` present (now PROVENANCE, and
+--   kept precisely because Phase D must not make any path easier) · verified-case requirement ·
+--   reviewer_a DERIVED from the case decider · reviewer_b distinct · the `release_authorizations`
+--   CHECK constraint · live `challenge_window_duration()` · STRICT `>` · the audit row · the
+--   transition to `released`.
+--
+-- ★ THE REFUSAL ORDER IS UNCHANGED FOR EVERY PRE-EXISTING SENTINEL. `invalid_release_state`,
+-- `owner_not_notified`, `no_verified_case`, `reviewer_a_unresolved` and `two_person_rule_violated`
+-- all still fire before any clock or notice question, in that order, so a caller that was refused
+-- for one of those reasons before is refused for the same reason now. The acceptance authority
+-- occupies exactly the position the old `owner_channel_unreachable` predicate held relative to the
+-- clock: after the two-person rule, before the release is written.
+--
+-- ★ THE AUTHORITY IS CONSULTED, NEVER RESTATED. This routine contains no status list, no
+-- `superseded_by` test, no `case_id` join and no clock arithmetic of its own — all four live in
+-- `owner_notice_release_authority`, which the operator console reads through the SAME function. A
+-- second copy here is how a door and a console come to disagree in front of an operator holding an
+-- irreversible lever.
 create or replace function public.authorize_release(p_estate uuid, p_reason text)
  returns text
  language plpgsql
@@ -314,6 +613,7 @@ declare
   v_reviewer_a uuid;
   v_verified   timestamptz;
   v_duration   interval;
+  v_auth       jsonb;
 begin
   perform public.admin_require_gate();
   v_uid := auth.uid();
@@ -335,15 +635,12 @@ begin
     raise exception 'invalid_release_state' using errcode = 'P0001';
   end if;
 
-  -- The dispatch facts (D4). A window that somehow lacks them cannot elapse into disclosure.
+  -- The dispatch facts (D4), KEPT IN PHASE D AS PROVENANCE. These no longer decide when a release
+  -- may proceed — `owner_notice_release_authority` does — but removing them would make one path
+  -- easier, and Phase D makes no path easier. A window whose lifecycle row cannot even name the
+  -- dispatch that opened it cannot elapse into disclosure.
   if v_row.owner_notified_at is null or v_row.safety_notification_id is null then
     raise exception 'owner_not_notified' using errcode = 'P0001';
-  end if;
-  if not exists (
-    select 1 from public.owner_notice_outbox o
-     where o.estate_id = p_estate and o.channel = 'email' and o.status <> 'cancelled'
-  ) then
-    raise exception 'owner_channel_unreachable' using errcode = 'P0001';
   end if;
 
   select c.id, c.decided_by, c.decided_at into v_case, v_reviewer_a, v_verified
@@ -363,17 +660,27 @@ begin
     raise exception 'two_person_rule_violated' using errcode = 'P0001';
   end if;
 
-  v_duration := public.challenge_window_duration();
-  if v_duration is null then
-    raise exception 'release_window_not_configured' using errcode = 'P0001';
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ PHASE D — THE OWNER-NOTICE ACCEPTANCE AUTHORITY AND THE RELEASE CLOCK, IN ONE CONSULTATION.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- The verdict is read under the lifecycle row lock taken above, so the state it describes cannot
+  -- move between the answer and the write. `owner_notice_release_authority` is `stable` — it reads
+  -- the calling statement's snapshot — which is correct here for exactly that reason, and is the
+  -- same contract `reissue_owner_safety_notice` has with `owner_notice_reissue_assessment`.
+  --
+  -- ★ THE REFUSAL CODE IS RAISED VERBATIM, NEVER TRANSLATED. A `case` expression mapping the
+  -- authority's codes onto this routine's own sentinels would be a second policy: the console reads
+  -- the authority directly, so a translation layer here is precisely how the two come to describe
+  -- the same estate differently. `release_window_not_configured` and `release_window_not_elapsed`
+  -- are therefore still the strings a caller sees — they are now the AUTHORITY's names for them.
+  v_auth := public.owner_notice_release_authority(v_case);
+  if not (v_auth ->> 'ready')::boolean then
+    raise exception '%', v_auth ->> 'refusal_code' using errcode = 'P0001';
   end if;
-
-  -- ★ STRICTLY ELAPSED (D3). At the exact boundary instant this refuses and the owner challenge —
-  -- serialized on the same row lock — still succeeds. The coalesce is the three-valued-logic
-  -- discipline: a NULL comparison must refuse, not pass.
-  if not coalesce(now() > v_row.owner_notified_at + v_duration, false) then
-    raise exception 'release_window_not_elapsed' using errcode = 'P0001';
-  end if;
+  -- Read back for the audit, from the SAME verdict that authorized this release rather than from a
+  -- second lookup that could describe a different row.
+  v_duration := (v_auth ->> 'window_duration')::interval;
 
   insert into public.release_authorizations
     (estate_id, case_id, reviewer_a, reviewer_b, verified_at, authorized_at, released_at, audit_reason)
@@ -391,7 +698,17 @@ begin
           jsonb_build_object('severity', 'high', 'case_id', v_case,
                             'reviewer_a', v_reviewer_a, 'reviewer_b', v_uid,
                             'verified_at', v_verified,
+                            -- PROVENANCE, and labelled as such. It is no longer the clock, and an
+                            -- investigator reconstructing a disputed release a year later must be
+                            -- able to see which instant the seven days actually ran from.
                             'owner_notified_at', v_row.owner_notified_at,
+                            -- ★ THE FACT THE RELEASE RESTED ON, and the two derived instants, taken
+                            -- from the verdict that authorized it. Provider acceptance — never
+                            -- delivery, and the key name says so.
+                            'notice_accepted_at', v_auth ->> 'notice_accepted_at',
+                            'release_eligible_at', v_auth ->> 'release_eligible_at',
+                            'notice_id', v_auth ->> 'notice_id',
+                            'notice_generation', v_auth ->> 'generation',
                             'window_duration', v_duration::text,
                             'audit_reason', p_reason),
           'admin');
@@ -401,12 +718,15 @@ revoke execute on function public.authorize_release(uuid, text) from public, ano
 grant  execute on function public.authorize_release(uuid, text) to authenticated;
 
 comment on function public.authorize_release(uuid, text) is
-  'THE release transition (Phase 11-F): challenge_window -> released, by a SECOND platform operator. '
-  'Requires admin gate, a non-empty audit reason, a committed owner email + in-app notice, a '
-  'verified case, a STRICTLY elapsed 7-day window (ties go to the owner challenge), and '
-  'reviewer_b <> reviewer_a where reviewer_a is DERIVED from the case decider. Records a '
-  'release_authorizations row whose CHECK constraint makes a single-reviewer release unwritable by '
-  'any path. Creates no grant, tier, membership or designation.';
+  'THE release transition (Phase 11-F, re-anchored 11-OC/D): challenge_window -> released, by a '
+  'SECOND platform operator. Requires admin gate, a non-empty audit reason, the dispatch provenance '
+  'on the lifecycle row, a verified case, reviewer_b <> reviewer_a where reviewer_a is DERIVED from '
+  'the case decider, and — from Phase D — owner_notice_release_authority: the CURRENT generation of '
+  'the CURRENT case episode must carry notice_accepted_at (PROVIDER ACCEPTANCE, never mailbox '
+  'delivery) and the window must be STRICTLY elapsed from THAT instant, not from owner_notified_at. '
+  'No status string participates. Ties go to the owner challenge. Records a release_authorizations '
+  'row whose CHECK constraint makes a single-reviewer release unwritable by any path. Creates no '
+  'grant, tier, membership or designation.';
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────────
 -- challenge_death_process(p_estate) → text                          [the authenticated OWNER only]

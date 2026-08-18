@@ -5,8 +5,18 @@
 ```
 POLICY AUTHORITY:      Phase 11-OB2 Stage 3.5 decisions D1-D14 (authoritative)
 SUPERSEDES:            the OB-2 "Policy B" recommendation (see §11)
-PRODUCTION POLICY:     NOT YET ACTIVE — staged, Phase A first
+PRODUCTION POLICY:     NOT YET ACTIVE — active only once Phase D is pasted
 BRANCH B:              NOT STARTED — gate closed
+
+PHASE A:  DEPLOYED_AND_VERIFIED
+PHASE C:  DEPLOYED_AND_VERIFIED   docs/phase11oc-phase-c-owner-notice-reissue.md
+PHASE D:  IMPLEMENTED · DEPLOYMENT_REQUIRED
+          docs/phase11oc-phase-d-release-authority.md   ← the cutover, R13, and its evidence
+R13:      RESOLVED by Phase D (§7 of the Phase D document). The census in §7.3 below listed SEVEN
+          pinning sites; re-measuring at implementation time found NINE in-repo guards plus three
+          test-source pins, because 0058 and 0059 each added their own inversion guard AFTER that
+          census was written, and Phase A added a fifth mutation anchor. The corrected table is in
+          the Phase D document; §7.3 below is left in place as the record of what was believed.
 ```
 
 This document is the corrected successor to the Stage-3 design. Stage 3 was written before the

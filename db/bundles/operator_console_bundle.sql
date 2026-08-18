@@ -130,6 +130,10 @@ declare
   v_owner  uuid;
   v_id     uuid;
   v_def    text;
+  -- Phase D supersession bookkeeping — see the banner beside the release/window guards below.
+  v_ob2    boolean;
+  v_old    boolean;
+  v_new    boolean;
 begin
   -- ★ A POSITIVE CONTROL BEFORE THE ABSENCE CHECK. Find a real estate with a resolvable owner; if
   -- none exists the constraint cannot be exercised, and this migration says so rather than passing
@@ -185,23 +189,95 @@ begin
     raise exception '0056 FAILED: the status CHECK does not carry outcomeUncertain';
   end if;
 
-  -- ★ THE DOWNSTREAM GATES ARE UNCHANGED. A new status value must not have widened the two
-  -- predicates that decide whether a window may open and whether an estate may release. Both read
-  -- `status <> 'cancelled'`; if a later edit ever narrows them to `= 'dispatched'`, dispatch
-  -- INITIATION would silently have become delivery CONFIRMATION, and this fails.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  -- ★ SUPERSEDED BY MIGRATION 0060 (PHASE 11-OC / PHASE D) — AMENDED 2026-08-17, ASSERTION LAYER
+  --   ONLY. NO DEPLOYED SCHEMA BEHAVIOUR OF THIS MIGRATION CHANGED.
+  -- ════════════════════════════════════════════════════════════════════════════════════════════
+  --
+  -- ORIGINAL INVARIANT (OB-1 era, correct when written): a new `outcomeUncertain` status must not
+  -- have widened the two predicates that decide whether a window may open and whether an estate may
+  -- release. Both read `status <> 'cancelled'`, and this asserted that exact text on both bodies.
+  --
+  -- SUPERSEDING INVARIANT (OB-2, migration 0060): the release door no longer consults ANY status
+  -- string. It consults `owner_notice_release_authority`, which requires the CURRENT generation of
+  -- the CURRENT case episode to carry `notice_accepted_at`. `begin_challenge_window` likewise now
+  -- requires a committed email notice for the CURRENT EPISODE rather than a non-cancelled row on the
+  -- estate. Both original literals are therefore GONE by design, and exact-text pinning of them
+  -- would fail every replay from 0060 onward.
+  --
+  -- WHY THE PIN COULD NOT SIMPLY BE DELETED, AND WHY IT IS NOT A DECORATION. Three "fixes" were
+  -- refused: planting the literal in a comment (prosrc INCLUDES comments, so it would satisfy the
+  -- old check while inspecting nothing — the vacuous-audit failure this repository has shipped five
+  -- times); deleting the guard outright (a future edit could then remove BOTH predicates with
+  -- nothing objecting); and teaching the replay harness to skip it (the self-checks live inside the
+  -- migration text embedded in the bundles, so neutralizing them would mean rewriting the bytes an
+  -- operator pastes).
+  --
+  -- THE AMENDMENT IS A SUPERSESSION-AWARE DISJUNCTION, AND IT IS STRICTLY STRONGER THAN THE
+  -- ORIGINAL. Each body must carry the OB-1 predicate **or** the OB-2 authority — and NEVER
+  -- NEITHER, and never BOTH. The original could be satisfied only by the old text; this cannot be
+  -- satisfied by the absence of both, so a future edit that deletes the guard with nothing replacing
+  -- it still raises here. The OB-2 branch is anchored on `to_regprocedure` — a CATALOG fact about a
+  -- function that must genuinely exist — precisely so a comment cannot supply it.
+  --
+  -- ★ AND A TEXT SEARCH IS NOT THE ONLY VOTER. Migration 0060 §4 proves the authority BEHAVIOURALLY
+  -- by executing it against constructed fixtures, and `db/tests/release_safety_authorization.sql`
+  -- §12 proves the door. This guard's job is to make a HALF-cutover impossible; runtime semantics
+  -- are proven where runtime semantics can be observed.
+  --
+  -- ★ COMMENTS ARE STRIPPED BEFORE EVERY MATCH, AND THAT IS WHAT MAKES "PLANT THE LITERAL IN A
+  -- COMMENT" UNAVAILABLE RATHER THAN MERELY FORBIDDEN. Postgres stores a plpgsql body verbatim, so
+  -- prose containing `status <> 'cancelled'` used to satisfy this check while inspecting nothing —
+  -- and, in the other direction, the Phase D banner that QUOTES the superseded predicate in order to
+  -- say it is gone would have read as the predicate still being present. Measured on the first Phase
+  -- D replay, in both directions. String literals are deliberately NOT stripped: the predicate being
+  -- looked for IS a quoted literal, so removing them would erase the evidence class itself.
+  v_ob2 := to_regprocedure('public.owner_notice_release_authority(uuid)') is not null;
+
   if to_regprocedure('public.begin_challenge_window(uuid)') is not null then
     select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'begin_challenge_window';
-    if v_def not like '%status <> ''cancelled''%' then
-      raise exception '0056 FAILED: begin_challenge_window no longer gates on status <> cancelled — '
-        'the dispatch-initiation contract changed underneath this migration';
+    v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+    -- Non-vacuity: a stripper that ate the body would satisfy every negative test below.
+    if v_def not like '%raise exception%' then
+      raise exception '0056 FAILED: the stripped begin_challenge_window body contains no code — the '
+        'preprocessing has eaten the routine and this guard is inspecting an empty string';
+    end if;
+    v_old := v_def like '%status <> ''cancelled''%';
+    -- The OB-2 posture for THIS door is episode scope, not the acceptance fact — Phase D
+    -- deliberately does not require provider acceptance to open a window (D7).
+    v_new := v_ob2 and v_def like '%owner_notice_episode_kinds%' and v_def like '%o.case_id = v_case%';
+    if not (v_old or v_new) then
+      raise exception '0056 FAILED: begin_challenge_window gates on NEITHER the OB-1 predicate '
+        '(status <> cancelled) NOR the OB-2 episode scope (a current-generation email notice for '
+        'the resolved case). The window-opening precondition has been removed rather than '
+        'superseded, and a window can now open with no committed notice at all.';
+    end if;
+    if v_old and v_new then
+      raise exception '0056 FAILED: begin_challenge_window carries BOTH the OB-1 predicate and the '
+        'OB-2 episode scope — a half-applied Phase D cutover, which is neither posture and cannot '
+        'be reasoned about.';
     end if;
   end if;
+
   if to_regprocedure('public.authorize_release(uuid, text)') is not null then
     select prosrc into v_def from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'authorize_release';
-    if v_def not like '%status <> ''cancelled''%' then
-      raise exception '0056 FAILED: authorize_release no longer gates on status <> cancelled';
+    v_def := regexp_replace(v_def, E'--[^\n]*', '', 'g');
+    if v_def not like '%raise exception%' then
+      raise exception '0056 FAILED: the stripped authorize_release body contains no code';
+    end if;
+    v_old := v_def like '%status <> ''cancelled''%';
+    v_new := v_ob2 and v_def like '%public.owner_notice_release_authority(%';
+    if not (v_old or v_new) then
+      raise exception '0056 FAILED: authorize_release gates on NEITHER the OB-1 predicate '
+        '(status <> cancelled) NOR the OB-2 acceptance authority '
+        '(owner_notice_release_authority). The owner-notice precondition has been removed rather '
+        'than superseded, and an estate can now release with no provable owner notice of any kind.';
+    end if;
+    if v_old and v_new then
+      raise exception '0056 FAILED: authorize_release carries BOTH the OB-1 predicate and the OB-2 '
+        'acceptance authority — a half-applied Phase D cutover.';
     end if;
   end if;
 
@@ -217,7 +293,8 @@ begin
   end if;
 
   raise notice '0056 · owner_notice_outbox admits outcomeUncertain (terminal, never re-sent, never '
-    'purged); window and release predicates unchanged; no client table grant';
+    'purged); window and release predicates carry exactly one posture each (OB-1 status <> '
+    'cancelled, or OB-2 acceptance authority — never neither, never both); no client table grant';
 end $$;
 
 
@@ -1131,11 +1208,13 @@ comment on function public.admin_list_death_verification_cases(text, timestamptz
 -- affordance TRUTHFUL; it grants nothing. UI affordance is not permission.
 --
 -- ★ WINDOW FACTS ARE FACTS, NOT A COUNTDOWN. `release_eligible_at` and `elapsed` are what an
--- operator needs in order to know whether a release call will be refused. The duration is read LIVE
--- through `challenge_window_duration()`, the same way `authorize_release` reads it, so the console
--- cannot display a deadline the routine disagrees with. `elapsed` uses STRICT `>` for the same
--- reason the routine does: at the exact boundary instant release refuses and the owner's challenge
--- still succeeds, and a console that rounded the other way would offer an action that is refused.
+-- operator needs in order to know whether a release call will be refused. Since Phase 11-OC / Phase
+-- D they are not computed here at all: they are read from `owner_notice_release_authority`, the same
+-- function `authorize_release` consults, so the console cannot display a deadline the routine
+-- disagrees with — not because it copies the routine's arithmetic carefully, but because there is
+-- only one piece of arithmetic. `elapsed` is STRICT `>` inside that authority for the reason the
+-- routine needs it: at the exact boundary instant release refuses and the owner's challenge still
+-- succeeds, and a console that rounded the other way would offer an action that is refused.
 -- Nothing here ranks, scores, urges, estimates, or performs urgency.
 --
 -- ★ DECISION AND REVIEW NOTES ARE INCLUDED, AS A WORKFLOW REQUIREMENT RATHER THAN A CONVENIENCE.
@@ -1161,6 +1240,7 @@ declare
   v_c        public.death_verification_cases%rowtype;
   v_l        public.estate_lifecycle%rowtype;
   v_duration interval;
+  v_auth     jsonb;
   v_out      jsonb;
 begin
   perform public.admin_require_gate();
@@ -1173,6 +1253,10 @@ begin
 
   select * into v_l from public.estate_lifecycle l where l.estate_id = v_c.estate_id;
   v_duration := public.challenge_window_duration();
+  -- ★ PHASE D — ONE CONSULTATION, TWO CONSUMERS BELOW. Both `window` and `release_authority` read
+  -- this single verdict, so the dates the console renders and the verdict it acts on can never
+  -- describe different evaluations of the same estate.
+  v_auth := public.owner_notice_release_authority(p_case);
 
   select jsonb_build_object(
     'case', jsonb_build_object(
@@ -1210,15 +1294,52 @@ begin
       'released_at',                 v_l.released_at,
       'updated_at',                  v_l.updated_at
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE D — THE WINDOW FACTS COME FROM THE RELEASE AUTHORITY, NOT FROM HERE.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- This object used to compute its own clock: `owner_notified_at + duration`, and `elapsed` from
+    -- the same anchor. That was a faithful mirror of the pre-Phase-D door — and being a faithful
+    -- mirror is exactly the problem, because it was a SECOND implementation of the release clock.
+    -- When Phase D re-anchored the door on `notice_accepted_at`, a console still computing from
+    -- `owner_notified_at` would have shown an eligibility date up to several days too early and
+    -- offered AUTHORIZE RELEASE on an estate the server refuses.
+    --
+    -- So both fields are now read from `owner_notice_release_authority` — the SAME function
+    -- `authorize_release` consults — and this projection performs no clock arithmetic of its own.
+    -- The `viewer_is_reviewer_a` discipline applied to a date: the server answers, the client
+    -- renders, and the routine re-checks independently regardless.
+    --
+    -- ★ THE SHAPE IS PRESERVED so an older console keeps parsing. `duration`, `configured`,
+    -- `release_eligible_at` and `elapsed` all still exist and still mean what their names say —
+    -- they are simply now computed once, in the authority, from the acceptance fact.
     'window', jsonb_build_object(
       'duration',            v_duration::text,
       -- NULL duration means NOT CONFIGURED, which means the window never elapses and release
       -- refuses. The console must be able to say that, rather than render a blank date.
       'configured',          v_duration is not null,
-      'release_eligible_at', case when v_l.owner_notified_at is not null and v_duration is not null
-                                  then v_l.owner_notified_at + v_duration end,
-      'elapsed',             coalesce(now() > v_l.owner_notified_at + v_duration, false)
+      -- NULL until there is an acceptance fact to anchor on. A console must render that as "not yet
+      -- eligible", never as a blank it fills in from provenance.
+      'release_eligible_at', v_auth -> 'release_eligible_at',
+      'elapsed',             coalesce((v_auth ->> 'elapsed')::boolean, false)
     ),
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    -- ★ PHASE 11-OC / PHASE D — RELEASE AUTHORITY IS THE SERVER'S ANSWER, NOT THE CLIENT'S GUESS.
+    -- ────────────────────────────────────────────────────────────────────────────────────────
+    --
+    -- The console must offer AUTHORIZE RELEASE exactly when `authorize_release` would accept it on
+    -- owner-notice grounds. That rule is not a status list: it turns on the CURRENT case episode, on
+    -- the CURRENT generation, on the acceptance FACT rather than the status, and on a strict clock
+    -- anchored to that fact. A TypeScript mirror of it would be a second policy governing an
+    -- IRREVERSIBLE act — the highest-stakes place in this product for a console and a door to drift.
+    --
+    -- It carries a NAMED refusal code rather than a sentence, so the console owns the operator copy
+    -- and the server owns the policy. No address, no owner identity, on any branch.
+    --
+    -- ★ IT IS NOT A PERMISSION. The two-person rule, the admin gate, the lifecycle state and the
+    -- audit reason are all re-checked inside `authorize_release` every single time. This field makes
+    -- the affordance TRUTHFUL; it grants nothing.
+    'release_authority', v_auth,
     -- ────────────────────────────────────────────────────────────────────────────────────────
     -- ★ PHASE 11-OC — THE EPISODE, NOT JUST A LIST OF ROWS.
     -- ────────────────────────────────────────────────────────────────────────────────────────
@@ -1327,7 +1448,10 @@ comment on function public.admin_get_death_verification_case(uuid) is
   'window facts, owner-notice dispatch status (NEVER the recipient address) and evidence METADATA. '
   'viewer_is_reviewer_a is derived from auth.uid() INSIDE this definer so the console can state '
   'release ineligibility truthfully — it grants nothing; authorize_release re-checks independently. '
-  'Carries no asset, valuation, beneficiary, designation, grant, document byte or storage path.';
+  'Phase 11-OC/D: `window` and `release_authority` both come from owner_notice_release_authority, '
+  'the SAME verdict the release door consults, so the console performs no notice qualification, no '
+  'episode matching and no clock arithmetic of its own. Carries no asset, valuation, beneficiary, '
+  'designation, grant, document byte or storage path.';
 
 commit;
 -- ★ If you see an error above and no COMMIT, nothing was applied. Fix the cause and paste again.

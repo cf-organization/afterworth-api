@@ -98,6 +98,21 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // test. Order also matters for the schema: 0059 drops the index 0058 creates, so pasting Phase A
   // afterwards would resurrect the weaker per-kind wall alongside the stronger one.
   'db/bundles/owner_notice_reissue_bundle.sql',
+  // ★ PHASE 11-OC / PHASE D, LAST AMONG THE BUNDLES — the newest artifact, applied onto a database
+  // the others have shaped, which is the order an operator uses. It installs the canonical release
+  // authority, re-anchors `authorize_release` on the acceptance fact, re-scopes
+  // `begin_challenge_window` to the current episode, and re-pastes `operator_console.sql` so the
+  // projection reads the same authority the door does.
+  //
+  // ★ IT MUST LOAD AFTER `owner_notice_reissue_bundle`, AND THE REASON IS TWOFOLD. Both carry
+  // `operator_console.sql`, and whichever loads LAST is the body the suite actually exercises —
+  // loading Phase D first would leave Phase C's copy deployed, and every §12 assertion about the
+  // `release_authority` projection would fail for a reason that has nothing to do with the code
+  // under test. And the authority itself calls `owner_notice_episode_kinds()`, which Phase C
+  // defines: plpgsql resolves at runtime so this is not a load-time dependency, but a suite that
+  // ran the authority before the vocabulary existed would fail at the first fixture rather than at
+  // the paste.
+  'db/bundles/owner_notice_release_authority_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
@@ -186,6 +201,12 @@ export const SQL_BUNDLES = Object.freeze([
   // suite through one bundle while this one still carried the unmutated text.
   ['scripts/buildOwnerNoticeReissueBundle.mjs',
     'db/bundles/owner_notice_reissue_bundle.sql'],
+  // ★ PHASE 11-OC / PHASE D. Registered so the atomicity verifier, the generalized artifact-freshness
+  // audit and every rebuild-before-trust step cover it — including the mutation runner, which
+  // rebuilds every registered artifact inside its worktree and would otherwise let a mutated release
+  // door reach the suite through one bundle while this one still carried the unmutated text.
+  ['scripts/buildOwnerNoticeReleaseAuthorityBundle.mjs',
+    'db/bundles/owner_notice_release_authority_bundle.sql'],
 ]);
 
 /**
