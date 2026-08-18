@@ -2672,6 +2672,34 @@ const MUTATIONS = Object.freeze([
     to: "      && nowMs >= Date.parse(checkpoint.release_eligible_at),",
   },
 
+  {
+    id: 'p11ocd-migration-writes-to-managed-auth-table',
+    why: 'THE DEFECT THAT ABORTED A PRODUCTION PASTE, RE-PLANTED. Migration 0060 built its '
+      + 'behavioural fixture with `insert into auth.users default values`, which works only against '
+      + 'the harness fake — `preamble_real_auth.sql` gives that column a gen_random_uuid() default '
+      + 'and real Supabase does not. It passed every local replay and failed the first paste with '
+      + 'a not-null violation. The rule is that a PASTED artifact must not depend on a schema this '
+      + 'repository does not control, and this proves the rule fires rather than decorating.',
+    target: 'npx',
+    spec: 'test/migrationRuntimeFidelity.test.ts',
+    file: 'db/migrations/0060_20260817_owner_notice_release_authority.sql',
+    from: "  v_probe := public.owner_notice_release_authority(null);",
+    to: "  insert into auth.users default values;\n  v_probe := public.owner_notice_release_authority(null);",
+  },
+  {
+    id: 'p11ocd-fidelity-guard-reads-comments',
+    why: 'THE PHANTOM-DEBT DIRECTION. Dropping the comment stripper makes the guard flag migration '
+      + '0060 itself, which QUOTES the offending statement in prose in order to explain why it is '
+      + 'gone — so the file that fixed the defect would be reported as containing it. This '
+      + 'programme has now hit the comments-as-evidence mistake in both directions; the stripper is '
+      + 'load-bearing and must not be droppable in silence.',
+    target: 'npx',
+    spec: 'test/migrationRuntimeFidelity.test.ts',
+    file: 'test/migrationRuntimeFidelity.test.ts',
+    from: '  sql.replace(/\\/\\*[\\s\\S]*?\\*\\//g, "").replace(/--[^\\n]*/g, "");',
+    to: '  sql;',
+  },
+
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
