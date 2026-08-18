@@ -374,9 +374,34 @@ const main = async () => {
   }
 
   /* ══ 5 · SCOPE — stated so no reader takes this for more than it is ════════════════════════ */
+  //
+  // ★ THE `PROVED` LINE IS CONDITIONAL, AND THE FIRST DRAFT'S WAS NOT — WHICH MADE THIS SCRIPT
+  // OVERCLAIM ON THE ONE RUN THAT MATTERS MOST.
+  //
+  // Run against production BEFORE the paste, the script correctly reported
+  // `✗ PHASE D NOT VERIFIED … PHASE_C_STILL_ACTIVE` and exited 1 — and then, three lines above that
+  // verdict, printed "PROVED: the Phase D release authority is deployed". It was unconditional
+  // prose. The verdict was right and the explanation directly contradicted it, on the screen an
+  // operator reads immediately after a deployment, where the two states being distinguished are the
+  // entire point of the instrument.
+  //
+  // A report that states a conclusion it did not reach is the vacuous-audit failure wearing
+  // different clothes: it is not a wrong CHECK, it is a right check with a false summary, and the
+  // summary is what a human carries away. So the line now names what was actually established on
+  // THIS run, and says plainly when nothing was.
   note('\n5 · SCOPE');
-  note('     PROVED   : the Phase D release authority is deployed, shared by the projection and the');
-  note('                door, gated, and anchored on the acceptance fact rather than on provenance.');
+  if (phase === 'PHASE_D_DEPLOYED' && failures === 0) {
+    note('     PROVED   : the Phase D release authority is deployed, shared by the projection and the');
+    note('                door, gated, and anchored on the acceptance fact rather than on provenance.');
+  } else if (phase === 'PHASE_D_DEPLOYED') {
+    note('     PARTIAL  : the Phase D authority IS present, but one or more assertions above failed.');
+    note('                Nothing here may be read as a clean cutover — see the ✗ lines.');
+  } else {
+    note('     PROVED   : NOTHING about Phase D. The release door is still on PHASE C semantics —');
+    note('                the case file carries no `release_authority`, so the acceptance authority');
+    note('                is NOT deployed. This is the EXPECTED result before the artifact is pasted,');
+    note('                and it is a failure to verify Phase D rather than a clean bill of health.');
+  }
   note('     NOT PROVED: that a real release succeeds in production. Executing one would');
   note('                 IRREVERSIBLY DISCLOSE AN ESTATE. That is not a check; it is the act itself.');
   note('     STATUS    : PRODUCTION_RUNTIME_PROOF_PENDING — Branch B, separately authorized, against');
