@@ -99,8 +99,22 @@ buildBundle(
       // this paste is a complete cutover rather than half of one.
       ['db/migrations/0060_20260817_owner_notice_release_authority.sql',
         'owner_notice_release_authority'],
+      // ★ THE BEHAVIOURAL BLOCK MUST SHIP, and this control is what caught its rewrite.
+      //
+      // It used to require `aw_0060_selfcheck_rollback` — the sentinel of the synthetic-fixture
+      // self-check that aborted the first production paste (`auth.users.id` has no default outside
+      // the test harness). Replacing that block with the read-only proof removed the sentinel, the
+      // builder refused the input, and the bundle was left STALE. A `&& echo "rebuilt"` wrapper then
+      // reported success because it never saw the exit code — the observer's status, not the
+      // command's, exactly as AGENTS.md records.
+      //
+      // Retargeted to a token of the block that now ships. It must name something only the
+      // BEHAVIOURAL section contains, so a bundle carrying the structural assertions alone — the
+      // half that a text search can satisfy — cannot pass this control.
       ['db/migrations/0060_20260817_owner_notice_release_authority.sql',
-        'aw_0060_selfcheck_rollback'],
+        'behavioural, READ-ONLY'],
+      ['db/migrations/0060_20260817_owner_notice_release_authority.sql',
+        'the authority EXECUTES and fails closed'],
     ],
     out: 'db/bundles/owner_notice_release_authority_bundle.sql',
   },

@@ -269,6 +269,51 @@ The R13 amendments to 0056–0059 ship in the four bundles that already carry th
 which were regenerated in this commit. 0060 §5 covers the gap from the other side: at Phase D paste
 time it asserts no release-path routine still demands the superseded literal.
 
+### 8.0 · The first production paste ABORTED, and why that is recorded here
+
+```
+0060 FAILED: the behavioural self-check could not run:
+null value in column "id" of relation "users" violates not-null constraint (23502)
+```
+
+§4 built a synthetic fixture with `insert into auth.users default values`. That works **only** against
+the test harness: `db/tests/preamble_real_auth.sql` defines a simplified `auth.users` with
+`id uuid primary key default gen_random_uuid()`, and real Supabase has **no default** on that column —
+GoTrue supplies the id. The self-check had therefore only ever been exercised against a **fake
+boundary that was more permissive than the real one**. It is this repository's own recorded failure
+class — *"a dependency-injection seam is not tested if every test replaces the production default"* —
+with the substitution one layer down: the schema under test was the harness's, not the product's, and
+nothing compared them.
+
+**The fail-closed design held, and that is the one good thing to record.** The artifact is a single
+transaction, so the abort deployed nothing, applied no half-cutover, and left no synthetic row
+anywhere. A migration that had continued past a failed self-check would have shipped an uncertified
+cutover instead.
+
+**The replacement writes nothing at all.** A production migration has no business creating estates,
+cases or owner notices in safety tables — not transiently, and not attached to a real person's
+account, which reusing an existing `auth.users` row would have required. §4 now proves the authority
+by *running* it, with zero writes:
+
+- **§4.1** fail-closed probes on a NULL case and an unknown case id — a real call, so a body that is
+  syntactically present but broken raises here rather than passing a text match;
+- **§4.2–§4.3** the acceptance and anchor invariants evaluated over **every case the database
+  actually holds** — real production rows, which no synthetic fixture can imitate;
+- **§4.4** reports `SKIPPED-VACUOUS` out loud when the database holds no cases, because a green check
+  over zero rows is not a pass.
+
+The exhaustive A–J matrix stays where it can be built safely:
+`db/tests/release_safety_authorization.sql` §12.1–§12.11, against an ephemeral Postgres where
+fabricating an identity is legitimate. **Build type follows evidence type** — paste time gets the
+evidence a paste can safely produce, and the suite gets the rest.
+
+Two further instruments came out of it. `test/migrationRuntimeFidelity.test.ts` forbids any pasted
+artifact from writing to a Supabase-managed table (comments stripped, with positive controls in both
+directions, and `db/tests/*` deliberately out of scope). And the builder's positive control — which
+required the now-deleted fixture sentinel — is retargeted to a token of the block that actually
+ships, after it correctly refused the stale input and a `&& echo "rebuilt"` wrapper reported success
+by never seeing the exit code.
+
 ### 8.1 · Self-checks that abort the transaction
 
 Authority exists · SECURITY DEFINER · STABLE · INTERNAL (no client EXECUTE) · door consumes it · old
