@@ -23,7 +23,17 @@ import {
 } from "../scripts/lib/branchBCheckpoint.mjs";
 
 const OWNER_NOTIFIED = "2026-09-01T10:00:00.000Z";
-const WINDOW = deriveWindowInstants(OWNER_NOTIFIED, SEVEN_DAYS_SECONDS)!;
+/**
+ * ★ PHASE 11-OC / PHASE D — ACCEPTANCE IS A DISTINCT, LATER INSTANT, AND THE GAP IS DELIBERATE.
+ *
+ * The provider accepts two hours after dispatch is initiated. A fixture where the two coincided
+ * could not distinguish `notice_accepted_at + duration` from `owner_notified_at + duration`: every
+ * assertion below would pass identically with the anchor moved and with it left alone, which is the
+ * transformation-test failure this repository has shipped before. The module refuses such a
+ * checkpoint outright, and §2 asserts that refusal.
+ */
+const NOTICE_ACCEPTED = "2026-09-01T12:00:00.000Z";
+const WINDOW = deriveWindowInstants(NOTICE_ACCEPTED, SEVEN_DAYS_SECONDS)!;
 
 const uid = (n: number) => `0000000${n}-0000-4000-8000-00000000000${n}`;
 
@@ -43,6 +53,7 @@ const CHECKPOINT = Object.freeze({
   owner_notified_at: OWNER_NOTIFIED,
   challenge_window_started_at: OWNER_NOTIFIED,
   challenge_window_duration_seconds: SEVEN_DAYS_SECONDS,
+  notice_accepted_at: NOTICE_ACCEPTED,
   release_eligible_at: WINDOW.release_eligible_at,
   recommended_resume_after: WINDOW.recommended_resume_after,
   owner_outbox_id: uid(7),
@@ -276,7 +287,10 @@ describe("★ 4 · the strict > window boundary", () => {
   it("the boundary pair genuinely straddles the door — the fixture precondition", () => {
     const eligible = Date.parse(CP.release_eligible_at);
     expect(Date.parse(READY_NOW)).toBe(eligible + 1);
-    expect(eligible).toBe(Date.parse(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000);
+    // ★ PHASE D — THE DOOR IS ANCHORED ON ACCEPTANCE, and this precondition is what proves the
+    // fixture can tell the two formulas apart rather than passing under either.
+    expect(eligible).toBe(Date.parse(NOTICE_ACCEPTED) + SEVEN_DAYS_SECONDS * 1000);
+    expect(eligible).not.toBe(Date.parse(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000);
   });
 
   it("recommended_resume_after sits safely past the door, and is harness-only", () => {
@@ -323,9 +337,10 @@ describe("★ 5 · production state must still match the checkpoint", () => {
   it("★ an UNOBSERVED fact is a failed gate, never a skipped one", () => {
     const r = evaluateResume({ checkpoint: CP, observed: {}, now: READY_NOW });
     expect(r.decision).toBe(RESUME.REFUSED);
-    // Everything except the clock, the checkpoint-internal distinctness, and the strict window
-    // (which read the checkpoint, not the world) must fail on an empty observation.
-    expect(r.failed.length).toBeGreaterThanOrEqual(RESUME_GATE_IDS.length - 4);
+    // Everything except the clock, the checkpoint-internal distinctness, the strict window and the
+    // acceptance gate (all of which read the CHECKPOINT, not the world) must fail on an empty
+    // observation. Phase D added `owner_notice_provider_accepted` to that checkpoint-derived set.
+    expect(r.failed.length).toBeGreaterThanOrEqual(RESUME_GATE_IDS.length - 5);
   });
 
   it("★ a T2 verdict short of DELIVERED never clears the email gate", () => {
@@ -387,13 +402,156 @@ describe("★ 6 · the two-person guard — TWO-PERSON CONTROL: SINGLE-OPERATOR 
 });
 
 describe("7 · deriveWindowInstants", () => {
-  it("derives both instants from the dispatch fact", () => {
-    expect(WINDOW.release_eligible_at).toBe("2026-09-08T10:00:00.000Z");
-    expect(WINDOW.recommended_resume_after).toBe("2026-09-08T10:05:00.000Z");
+  it("derives both instants from the ACCEPTANCE fact, never from provenance", () => {
+    expect(WINDOW.release_eligible_at).toBe("2026-09-08T12:00:00.000Z");
+    expect(WINDOW.recommended_resume_after).toBe("2026-09-08T12:05:00.000Z");
+    // ★ AND NOT FROM `owner_notified_at`, which is two hours earlier in this fixture. A single
+    // equality would pass under either formula if the two instants coincided.
+    expect(WINDOW.release_eligible_at).not.toBe("2026-09-08T10:00:00.000Z");
   });
   it("refuses nonsense rather than returning a plausible instant", () => {
     expect(deriveWindowInstants("nope", SEVEN_DAYS_SECONDS)).toBeNull();
-    expect(deriveWindowInstants(OWNER_NOTIFIED, 0)).toBeNull();
-    expect(deriveWindowInstants(OWNER_NOTIFIED, -1)).toBeNull();
+    expect(deriveWindowInstants(NOTICE_ACCEPTED, 0)).toBeNull();
+    expect(deriveWindowInstants(NOTICE_ACCEPTED, -1)).toBeNull();
+  });
+  it("★ NULL acceptance yields NULL instants — never a date computed from something else", () => {
+    // The signature has no provenance parameter at all, so there is nothing to fall back TO. This
+    // asserts the consequence a caller actually sees: no eligibility instant it has no basis for.
+    expect(deriveWindowInstants(null, SEVEN_DAYS_SECONDS)).toBeNull();
+  });
+
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+ * 8 · PHASE 11-OC / PHASE D — THE RESUME CLOCK IS THE ACCEPTANCE FACT
+ * ════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ★ WHY THIS SECTION EXISTS. Phase D re-anchored the production release door from
+ * `owner_notified_at + duration` to `notice_accepted_at + duration`. This checkpoint schedules the
+ * SESSION that resumes a seven-day drill, so a stale anchor here does not merely mis-report — it
+ * wakes the harness at a door it knows is shut, potentially days early, and the resulting refusal
+ * reads as a product defect rather than a harness one.
+ *
+ * ★ THE SERVER REMAINS CANONICAL. Nothing here grants a release. `authorize_release` re-derives
+ * everything through `owner_notice_release_authority` on every call; this only decides when it is
+ * worth ASKING.
+ */
+describe("8 · PHASE D — the resume clock is the acceptance fact", () => {
+  const at = (iso: string) => Date.parse(iso);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const ELIGIBLE = at(CHECKPOINT.release_eligible_at);
+
+  const resumeAt = (nowIso: string, over: Record<string, unknown> = {}) =>
+    evaluateResume({
+      checkpoint: { ...CHECKPOINT, ...over },
+      observed: OBSERVED,
+      now: nowIso,
+    });
+
+  /**
+   * 1 · THE DEFECT THIS PHASE EXISTS TO PREVENT, AS A FIXTURE. Provenance is old enough to release
+   * under the SUPERSEDED rule; acceptance is fresh. A harness still reading `owner_notified_at`
+   * would wake here and find the door shut.
+   */
+  it("★ 1 · old owner_notified_at + FRESH acceptance → NOT eligible", () => {
+    // Seven days and one second after DISPATCH — the old formula's green light.
+    const oldRuleGo = iso(at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000 + 1000);
+    // Precondition: that instant is genuinely BEFORE the acceptance-anchored door, or the fixture
+    // cannot distinguish the two rules.
+    expect(at(oldRuleGo)).toBeLessThan(ELIGIBLE);
+
+    const r = resumeAt(oldRuleGo);
+    expect(r.decision).toBe(RESUME.REFUSED);
+    expect(r.failed).toContain("release_window_strictly_elapsed");
+  });
+
+  /** 2 · THE EXACT BOUNDARY BELONGS TO THE OWNER. `>` not `>=`, matching the door. */
+  it("★ 2 · at the EXACT acceptance boundary → NOT eligible", () => {
+    const r = resumeAt(iso(ELIGIBLE));
+    expect(r.decision).toBe(RESUME.REFUSED);
+    expect(r.failed).toContain("release_window_strictly_elapsed");
+  });
+
+  /** 3 · One millisecond past it — the positive control that keeps 1, 2 and 4 from being vacuous. */
+  it("★ 3 · acceptance boundary + 1ms → ELIGIBLE", () => {
+    const r = resumeAt(iso(ELIGIBLE + 1));
+    expect(r.failed).not.toContain("release_window_strictly_elapsed");
+    expect(r.failed).not.toContain("owner_notice_provider_accepted");
+    expect(r.decision).toBe(RESUME.ALLOWED);
+  });
+
+  /**
+   * 4 · NULL ACCEPTANCE IS AN EXPLICIT BLOCKED RESULT, BY NAME.
+   *
+   * Phase D refuses such a release with `notice_never_accepted`. The checkpoint must say the same
+   * thing rather than fail obscurely on a null date: "the provider never accepted it" and "seven
+   * days have not passed" need OPPOSITE operator actions — re-send versus wait.
+   */
+  it("★ 4 · NULL notice_accepted_at → explicit blocked result, named", () => {
+    const r = resumeAt(iso(ELIGIBLE + 86_400_000), {
+      notice_accepted_at: null,
+      release_eligible_at: null,
+      recommended_resume_after: null,
+    });
+    expect(r.decision).toBe(RESUME.REFUSED);
+    expect(r.failed).toContain("owner_notice_provider_accepted");
+    // And the clock gate agrees rather than one masking the other — even a year later.
+    expect(r.failed).toContain("release_window_strictly_elapsed");
+  });
+
+  /**
+   * 5 · THE SUPERSEDED FORMULA IS UNWRITABLE, not merely discouraged. A checkpoint whose
+   * eligibility instant was computed from provenance fails to DECODE.
+   */
+  it("★ 5 · a checkpoint anchored on owner_notified_at is REJECTED by the decoder", () => {
+    const bad = decodeCheckpoint({
+      ...CHECKPOINT,
+      release_eligible_at: iso(at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000),
+      recommended_resume_after: iso(
+        at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000 + RESUME_SAFETY_MARGIN_SECONDS * 1000
+      ),
+    });
+    expect(bad.ok).toBe(false);
+    expect(bad.errors!.join(" ")).toMatch(/must equal notice_accepted_at/);
+  });
+
+  /**
+   * 6 · NO COALESCE. `coalesce(notice_accepted_at, owner_notified_at)` is the seductive edit — it
+   * reads as defensive null-handling and silently restores the old clock for exactly the population
+   * that has no acceptance. Asserted as the consequence a caller would see: with NULL acceptance,
+   * an eligibility instant derived from provenance must be REFUSED, not accepted.
+   */
+  it("★ 6 · NULL acceptance with a provenance-derived date is REJECTED (no coalesce)", () => {
+    const coalesced = decodeCheckpoint({
+      ...CHECKPOINT,
+      notice_accepted_at: null,
+      release_eligible_at: iso(at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000),
+      recommended_resume_after: iso(
+        at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000 + RESUME_SAFETY_MARGIN_SECONDS * 1000
+      ),
+    });
+    expect(coalesced.ok).toBe(false);
+    expect(coalesced.errors!.join(" ")).toMatch(/must be null when notice_accepted_at is null/);
+    // The message names the reason rather than the mechanism: a date here could only have come
+    // from provenance.
+    expect(coalesced.errors!.join(" ")).toMatch(/provenance/);
+  });
+
+  /**
+   * ★ AND THE ARTIFACT MUST BE ABLE TO TELL THE TWO RULES APART. A checkpoint whose acceptance and
+   * dispatch instants coincide satisfies BOTH formulas, so it is refused as evidence — the
+   * transformation-test rule applied to the checkpoint itself.
+   */
+  it("★ a checkpoint where acceptance equals provenance is refused as EVIDENCE", () => {
+    const ambiguous = decodeCheckpoint({
+      ...CHECKPOINT,
+      notice_accepted_at: OWNER_NOTIFIED,
+      release_eligible_at: iso(at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000),
+      recommended_resume_after: iso(
+        at(OWNER_NOTIFIED) + SEVEN_DAYS_SECONDS * 1000 + RESUME_SAFETY_MARGIN_SECONDS * 1000
+      ),
+    });
+    expect(ambiguous.ok).toBe(false);
+    expect(ambiguous.errors!.join(" ")).toMatch(/cannot distinguish the Phase D clock/);
   });
 });

@@ -38,10 +38,10 @@ export const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 /**
  * Harness scheduling margin only.
  *
- * ★ IT DOES NOT CHANGE THE POLICY, AND MUST NOT BE CONFUSED WITH IT. The production door is
- * `now() > owner_notified_at + challenge_window_duration()`, strictly, in `authorize_release`. This
- * constant exists so the resuming SESSION does not wake up at the exact boundary instant, race the
- * door, and read a correct refusal as a defect.
+ * ★ IT DOES NOT CHANGE THE POLICY, AND MUST NOT BE CONFUSED WITH IT. Since Phase 11-OC / Phase D
+ * the production door is `now() > notice_accepted_at + challenge_window_duration()`, strictly, via
+ * `owner_notice_release_authority`. This constant exists so the resuming SESSION does not wake up at
+ * the exact boundary instant, race the door, and read a correct refusal as a defect.
  */
 export const RESUME_SAFETY_MARGIN_SECONDS = 5 * 60;
 
@@ -88,12 +88,28 @@ const FIELDS = Object.freeze({
   lifecycle: (v) => (v === 'challenge_window' ? null : "a resumable checkpoint is written at 'challenge_window'"),
   case_status: (v) => (v === 'verified' ? null : "a resumable checkpoint is written at 'verified'"),
 
+  // ★ PROVENANCE, AND SINCE PHASE D NOT THE CLOCK. `owner_notified_at` is stamped when the outbox
+  // row is QUEUED, before any worker has run. It stays in the checkpoint because an investigator
+  // reconstructing the drill needs it; it decides nothing.
   owner_notified_at: (v) => (isInstant(v) ? null : 'must be an ISO-8601 instant'),
   challenge_window_started_at: (v) => (isInstant(v) ? null : 'must be an ISO-8601 instant'),
   challenge_window_duration_seconds: (v) =>
     Number.isInteger(v) && v > 0 ? null : 'must be a positive integer',
-  release_eligible_at: (v) => (isInstant(v) ? null : 'must be an ISO-8601 instant'),
-  recommended_resume_after: (v) => (isInstant(v) ? null : 'must be an ISO-8601 instant'),
+
+  // ★ PHASE 11-OC / PHASE D — THE FACT THE RELEASE CLOCK ACTUALLY RUNS FROM.
+  //
+  // NULLABLE, and permanently so. NULL is the honest record that the email provider has not accepted
+  // the notice, which is a REACHABLE state of a live drill: the initial dispatch is queued and the
+  // drain is asynchronous, so a checkpoint written moments after the window opens legitimately has
+  // no acceptance yet. A non-nullable field would have forced the writer to invent one, and every
+  // value it invented would be a fabricated provider acceptance on a safety notice.
+  notice_accepted_at: (v) => (v === null || isInstant(v) ? null : 'must be null or an ISO-8601 instant'),
+
+  // ★ AND SO THIS IS NULLABLE TOO, PAIRED WITH IT. With no acceptance fact there is no instant to
+  // anchor on, so there is no eligibility date — NOT a date derived from provenance. The pairing is
+  // enforced as an invariant below rather than left to the writer.
+  release_eligible_at: (v) => (v === null || isInstant(v) ? null : 'must be null or an ISO-8601 instant'),
+  recommended_resume_after: (v) => (v === null || isInstant(v) ? null : 'must be null or an ISO-8601 instant'),
 
   owner_outbox_id: (v) => (UUID_RE.test(String(v)) ? null : 'must be a lowercase uuid'),
   owner_notification_id: (v) => (UUID_RE.test(String(v)) ? null : 'must be a lowercase uuid'),
@@ -126,16 +142,58 @@ export const CHECKPOINT_FIELDS = Object.freeze(Object.keys(FIELDS));
  * impossible drill.
  */
 const INVARIANTS = Object.freeze([
-  (c) =>
-    at(c.release_eligible_at) === at(c.owner_notified_at) + c.challenge_window_duration_seconds * 1000
+  // ★ PHASE 11-OC / PHASE D — THE ANCHOR IS THE ACCEPTANCE FACT, AND THERE IS NO FALLBACK.
+  //
+  // This invariant read `owner_notified_at + duration` until Phase D re-anchored the production
+  // door. Leaving it would have made the harness compute a resume time from an instant the door no
+  // longer recognises — stamped when the row was QUEUED, potentially days early — and wake a drill
+  // at a door it knows is shut, which then reads as a product defect rather than a harness one.
+  //
+  // A `coalesce(notice_accepted_at, owner_notified_at)` here would be the same defect wearing
+  // defensive-null-handling as a disguise, and would silently restore the old clock for exactly the
+  // population that has no acceptance. There is no fallback, by construction: the two fields are
+  // paired, and NULL propagates.
+  (c) => {
+    if (c.notice_accepted_at === null) {
+      return c.release_eligible_at === null
+        ? null
+        : 'release_eligible_at must be null when notice_accepted_at is null — with no acceptance '
+          + 'fact there is no instant to anchor on, and a date here could only have come from '
+          + 'provenance';
+    }
+    if (c.release_eligible_at === null) {
+      return 'release_eligible_at must be set once notice_accepted_at is';
+    }
+    return at(c.release_eligible_at)
+      === at(c.notice_accepted_at) + c.challenge_window_duration_seconds * 1000
       ? null
-      : 'release_eligible_at must equal owner_notified_at + challenge_window_duration_seconds',
+      : 'release_eligible_at must equal notice_accepted_at + challenge_window_duration_seconds';
+  },
+  // ★ AND IT MUST NOT ACCIDENTALLY EQUAL THE PROVENANCE ANCHOR. A checkpoint whose acceptance and
+  // dispatch instants coincide cannot distinguish the two formulas, so it is refused as EVIDENCE:
+  // a resumable checkpoint that could have been produced by either rule proves nothing about which
+  // one the harness used. This is the transformation-test rule applied to the artifact itself.
   (c) =>
+    c.notice_accepted_at === null || at(c.notice_accepted_at) !== at(c.owner_notified_at)
+      ? null
+      : 'notice_accepted_at must differ from owner_notified_at — a checkpoint where they coincide '
+        + 'cannot distinguish the Phase D clock from the superseded one',
+  (c) => {
     // ★ Harness margin, checked as `>=` deliberately: the SESSION may wake later than the minimum,
     //   never earlier. The production door's strictness is a separate rule, tested separately.
-    at(c.recommended_resume_after) >= at(c.release_eligible_at) + RESUME_SAFETY_MARGIN_SECONDS * 1000
+    if (c.release_eligible_at === null) {
+      return c.recommended_resume_after === null
+        ? null
+        : 'recommended_resume_after must be null when there is no eligibility instant to follow';
+    }
+    if (c.recommended_resume_after === null) {
+      return 'recommended_resume_after must be set once release_eligible_at is';
+    }
+    return at(c.recommended_resume_after)
+      >= at(c.release_eligible_at) + RESUME_SAFETY_MARGIN_SECONDS * 1000
       ? null
-      : `recommended_resume_after must be at least ${RESUME_SAFETY_MARGIN_SECONDS}s after release_eligible_at`,
+      : `recommended_resume_after must be at least ${RESUME_SAFETY_MARGIN_SECONDS}s after release_eligible_at`;
+  },
   (c) =>
     c.reviewer_a_uid !== c.reviewer_b_uid
       ? null
@@ -206,10 +264,19 @@ export function decodeCheckpoint(raw) {
   return { ok: true, checkpoint: Object.freeze({ ...raw }) };
 }
 
-/** Derive the two scheduling instants from the dispatch facts. Pure; the caller supplies everything. */
-export function deriveWindowInstants(ownerNotifiedAt, durationSeconds) {
-  if (!isInstant(ownerNotifiedAt) || !Number.isInteger(durationSeconds) || durationSeconds <= 0) return null;
-  const eligible = new Date(at(ownerNotifiedAt) + durationSeconds * 1000);
+/**
+ * Derive the two scheduling instants from the ACCEPTANCE fact. Pure; the caller supplies everything.
+ *
+ * ★ PHASE 11-OC / PHASE D — THE PARAMETER CHANGED, AND THE SIGNATURE IS THE SAFETY PROPERTY.
+ * It took `ownerNotifiedAt`. It now takes `noticeAcceptedAt`, and there is deliberately NO second
+ * parameter to fall back to: a function that cannot see the provenance instant cannot be talked into
+ * anchoring on it. Passing `null` — the honest state of an unaccepted notice — returns `null` rather
+ * than a computed date, so a caller cannot obtain an eligibility instant it has no basis for.
+ */
+export function deriveWindowInstants(noticeAcceptedAt, durationSeconds) {
+  if (noticeAcceptedAt === null) return null;
+  if (!isInstant(noticeAcceptedAt) || !Number.isInteger(durationSeconds) || durationSeconds <= 0) return null;
+  const eligible = new Date(at(noticeAcceptedAt) + durationSeconds * 1000);
   return Object.freeze({
     release_eligible_at: eligible.toISOString(),
     recommended_resume_after: new Date(
@@ -266,12 +333,28 @@ export function evaluateResume({ checkpoint, observed, now }) {
     `halted_at=${o.halted_at}`
   );
 
-  // ★ STRICT. `authorize_release` uses `now() > owner_notified_at + duration`; at the exact boundary
-  //   instant the door refuses and the owner's challenge still wins. A `>=` here would send the
-  //   harness to a door it knows is shut.
+  // ★ THE ACCEPTANCE FACT IS A GATE OF ITS OWN, AND IT COMES FIRST. Phase D refuses a release whose
+  //   current generation was never provider-accepted, with `notice_never_accepted`. A checkpoint
+  //   carrying NULL acceptance therefore describes a drill that CANNOT be resumed into a release,
+  //   and it must say so by name rather than fail obscurely on a null date comparison.
+  gate(
+    'owner_notice_provider_accepted',
+    checkpoint.notice_accepted_at !== null,
+    `notice_accepted_at=${checkpoint.notice_accepted_at}`
+  );
+
+  // ★ STRICT, AND ANCHORED ON ACCEPTANCE. Since Phase D the door is
+  //   `now() > notice_accepted_at + duration`; at the exact boundary instant it refuses and the
+  //   owner's challenge still wins. A `>=` here would send the harness to a door it knows is shut,
+  //   and an `owner_notified_at` anchor would send it days early.
+  //
+  //   NULL acceptance fails this gate too — `Date.parse(null)` is NaN and `nowMs > NaN` is false —
+  //   so the two gates agree rather than one masking the other.
   gate(
     'release_window_strictly_elapsed',
-    Number.isFinite(nowMs) && nowMs > Date.parse(checkpoint.release_eligible_at),
+    Number.isFinite(nowMs)
+      && checkpoint.release_eligible_at !== null
+      && nowMs > Date.parse(checkpoint.release_eligible_at),
     `now=${Number.isFinite(nowMs) ? new Date(nowMs).toISOString() : String(now)} eligible_at=${checkpoint.release_eligible_at}`
   );
 
@@ -341,6 +424,11 @@ export const RESUME_GATE_IDS = Object.freeze([
   'not_released',
   'no_release_authorization_exists',
   'owner_challenge_not_exercised',
+  // ★ PHASE 11-OC / PHASE D. Named separately from the clock gate so a checkpoint that can never be
+  // resumed into a release says WHY: "the provider never accepted the notice" and "seven days have
+  // not passed" need opposite operator actions, and collapsing them into one date comparison would
+  // report the second when the truth is the first.
+  'owner_notice_provider_accepted',
   'release_window_strictly_elapsed',
   'owner_email_delivery_established',
   'reviewer_a_and_b_distinct',

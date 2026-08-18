@@ -2615,6 +2615,63 @@ const MUTATIONS = Object.freeze([
     to: "    phase = PHASE_D_DEPLOYED;",
   },
 
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // PHASE 11-OC / PHASE D — the BRANCH B CHECKPOINT clock
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // ★ THIS ARTIFACT SCHEDULES A SEVEN-DAY DRILL'S SECOND SESSION. A stale anchor here does not
+  // merely mis-report: it wakes the harness at a door it knows is shut, potentially days early, and
+  // the correct refusal that follows reads as a product defect rather than a harness one.
+  {
+    id: 'p11ocd-checkpoint-anchored-on-provenance',
+    why: 'THE SUPERSEDED CLOCK, RESTORED IN THE HARNESS. `owner_notified_at` is stamped when the '
+      + 'outbox row is QUEUED, before any worker has run — so a checkpoint anchored on it schedules '
+      + 'a resume up to the full provider lag early, and Branch B would wake to a refusal it then '
+      + 'has to diagnose. This is the exact defect Phase D found and left standing in this file '
+      + 'until it was re-anchored. §8.1 and §8.5 must both object.',
+    target: 'npx',
+    spec: 'test/branchBCheckpoint.test.ts',
+    file: 'scripts/lib/branchBCheckpoint.mjs',
+    from: "      === at(c.notice_accepted_at) + c.challenge_window_duration_seconds * 1000",
+    to: "      === at(c.owner_notified_at) + c.challenge_window_duration_seconds * 1000",
+  },
+  {
+    id: 'p11ocd-checkpoint-coalesces-acceptance-to-provenance',
+    why: 'THE SEDUCTIVE EDIT. `coalesce(notice_accepted_at, owner_notified_at)` reads as defensive '
+      + 'null-handling and silently restores the old clock for EXACTLY the population that has no '
+      + 'acceptance fact — the one Phase D exists to refuse. Authority is decided by SOURCE, and '
+      + 'provenance was written by a path that could not have been telling the truth about '
+      + 'acceptance. §8.6 must object.',
+    target: 'npx',
+    spec: 'test/branchBCheckpoint.test.ts',
+    file: 'scripts/lib/branchBCheckpoint.mjs',
+    from: "    if (c.notice_accepted_at === null) {\n      return c.release_eligible_at === null",
+    to: "    if (false) {\n      return c.release_eligible_at === null",
+  },
+  {
+    id: 'p11ocd-checkpoint-resume-gate-ignores-acceptance',
+    why: 'THE NAMED BLOCKED RESULT DELETED. With the acceptance gate always true, a checkpoint whose '
+      + 'notice was never provider-accepted reports only that the clock has not elapsed — so an '
+      + 'operator waits for a window that can never open, when the correct action is to re-send the '
+      + 'notice. Two states needing opposite actions collapse into one. §8.4 must object.',
+    target: 'npx',
+    spec: 'test/branchBCheckpoint.test.ts',
+    file: 'scripts/lib/branchBCheckpoint.mjs',
+    from: "    checkpoint.notice_accepted_at !== null,\n    `notice_accepted_at=${checkpoint.notice_accepted_at}`",
+    to: "    true,\n    `notice_accepted_at=${checkpoint.notice_accepted_at}`",
+  },
+  {
+    id: 'p11ocd-checkpoint-boundary-becomes-inclusive',
+    why: 'THE TIE HANDED TO RELEASE, in the harness this time. `>` becoming `>=` wakes the resuming '
+      + 'session at the exact boundary instant, where the production door still refuses and the '
+      + 'owner challenge still wins. Only the exact-instant fixture can see it. §8.2 must object.',
+    target: 'npx',
+    spec: 'test/branchBCheckpoint.test.ts',
+    file: 'scripts/lib/branchBCheckpoint.mjs',
+    from: "      && nowMs > Date.parse(checkpoint.release_eligible_at),",
+    to: "      && nowMs >= Date.parse(checkpoint.release_eligible_at),",
+  },
+
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
