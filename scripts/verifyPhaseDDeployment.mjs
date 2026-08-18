@@ -80,6 +80,11 @@ import crypto from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// ★ THE SCOPE SUMMARY LIVES IN A TESTABLE MODULE, NOT INLINE HERE. `main()` cannot run without a
+// live AAL2 session, so prose built in it is unreachable from every test and every mutation — which
+// is precisely how this script once shipped claiming a deployment on a PHASE_C_STILL_ACTIVE run.
+// See scripts/lib/phaseDVerdictProse.mjs and test/phaseDVerdictProse.test.ts.
+import { PHASE_C_STILL_ACTIVE, PHASE_D_DEPLOYED, scopeReport } from './lib/phaseDVerdictProse.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MOBILE = resolve(ROOT, '../afterworth-mobile');
@@ -271,7 +276,7 @@ const main = async () => {
   const cf = caseFile.data ?? {};
   const authority = cf.release_authority ?? null;
 
-  const phase = authority === null ? 'PHASE_C_STILL_ACTIVE' : 'PHASE_D_DEPLOYED';
+  const phase = authority === null ? PHASE_C_STILL_ACTIVE : PHASE_D_DEPLOYED;
   ok('the case file carries `release_authority`', authority !== null,
     authority === null
       ? 'ABSENT — the release door is still on Phase C semantics'
@@ -375,39 +380,13 @@ const main = async () => {
 
   /* ══ 5 · SCOPE — stated so no reader takes this for more than it is ════════════════════════ */
   //
-  // ★ THE `PROVED` LINE IS CONDITIONAL, AND THE FIRST DRAFT'S WAS NOT — WHICH MADE THIS SCRIPT
-  // OVERCLAIM ON THE ONE RUN THAT MATTERS MOST.
-  //
-  // Run against production BEFORE the paste, the script correctly reported
-  // `✗ PHASE D NOT VERIFIED … PHASE_C_STILL_ACTIVE` and exited 1 — and then, three lines above that
-  // verdict, printed "PROVED: the Phase D release authority is deployed". It was unconditional
-  // prose. The verdict was right and the explanation directly contradicted it, on the screen an
-  // operator reads immediately after a deployment, where the two states being distinguished are the
-  // entire point of the instrument.
-  //
-  // A report that states a conclusion it did not reach is the vacuous-audit failure wearing
-  // different clothes: it is not a wrong CHECK, it is a right check with a false summary, and the
-  // summary is what a human carries away. So the line now names what was actually established on
-  // THIS run, and says plainly when nothing was.
+  // ★ VERDICT, EXIT CODE AND PROSE ALL DERIVE FROM ONE CALL, so they cannot disagree. The first
+  // draft built this inline and unconditionally, and printed "PROVED: the Phase D release authority
+  // is deployed" three lines above its own `PHASE_C_STILL_ACTIVE` verdict. The checks were right;
+  // the summary contradicted them, and the summary is what a human carries away.
+  const scope = scopeReport(phase, failures);
   note('\n5 · SCOPE');
-  if (phase === 'PHASE_D_DEPLOYED' && failures === 0) {
-    note('     PROVED   : the Phase D release authority is deployed, shared by the projection and the');
-    note('                door, gated, and anchored on the acceptance fact rather than on provenance.');
-  } else if (phase === 'PHASE_D_DEPLOYED') {
-    note('     PARTIAL  : the Phase D authority IS present, but one or more assertions above failed.');
-    note('                Nothing here may be read as a clean cutover — see the ✗ lines.');
-  } else {
-    note('     PROVED   : NOTHING about Phase D. The release door is still on PHASE C semantics —');
-    note('                the case file carries no `release_authority`, so the acceptance authority');
-    note('                is NOT deployed. This is the EXPECTED result before the artifact is pasted,');
-    note('                and it is a failure to verify Phase D rather than a clean bill of health.');
-  }
-  note('     NOT PROVED: that a real release succeeds in production. Executing one would');
-  note('                 IRREVERSIBLY DISCLOSE AN ESTATE. That is not a check; it is the act itself.');
-  note('     STATUS    : PRODUCTION_RUNTIME_PROOF_PENDING — Branch B, separately authorized, against');
-  note('                 a synthetic estate, after a real seven-day window.');
-  note('     NOTE      : notice_accepted_at is PROVIDER ACCEPTANCE. It is not delivery, not receipt,');
-  note('                 and not proof that a living owner read anything.');
+  for (const line of scope.lines) note(line);
 
   console.log(lines.join('\n'));
   if (JSON_OUT) {
@@ -423,7 +402,9 @@ const main = async () => {
     }, null, 2));
   }
 
-  if (failures > 0) {
+  // ★ ONE SOURCE FOR THE EXIT CODE TOO. Observing Phase C IS a failure to verify Phase D even when
+  // no individual assertion errored, so the code comes from the same evaluation as the prose.
+  if (scope.exitCode !== 0) {
     console.error(`\n✗ PHASE D NOT VERIFIED — ${failures} assertion(s) failed. Deployment state: ${phase}.`);
     process.exit(1);
   }

@@ -26,7 +26,7 @@
  * Exit:   0 every mutation was detected · 1 a mutation survived · 2 the harness could not run
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2536,6 +2536,85 @@ const MUTATIONS = Object.freeze([
     from: "  v_def := regexp_replace(v_def, E'--[^\\n]*', '', 'g');\n  if v_def not like '%raise exception%' then\n    raise exception '0060 FAILED: the stripped begin_challenge_window body contains no code';\n  end if;\n",
     to: "",
   },
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // PHASE 11-OC / PHASE D — the VERIFIER's own summary. VERDICT ⟷ EXIT CODE ⟷ PROSE.
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // ★ THESE AIM AT AN INSTRUMENT, AND THE INSTRUMENT SHIPPED BROKEN ONCE ALREADY. Run against
+  // production before the paste, verifyPhaseDDeployment.mjs printed "PROVED: the Phase D release
+  // authority is deployed" three lines above its own PHASE_C_STILL_ACTIVE verdict. Nothing objected,
+  // because the wording lived inline in `main()` — unreachable from any test and any mutation.
+  // Extracting it into scripts/lib/phaseDVerdictProse.mjs is what makes these four possible.
+  {
+    id: 'p11ocd-verifier-proof-unconditional',
+    why: 'THE DEFECT AS IT ACTUALLY SHIPPED. The deployment claim printed on every branch, so a '
+      + 'PHASE_C_STILL_ACTIVE run — the legitimate pre-paste state — told the reader Phase D was '
+      + 'deployed. A right check with a false summary is a vacuous audit wearing different clothes: '
+      + 'the summary is what a human carries away.',
+    target: 'npx',
+    spec: 'test/phaseDVerdictProse.test.ts',
+    file: 'scripts/lib/phaseDVerdictProse.mjs',
+    from: "  const clean = phase === PHASE_D_DEPLOYED && failures === 0;",
+    to: "  const clean = true;",
+  },
+  {
+    id: 'p11ocd-verifier-prose-inverted',
+    why: 'THE VERDICT-SPECIFIC PROSE INVERTED. A deployed run reports "NOTHING about Phase D" and a '
+      + 'Phase C run claims the deployment — each branch printing the other one\'s wording. The '
+      + 'individual checks are untouched, so only an assertion on the SUMMARY can see it.',
+    target: 'npx',
+    spec: 'test/phaseDVerdictProse.test.ts',
+    file: 'scripts/lib/phaseDVerdictProse.mjs',
+    from: "  const clean = phase === PHASE_D_DEPLOYED && failures === 0;",
+    to: "  const clean = !(phase === PHASE_D_DEPLOYED && failures === 0);",
+  },
+  {
+    id: 'p11ocd-verifier-phase-c-prints-success-text',
+    why: 'A PHASE C RESULT PRINTING PHASE D SUCCESS TEXT, by widening the clean test to ignore the '
+      + 'observed phase entirely. Any run with zero individual failures would then claim a '
+      + 'deployment — including one that observed no release_authority at all, which is the exact '
+      + 'pre-paste state an operator checks.',
+    target: 'npx',
+    spec: 'test/phaseDVerdictProse.test.ts',
+    file: 'scripts/lib/phaseDVerdictProse.mjs',
+    from: "  const clean = phase === PHASE_D_DEPLOYED && failures === 0;",
+    to: "  const clean = failures === 0;",
+  },
+  {
+    id: 'p11ocd-verifier-deployed-prints-phase-c-text',
+    why: 'THE MIRROR DIRECTION. A genuinely DEPLOYED, fully clean run reports that the door is still '
+      + 'on Phase C semantics — so a successful cutover reads as a failed one and an operator rolls '
+      + 'back a deployment that worked. Aimed at the branch the other three cannot reach.',
+    target: 'npx',
+    spec: 'test/phaseDVerdictProse.test.ts',
+    file: 'scripts/lib/phaseDVerdictProse.mjs',
+    from: "  const clean = phase === PHASE_D_DEPLOYED && failures === 0;",
+    to: "  const clean = phase === PHASE_C_STILL_ACTIVE && failures === 0;",
+  },
+  {
+    id: 'p11ocd-verifier-exit-code-drifts-from-prose',
+    why: 'THE THIRD LEG OF THE CONTRACT. Prose and verdict stay correct while the EXIT CODE always '
+      + 'reports success, so CI and any wrapper script read a failed verification as a pass — the '
+      + '"a background command\'s exit code is the command\'s" failure, arriving from inside the '
+      + 'instrument instead of from a shell pipeline.',
+    target: 'npx',
+    spec: 'test/phaseDVerdictProse.test.ts',
+    file: 'scripts/lib/phaseDVerdictProse.mjs',
+    from: "    exitCode: clean ? 0 : 1,",
+    to: "    exitCode: 0,",
+  },
+  {
+    id: 'p11ocd-verifier-unknown-phase-defaults-to-success',
+    why: 'FAIL-OPEN ON AN UNRECOGNISED PHASE. Replacing the throw with a silent default means a '
+      + 'typo\'d or future third state falls through to whichever branch the code lists first. An '
+      + 'explicit unknown is always preferable to a fabricated verdict about a deployment.',
+    target: 'npx',
+    spec: 'test/phaseDVerdictProse.test.ts',
+    file: 'scripts/lib/phaseDVerdictProse.mjs',
+    from: "    throw new Error(`phaseDVerdictProse: unknown phase ${String(phase)}`);",
+    to: "    phase = PHASE_D_DEPLOYED;",
+  },
+
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
@@ -2707,10 +2786,39 @@ for (const m of selected) {
         (p) => p === m.file && readFileSync(join(wt, p), 'utf8').includes(m.to)
       );
     }
+    /**
+     * ★ AND THE DATABASE IS NOT THE ONLY ROUTE INTO A TEST — the Phase 11-B lesson above, one turn
+     * further round.
+     *
+     * Both checks so far ask "does the mutated text reach the DATABASE". That is the right question
+     * for every mutation aimed at `verifySqlAuthorization.mjs`, and the wrong one for a mutation
+     * aimed at `npx vitest`: a source-audit spec reads the FILE, and no bundle or SQL part is
+     * involved at any point.
+     *
+     * The gap was found by execution, not review. The six `p11ocd-verifier-*` mutations target
+     * `scripts/lib/phaseDVerdictProse.mjs` — a JS module the verifier imports — and every one
+     * reported `HARNESS_FAILURE: the mutation reaches the database by no route`. That sentence was
+     * TRUE about the database and FALSE about the run: the mutation reaches its instrument
+     * perfectly well, because its instrument is vitest.
+     *
+     * Earlier `target: 'npx'` mutations never exposed this because they all mutate SQL files that
+     * happen to ship in a bundle, so they satisfied the database check incidentally — the same
+     * accidental-coincidence trap this file has documented twice already.
+     *
+     * The question the check exists to answer is "does the mutated text reach the INSTRUMENT that
+     * must catch it", so it is now asked per route: bundles and direct parts for the SQL suite, and
+     * the file itself for a spec-driven run. The file is re-read from the WORKTREE rather than
+     * trusted from the patch, so a substitution that silently failed still reports HARNESS_FAILURE.
+     */
+    if (!landed && m.target === 'npx') {
+      const mutated = join(wt, m.file);
+      landed = existsSync(mutated) && readFileSync(mutated, 'utf8').includes(m.to);
+    }
     if (!landed) {
-      detail = 'the mutation reaches the database by no route — it is in no rebuilt bundle and in no '
-        + 'directly-loaded suite part, so the suite would load clean SQL and pass for a reason that '
-        + 'has nothing to do with the tests';
+      detail = 'the mutation reaches its instrument by no route — it is in no rebuilt bundle, in no '
+        + 'directly-loaded suite part, and (for a spec-driven mutation) not present in the mutated '
+        + 'file itself, so the instrument would run clean code and pass for a reason that has '
+        + 'nothing to do with the tests';
       throw new Error('bundle-clean');
     }
 
