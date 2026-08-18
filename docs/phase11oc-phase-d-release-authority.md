@@ -150,6 +150,24 @@ Proven together in suite §12.4. **No manual SQL repair is required, or permitte
 | vitest (api) | 646 passed |
 | admin console | 105 passed · typecheck clean · lint clean |
 
+### 6.2 · The verifier's own summary is now a tested surface
+
+`verifyPhaseDDeployment.mjs` shipped printing `PROVED: the Phase D release authority is deployed`
+**unconditionally** — so its first production run, whose verdict was correctly
+`PHASE_C_STILL_ACTIVE` with exit 1, asserted the opposite three lines above that verdict. The checks
+were right; the summary contradicted them, and the summary is what a human carries away.
+
+It was **untestable by construction**: the wording lived inline in `main()`, which cannot run without
+a live AAL2 session, so no test and no mutation could reach it. The fix is therefore the seam as much
+as the conditional — `scripts/lib/phaseDVerdictProse.mjs` derives verdict, exit code and prose from
+one call, and `test/phaseDVerdictProse.test.ts` proves *prose claims deployment ⟺ phase is deployed
+and nothing failed* across every combination. Six mutations pin it, including the defect exactly as
+it shipped and its mirror (a clean deployed run reporting Phase C).
+
+Fixing it also exposed a gap in the mutation harness: reachability was asked only as "does the
+mutated text reach the DATABASE", which is false for a spec-driven mutation on a JS module. It is now
+asked per route.
+
 ### 6.1 · The transformation is observable, not assumed
 
 The §1 happy path ages `owner_notified_at` to **eight days** — exactly what the pre-Phase-D suite did
@@ -312,9 +330,36 @@ the outbox row is queued, before any worker has run, and the old label claimed m
 **NOT STARTED — GATE CLOSED.** Phase D must first be implemented, merged, manually deployed and
 verified. Only then may a separate decision open Branch B. The real seven-day window remains required.
 
-**Branch-B prerequisite recorded here rather than actioned:** `scripts/lib/branchBCheckpoint.mjs`
-carries the invariant `release_eligible_at == owner_notified_at + challenge_window_duration_seconds`.
-That describes the pre-Phase-D anchor. It is **not** changed in this commit — Branch B is gate-closed
-and its checkpoint schema is a Branch-B artifact — but it **must** be re-anchored on
-`notice_accepted_at` before any Branch B drill runs, or the harness will compute a resume time from
-provenance and wake at a door it knows is shut.
+**Branch-B prerequisite — RESOLVED.** `scripts/lib/branchBCheckpoint.mjs` carried
+`release_eligible_at == owner_notified_at + challenge_window_duration_seconds`, the pre-Phase-D
+anchor. A harness computing a resume time from provenance wakes the second session of a seven-day
+drill up to the full provider lag EARLY, and the correct refusal it then meets reads as a product
+defect rather than a harness one. It is now re-anchored on `notice_accepted_at`:
+
+- `notice_accepted_at` is a first-class checkpoint field, **nullable** — NULL is the honest record of
+  a notice the provider has not accepted, which a live drill legitimately reaches while the drain is
+  still asynchronous. A non-nullable field would have forced the writer to invent one, and every
+  value it invented would be a fabricated provider acceptance on a safety notice.
+- `release_eligible_at` and `recommended_resume_after` are **paired** with it and NULL when it is.
+  There is no fallback: `deriveWindowInstants` has no provenance parameter to fall back *to*, so the
+  coalesce is **unwritable** rather than merely discouraged.
+- A new resume gate, **`owner_notice_provider_accepted`**, names the blocked state separately from
+  the clock. "The provider never accepted it" and "seven days have not passed" need **opposite**
+  operator actions — re-send versus wait — and collapsing them into one date comparison would report
+  the second when the truth is the first.
+- A checkpoint whose acceptance and dispatch instants **coincide is refused as evidence**: it
+  satisfies both formulas and so cannot prove which rule produced it. The transformation-test rule,
+  applied to the artifact itself.
+
+Pinned by `test/branchBCheckpoint.test.ts` §8 — stale-provenance-with-fresh-acceptance, exact
+boundary, boundary + 1 ms, NULL acceptance as a named block, provenance-anchored decode rejected, and
+no-coalesce — and by four mutations, each DETECTED:
+`p11ocd-checkpoint-anchored-on-provenance`, `-coalesces-acceptance-to-provenance`,
+`-resume-gate-ignores-acceptance`, `-boundary-becomes-inclusive`.
+
+The server remains canonical: nothing in the checkpoint grants a release, and `authorize_release`
+re-derives everything through `owner_notice_release_authority` on every call. This only decides when
+it is worth ASKING.
+
+**Branch B remains NOT STARTED — gate closed.** No Branch-B identity, estate, designation, grant or
+case was created; only the schema the future drill will use.
