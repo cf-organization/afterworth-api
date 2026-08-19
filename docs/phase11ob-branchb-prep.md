@@ -171,6 +171,36 @@ door refuses and the owner's challenge still wins. `recommended_resume_after` ad
 margin so the resuming session does not race a door it knows is shut — **harness scheduling only; the
 seven-day policy is untouched.**
 
+### The three SHA gates are SUPERSEDED for Session 2 (Phase 11-P.5)
+
+> **★ `api_sha_unchanged`, `mobile_sha_unchanged` and `admin_sha_unchanged` are no longer the
+> Session-2 authority.** They compared three observed SHAs to three checkpoint SHAs with a uniform
+> `===` and never said WHERE an observed SHA is read from. That omission failed in both directions at
+> once:
+>
+> - **False refusal.** The checkpoint pins `api_sha = 9f06a86^` and `mobile_sha = 58268bf^` — the
+>   parents of the commits that created it. Committing the artifact advanced main past its own pin,
+>   so the only tree satisfying the gate is one that does not contain the checkpoint.
+> - **False admission.** `admin_sha = fd7ef03` is the stale FOREIGN LOCAL CHECKOUT, already
+>   superseded in production ~28 hours before the checkpoint was authored. Observing
+>   `git rev-parse HEAD` returns a GREEN gate over a console two production deployments behind the
+>   one reviewer B will use — with the Phase C and Phase D release-authority rework in between.
+>
+> The fields remain in the frozen checkpoint as **historical authoring provenance** and are never
+> rewritten. Session 2 evaluates source-qualified provenance instead:
+> `docs/phase11p5-branchb-session15-provenance.json`, decoded and gated by
+> `scripts/lib/branchBProvenance.mjs`, bound to the checkpoint by SHA-256.
+>
+> | Component | Revision | Source of truth |
+> |---|---|---|
+> | API Branch-B source | `9f06a86` | `refs/heads/main` — source/instrument only, **NOT the release door** |
+> | Mobile Branch-B source | `58268bf` | `refs/heads/main` — no deployed mobile revision exists |
+> | Admin console | `cd044fe` | successful **Production** deployment metadata, never a local checkout |
+>
+> The Postgres release door carries no git revision; its integrity is proven behaviourally by
+> `verifyPhaseDDeployment`, source/deployment drift, the Branch-B sentinel and the standing fixture.
+> Rationale and mutation evidence: `docs/phase11p5-branchb-sha-provenance.md`.
+
 ```
 TWO-PERSON CONTROL: SINGLE-OPERATOR TEST MODE
 ```
