@@ -83,3 +83,54 @@ jobs:
             echo "::error::env file is tracked in git: $tracked"
             exit 1
           fi
+
+  # ────────────────────────────────────────────────────────────────────────────────────────────
+  # DEPENDENCY VULNERABILITY SCAN — scanning only. It can never change what this repo depends on.
+  #
+  # A separate job, not a step in `verify`, for the same reason the SQL suite is separate: a failure
+  # here means something categorically different from a failing unit test, and it must be readable
+  # as such on the PR without opening a log.
+  #
+  # ★ NO REMEDIATION, ANYWHERE. There is no `npm audit fix`, no `npm update`, no bot, no auto-merge
+  #   and no commit, and the enforcing step is not marked continue-on-error and does not end in
+  #   `|| true`. Two `git diff --exit-code` guards prove the job left the dependency graph
+  #   exactly as committed — one after the install, one after the scan — because a security gate
+  #   that can silently rewrite the lockfile is a supply-chain risk rather than a control.
+  #
+  # ★ THE THRESHOLD IS THE REPOSITORY'S, NOT THE TOOL'S. `npm audit` defaults to failing at `low`;
+  #   this gate fails at critical + high and REPORTS everything below, which is the line
+  #   docs/phase10-closeout.md already held as a release exit criterion. The decision lives in
+  #   scripts/security/vulnerabilityPolicy.mjs, is unit-tested against synthetic reports, and is
+  #   byte-identical to afterworth-mobile's copy.
+  #
+  # ★ `contents: read` AND NOTHING ELSE. The scan reads a lockfile and asks a public advisory
+  #   database about it. It has no business holding a token that can write to this repository.
+  # ────────────────────────────────────────────────────────────────────────────────────────────
+  dependency-scan:
+    name: dependency vulnerability scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` is the FROZEN install: it installs exactly what package-lock.json pins and fails if
+      # package.json disagrees with it, rather than resolving anything new. `npm install` here would
+      # let the job audit a tree that is not the committed one.
+      - run: npm ci
+
+      - name: Assert the frozen install changed nothing
+        run: git diff --exit-code
+
+      # Audits the INSTALLED tree, deliberately — `--package-lock-only` was measured against the
+      # mobile graph and under-reports, missing six packages including two direct dependencies.
+      - name: Dependency vulnerability scan
+        run: node scripts/security/dependencyAudit.mjs
+
+      - name: Assert the scan changed nothing
+        run: git diff --exit-code
