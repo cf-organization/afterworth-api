@@ -135,16 +135,15 @@ function main() {
     ...Object.keys(add.addendum.session2_provenance).map((n) => `provenance_${n}`),
   ]);
   const provenanceGates = r.gates.filter((g) => provenanceIds.has(g.id));
-  const instrumentGate = r.gates.find((g) => g.id === 'resume_instrument_pinned');
-  const stateGates = r.gates.filter(
-    (g) => !provenanceIds.has(g.id) && g.id !== 'resume_instrument_pinned'
-  );
+  const instrumentIds = new Set(['resume_instrument_pinned', 'resume_instrument_not_stale']);
+  const instrumentGates = r.gates.filter((g) => instrumentIds.has(g.id));
+  const stateGates = r.gates.filter((g) => !provenanceIds.has(g.id) && !instrumentIds.has(g.id));
 
   console.log('\nPROVENANCE GATES');
   for (const g of provenanceGates) console.log(line(g.pass, g.id, g.detail));
 
   console.log('\nRESUME INSTRUMENT (Stage 19 — a separate fact, never folded into source provenance)');
-  console.log(line(instrumentGate.pass, instrumentGate.id, instrumentGate.detail));
+  for (const g of instrumentGates) console.log(line(g.pass, g.id, g.detail));
 
   console.log('\nPRODUCTION-STATE GATES (legacy, retained verbatim)');
   if (observedPath === null) {
@@ -166,8 +165,9 @@ function main() {
   console.log('\n' + '='.repeat(96));
   console.log(`PROVENANCE VERDICT : ${provenanceFailed.length === 0 ? 'GREEN' : 'REFUSED'}`
     + (provenanceFailed.length ? `  failed=[${provenanceFailed.join(', ')}]` : ''));
-  console.log(`RESUME INSTRUMENT  : ${instrumentGate.pass ? 'PINNED' : 'NOT YET PINNED'}`
-    + (instrumentGate.pass ? '' : ' — pin after this remediation merges; Session 2 refuses until then'));
+  const instrumentOk = instrumentGates.every((g) => g.pass);
+  console.log(`RESUME INSTRUMENT  : ${instrumentOk ? 'PINNED AND CURRENT' : 'NOT READY'}`
+    + (instrumentOk ? '' : ` — ${instrumentGates.filter((g) => !g.pass).map((g) => g.id).join(', ')}`));
   console.log(`SESSION-2 VERDICT  : ${r.decision}`
     + (observedPath === null ? '   (production state unobserved — refusal expected)' : ''));
   console.log('RELEASE            : NOT AUTHORIZED BY THIS SCRIPT. It cannot authorize one.');

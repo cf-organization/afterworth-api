@@ -193,6 +193,51 @@ export function collectReviewedRevision({ repo, sha, ancestorOf, gh = defaultGh 
 }
 
 /**
+ * PURE. Newest commit sha across per-path commit listings.
+ *
+ * ★ IT TAKES THE MAXIMUM BY DATE ACROSS PATHS, NOT THE FIRST LIST'S HEAD. The instrument is several
+ *   files; whichever was edited most recently is the one that dates the instrument. Reading only the
+ *   first path would report a stale pin as current the moment a different file changed.
+ *
+ * ★ AND A SINGLE UNREADABLE PATH POISONS THE ANSWER. If any path failed to list, the newest commit
+ *   is unknowable — not "the newest of the ones that worked" — so it returns null and the gate fails.
+ */
+export function selectNewestCommitAcrossPaths(listsByPath, paths) {
+  if (!Array.isArray(paths) || paths.length === 0) return null;
+  let best = null;
+  for (const path of paths) {
+    const list = listsByPath?.[path];
+    if (!Array.isArray(list)) return null;
+    if (list.length === 0) continue;
+    for (const c of list) {
+      const sha = c?.sha;
+      const when = c?.commit?.committer?.date ?? c?.commit?.author?.date;
+      if (!SHA1_RE.test(String(sha)) || typeof when !== 'string') continue;
+      const t = Date.parse(when);
+      if (Number.isNaN(t)) continue;
+      if (best === null || t > best.t) best = { sha, t };
+    }
+  }
+  return best === null ? null : best.sha;
+}
+
+/** Collect the newest commit that touched any declared instrument path on the given branch. */
+export function collectInstrumentHeadRevision({ repo, paths, ancestorOf, gh = defaultGh }) {
+  const branch = ancestorOf.replace(/^refs\/heads\//, '');
+  const listsByPath = {};
+  for (const path of paths) {
+    try {
+      listsByPath[path] = JSON.parse(
+        gh([`repos/${repo}/commits?sha=${branch}&path=${encodeURIComponent(path)}&per_page=1`])
+      );
+    } catch {
+      return null; // unknowable, never "current"
+    }
+  }
+  return selectNewestCommitAcrossPaths(listsByPath, paths);
+}
+
+/**
  * Collect a LOCAL WORKING-TREE HEAD, labelled honestly as such.
  *
  * ★ THIS EXISTS SO THE WRONG ANSWER CAN BE SAID OUT LOUD. It is never valid as provenance — the
@@ -236,6 +281,9 @@ export function collectSession2Provenance({ addendum, gh = defaultGh }) {
   }
   if (addendum.resume_instrument !== null) {
     const e = addendum.resume_instrument;
+    out.resume_instrument_head = collectInstrumentHeadRevision({
+      repo: e.repo, paths: e.instrument_paths, ancestorOf: e.ancestor_of, gh,
+    });
     out.resume_instrument =
       e.source_kind === SOURCE_KINDS.REVIEWED_REVISION
         ? collectReviewedRevision({ repo: e.repo, sha: e.sha, ancestorOf: e.ancestor_of, gh })

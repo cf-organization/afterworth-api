@@ -189,7 +189,39 @@ artifact was being written, and inventing a value would have reproduced the exac
 defect being remediated. **NULL refuses**, which made pinning it after merge mandatory rather than
 optional.
 
-It is now pinned to `7c7c25c` — the merged Phase 11-P.5 remediation. The two fields hold **different
+### 7.1 · A pinned instrument must be provably CURRENT, not merely in the lineage
+
+`reviewed_revision` asks whether a commit is still in the branch's lineage. That is the right
+question for a frozen evidence baseline and **the wrong one for a live instrument.**
+
+**Proven here.** 11-P.5b edited the evaluator. The pin written by 11-P.5 named `7c7c25c`, which is a
+genuine ancestor of main — so `resume_instrument_pinned` stayed **green while naming a revision whose
+evaluator had been superseded.** Green over the wrong instrument is the same failure as green over
+the wrong console, one file away.
+
+So `resume_instrument` declares the **paths it is made of**, and `resume_instrument_not_stale`
+requires the pin to equal the newest commit touching any of them. The newest is taken as a maximum
+**across all paths** — reading only the first would report a stale pin as current the moment a
+different file changed (mutation M23) — and a single unreadable path returns `null` rather than "the
+newest of the ones that worked", because an unknowable answer must refuse (M22).
+
+**The two refusals are named apart.** *"I could not find out when the instrument last changed"* means
+fix the collector; *"the instrument changed after you pinned it"* means re-pin. Both refuse, so a
+verdict-only assertion cannot tell them apart.
+
+### 7.2 · The pin converges only through a DATA-ONLY commit
+
+A commit that changes instrument code moves the instrument head, which invalidates any pin written in
+that same commit — the pin cannot name a SHA that does not yet exist. So the sequence terminates only
+when the final commit touches **the addendum data alone**: it does not move the instrument head, so
+the value it pins stays correct.
+
+This is the same self-reference that produced the original checkpoint defect, and it is resolved
+here by *separating the two commits* rather than by pretending one can name itself.
+
+---
+
+`resume_instrument` was pinned to `7c7c25c` — the merged Phase 11-P.5 remediation. The two fields hold **different
 revisions**, which is the whole point: `9f06a86` is the reviewed Branch-B evidence baseline and
 `7c7c25c` is the reviewed instrument. Overloading one onto the other is how the checkpoint's
 `api_sha` came to mean neither thing, and mutation M19 collapses them and is detected.

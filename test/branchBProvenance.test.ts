@@ -37,10 +37,12 @@ import {
 import {
   collectLocalCheckout,
   collectProductionDeployment,
+  collectInstrumentHeadRevision,
   collectReviewedRevision,
   collectSession2Provenance,
   collectSourceRevision,
   selectLineage,
+  selectNewestCommitAcrossPaths,
   selectRefSha,
   selectSuccessfulProductionDeployment,
 } from "../scripts/lib/branchBObservation.mjs";
@@ -80,7 +82,7 @@ const IDEAL_OBSERVED = Object.freeze({
   deployed_contracts_clean: true,
 });
 
-const RESUME_INSTRUMENT_SHA = "7c7c25c8ea7490507fbfae895833788d9c36d753";
+const RESUME_INSTRUMENT_SHA = "92f56232ba27d8f89e9b52d168fa5eccfd6f05e3";
 
 const HONEST_PROVENANCE = Object.freeze({
   api_branch_b_source: {
@@ -104,6 +106,7 @@ const HONEST_PROVENANCE = Object.freeze({
     ancestor_of: "refs/heads/main",
     in_lineage: true,
   },
+  resume_instrument_head: RESUME_INSTRUMENT_SHA,
   admin_console_production: {
     sha: ADMIN_PRODUCTION,
     source_kind: SOURCE_KINDS.PRODUCTION_DEPLOYMENT,
@@ -571,6 +574,105 @@ describe("8 · STAGE 19 — the resume instrument is a separate, fail-closed fac
   });
 });
 
+describe("8b · STAGE 19 — a pinned instrument must be provably CURRENT, not merely in the lineage", () => {
+  it("★ the exact 11-P.5b defect: a lineage-valid but SUPERSEDED pin is caught", () => {
+    // 7c7c25c is a real ancestor of main, so `resume_instrument_pinned` would pass on it. What makes
+    // it wrong is that 11-P.5b edited the evaluator afterwards. Lineage cannot see that; staleness can.
+    const a = structuredClone(ADDENDUM_RAW);
+    a.resume_instrument.sha = "7c7c25c8ea7490507fbfae895833788d9c36d753";
+    const r = session2(
+      {
+        resume_instrument: {
+          ...HONEST_PROVENANCE.resume_instrument,
+          sha: "7c7c25c8ea7490507fbfae895833788d9c36d753",
+        },
+        resume_instrument_head: RESUME_INSTRUMENT_SHA,
+      },
+      a
+    );
+    expect(r.failed).not.toContain("resume_instrument_pinned"); // lineage is satisfied...
+    expect(r.failed).toContain("resume_instrument_not_stale");  // ...and staleness is not
+    expect(r.gates.find((g: any) => g.id === "resume_instrument_not_stale")?.detail).toContain(
+      "instrument code last changed at"
+    );
+  });
+
+  /**
+   * ★ THE TWO REFUSALS NEED OPPOSITE OPERATOR ACTIONS, SO THEY ARE NAMED APART.
+   *
+   * "I could not find out when the instrument last changed" means go fix the collector. "The
+   * instrument changed after you pinned it" means go re-pin. Both refuse, so a verdict-only
+   * assertion cannot tell them apart — and a mutation that collapsed the unobserved branch into the
+   * equality check passed every such assertion while reporting the wrong one. This is the same
+   * split the resume gate already makes between `owner_notice_provider_accepted` and
+   * `release_window_strictly_elapsed`.
+   */
+  it("★ an UNOBSERVED instrument head refuses, and says so rather than reporting staleness", () => {
+    for (const v of [undefined, null, 123]) {
+      const r = session2({ resume_instrument_head: v });
+      expect(r.failed, String(v)).toContain("resume_instrument_not_stale");
+      const detail = r.gates.find((g: any) => g.id === "resume_instrument_not_stale")?.detail ?? "";
+      expect(detail, String(v)).toContain("instrument head unobserved");
+      expect(detail, String(v)).not.toContain("instrument code last changed at");
+    }
+  });
+
+  it("the current pin is not stale", () => {
+    expect(session2().failed).not.toContain("resume_instrument_not_stale");
+    expect(ADD.resume_instrument.instrument_paths.length).toBeGreaterThan(0);
+  });
+
+  it("instrument_paths must be a non-empty array of repo paths", () => {
+    for (const bad of [[], "scripts/x.mjs", [""], [42], undefined]) {
+      const a = structuredClone(ADDENDUM_RAW);
+      a.resume_instrument.instrument_paths = bad;
+      expect(decodeProvenanceAddendum(a).ok, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  /**
+   * ★ THE FIXTURE INTERLEAVES: the newest commit is on the SECOND path, not the first, and the
+   *   per-path lists are not in date order. A fixture whose first path already held the answer would
+   *   pass with the maximum-by-date deleted.
+   */
+  const LISTS = {
+    "scripts/lib/branchBProvenance.mjs": [
+      { sha: "1".repeat(40), commit: { committer: { date: "2026-08-19T10:00:00Z" } } },
+    ],
+    "scripts/lib/branchBObservation.mjs": [
+      { sha: "2".repeat(40), commit: { committer: { date: "2026-08-19T18:00:00Z" } } },
+    ],
+    "scripts/branchBSession2Preflight.mjs": [
+      { sha: "3".repeat(40), commit: { committer: { date: "2026-08-19T12:00:00Z" } } },
+    ],
+  };
+  const PATHS = Object.keys(LISTS);
+
+  it("the fixture precondition holds — the newest commit is NOT on the first path", () => {
+    expect(LISTS[PATHS[0]][0].sha).not.toBe("2".repeat(40));
+  });
+
+  it("★ it takes the newest across ALL paths, not the first list's head", () => {
+    expect(selectNewestCommitAcrossPaths(LISTS, PATHS)).toBe("2".repeat(40));
+  });
+
+  it("★ one unreadable path poisons the answer rather than yielding a stale 'newest'", () => {
+    const partial = { ...LISTS };
+    delete (partial as Record<string, unknown>)["scripts/lib/branchBObservation.mjs"];
+    expect(selectNewestCommitAcrossPaths(partial, PATHS)).toBe(null);
+    const boom = () => {
+      throw new Error("unreachable");
+    };
+    expect(
+      collectInstrumentHeadRevision({ repo: "o/r", paths: PATHS, ancestorOf: "refs/heads/main", gh: boom })
+    ).toBe(null);
+  });
+
+  it("a path with no commits is skipped without poisoning a readable answer", () => {
+    expect(selectNewestCommitAcrossPaths({ ...LISTS, [PATHS[0]]: [] }, PATHS)).toBe("2".repeat(40));
+  });
+});
+
 describe("9 · the strict addendum decoder", () => {
   it("an UNKNOWN top-level field fails", () => {
     const d = decodeProvenanceAddendum({ ...ADDENDUM_RAW, extra_note: "harmless" });
@@ -756,6 +858,11 @@ describe("10 · the collector selectors, run as the production default", () => {
       if (args[0].includes("/compare/")) {
         const base = args[0].split("/compare/")[1].split("...")[0];
         return JSON.stringify({ status: "ahead", behind_by: 0, base_commit: { sha: base } });
+      }
+      if (args[0].includes("/commits?")) {
+        return JSON.stringify([
+          { sha: RESUME_INSTRUMENT_SHA, commit: { committer: { date: "2026-08-19T18:00:00Z" } } },
+        ]);
       }
       if (args[0].includes("/deployments?")) {
         return JSON.stringify([

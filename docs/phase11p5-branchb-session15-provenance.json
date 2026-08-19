@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "created_at": "2026-08-19T18:05:00.000Z",
+  "created_at": "2026-08-19T18:40:00.000Z",
   "operator_ruling": "PHASE_11P5_SHA_PROVENANCE_ADDENDUM_V1",
   "branch_b_checkpoint_sha256": "2a0a0b92e3ee455a6bd0ebb2e002eeb2d9e0b021bfe6fac23a670bd08324d4cb",
   "legacy_checkpoint_provenance": {
@@ -38,10 +38,16 @@
     }
   },
   "resume_instrument": {
-    "sha": "7c7c25c8ea7490507fbfae895833788d9c36d753",
+    "sha": "92f56232ba27d8f89e9b52d168fa5eccfd6f05e3",
     "source_kind": "reviewed_revision",
     "repo": "cf-organization/afterworth-api",
     "ancestor_of": "refs/heads/main",
-    "semantic": "The reviewed Session-2 resume-instrument revision: the merged Phase 11-P.5 remediation. Deliberately distinct from the Branch-B evidence baseline."
+    "instrument_paths": [
+      "scripts/lib/branchBProvenance.mjs",
+      "scripts/lib/branchBObservation.mjs",
+      "scripts/lib/branchBCheckpoint.mjs",
+      "scripts/branchBSession2Preflight.mjs"
+    ],
+    "semantic": "The reviewed Session-2 resume-instrument revision: the newest commit touching the declared instrument paths. Distinct from the Branch-B evidence baseline."
   }
 }
