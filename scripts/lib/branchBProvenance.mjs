@@ -284,6 +284,22 @@ export function decodeProvenanceAddendum(raw) {
     }
   }
 
+  // ★ PHASE 11-P.5c — AND ITS PIN MUST BE PROVABLY CURRENT, NOT MERELY PLAUSIBLE.
+  //
+  // `reviewed_revision` asks whether the pinned commit is still in the lineage. That is the right
+  // question for a frozen EVIDENCE baseline and the wrong one for a LIVE INSTRUMENT: 11-P.5b edited
+  // the evaluator, and the pin from 11-P.5 stayed green while naming a revision whose evaluator had
+  // been superseded. Green over the wrong instrument is the same failure as green over the wrong
+  // console, one file away. So the instrument declares the PATHS it is made of, and the pin must
+  // equal the newest commit that touched them.
+  if (raw.resume_instrument !== null) {
+    const paths = raw.resume_instrument?.instrument_paths;
+    if (!Array.isArray(paths) || paths.length === 0
+        || !paths.every((x) => typeof x === 'string' && /^[A-Za-z0-9._\/-]{3,120}$/.test(x))) {
+      errors.push('resume_instrument.instrument_paths: must be a non-empty array of repo paths');
+    }
+  }
+
   // ★ PHASE 11-P.5 / STAGE 19 — THE INSTRUMENT REVISION IS A SEPARATE FACT, AND NULLABLE.
   //
   // The source revision Branch B was EVIDENCED at and the source revision the Session-2 RESUME
@@ -293,7 +309,8 @@ export function decodeProvenanceAddendum(raw) {
   // value would reproduce the exact self-referential defect being remediated. NULL is refused by
   // `resume_instrument_pinned`, so the follow-up pin is mandatory rather than optional.
   if (raw.resume_instrument !== null) {
-    checkComponent('resume_instrument', raw.resume_instrument, errors);
+    const { instrument_paths, ...rest } = raw.resume_instrument ?? {};
+    checkComponent('resume_instrument', rest, errors);
   }
 
   if (errors.length) return { ok: false, errors: errors.sort() };
@@ -309,6 +326,7 @@ export const SESSION2_GATE_IDS = Object.freeze([
   'provenance_mobile_branch_b_source',
   'provenance_admin_console_production',
   'resume_instrument_pinned',
+  'resume_instrument_not_stale',
 ]);
 
 export const SESSION2 = Object.freeze({ ALLOWED: 'RESUME', REFUSED: 'REFUSE_RESUME' });
@@ -464,8 +482,27 @@ export function evaluateSession2Resume({
       'resume_instrument is null — pin it to the merged remediation revision before Session 2'
     );
   } else {
-    const r = compareProvenance(op.resume_instrument, ri);
+    const { instrument_paths, ...expectedRevision } = ri;
+    const r = compareProvenance(op.resume_instrument, expectedRevision);
     gate('resume_instrument_pinned', r.pass, `${r.code}: ${r.detail}`);
+  }
+
+  // ★ STALENESS IS ITS OWN GATE, AND AN UNOBSERVED ANSWER FAILS IT. `undefined` here means the
+  //   collector could not establish which commit last changed the instrument — which is exactly when
+  //   a stale pin would slip through, so it must refuse rather than be treated as agreement.
+  const head = op.resume_instrument_head;
+  if (ri === null) {
+    gate('resume_instrument_not_stale', false, 'no instrument pinned');
+  } else if (typeof head !== 'string') {
+    gate('resume_instrument_not_stale', false, `instrument head unobserved (${String(head)})`);
+  } else {
+    gate(
+      'resume_instrument_not_stale',
+      head === ri.sha,
+      head === ri.sha
+        ? `pin is the newest commit touching ${ri.instrument_paths.length} instrument path(s)`
+        : `instrument code last changed at ${head}, but the pin names ${ri.sha}`
+    );
   }
 
   const all = [...retained, ...gates];
