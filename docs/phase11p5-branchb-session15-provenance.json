@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "created_at": "2026-08-19T18:40:00.000Z",
+  "created_at": "2026-08-19T18:55:00.000Z",
   "operator_ruling": "PHASE_11P5_SHA_PROVENANCE_ADDENDUM_V1",
   "branch_b_checkpoint_sha256": "2a0a0b92e3ee455a6bd0ebb2e002eeb2d9e0b021bfe6fac23a670bd08324d4cb",
   "legacy_checkpoint_provenance": {
@@ -38,7 +38,7 @@
     }
   },
   "resume_instrument": {
-    "sha": "92f56232ba27d8f89e9b52d168fa5eccfd6f05e3",
+    "sha": "1518ca81ba84727fcb71426a1fa36da53dd9e0f6",
     "source_kind": "reviewed_revision",
     "repo": "cf-organization/afterworth-api",
     "ancestor_of": "refs/heads/main",

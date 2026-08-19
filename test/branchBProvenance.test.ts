@@ -82,7 +82,7 @@ const IDEAL_OBSERVED = Object.freeze({
   deployed_contracts_clean: true,
 });
 
-const RESUME_INSTRUMENT_SHA = "92f56232ba27d8f89e9b52d168fa5eccfd6f05e3";
+const RESUME_INSTRUMENT_SHA = "1518ca81ba84727fcb71426a1fa36da53dd9e0f6";
 
 const HONEST_PROVENANCE = Object.freeze({
   api_branch_b_source: {
@@ -576,15 +576,15 @@ describe("8 · STAGE 19 — the resume instrument is a separate, fail-closed fac
 
 describe("8b · STAGE 19 — a pinned instrument must be provably CURRENT, not merely in the lineage", () => {
   it("★ the exact 11-P.5b defect: a lineage-valid but SUPERSEDED pin is caught", () => {
-    // 7c7c25c is a real ancestor of main, so `resume_instrument_pinned` would pass on it. What makes
-    // it wrong is that 11-P.5b edited the evaluator afterwards. Lineage cannot see that; staleness can.
+    // 92f5623 is a real ancestor of main, so `resume_instrument_pinned` passes on it. What makes it
+    // wrong is that a later commit edited the evaluator. Lineage cannot see that; staleness can.
     const a = structuredClone(ADDENDUM_RAW);
-    a.resume_instrument.sha = "7c7c25c8ea7490507fbfae895833788d9c36d753";
+    a.resume_instrument.sha = "92f56232ba27d8f89e9b52d168fa5eccfd6f05e3";
     const r = session2(
       {
         resume_instrument: {
           ...HONEST_PROVENANCE.resume_instrument,
-          sha: "7c7c25c8ea7490507fbfae895833788d9c36d753",
+          sha: "92f56232ba27d8f89e9b52d168fa5eccfd6f05e3",
         },
         resume_instrument_head: RESUME_INSTRUMENT_SHA,
       },
