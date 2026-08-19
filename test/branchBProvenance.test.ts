@@ -37,8 +37,10 @@ import {
 import {
   collectLocalCheckout,
   collectProductionDeployment,
+  collectReviewedRevision,
   collectSession2Provenance,
   collectSourceRevision,
+  selectLineage,
   selectRefSha,
   selectSuccessfulProductionDeployment,
 } from "../scripts/lib/branchBObservation.mjs";
@@ -78,18 +80,29 @@ const IDEAL_OBSERVED = Object.freeze({
   deployed_contracts_clean: true,
 });
 
+const RESUME_INSTRUMENT_SHA = "7c7c25c8ea7490507fbfae895833788d9c36d753";
+
 const HONEST_PROVENANCE = Object.freeze({
   api_branch_b_source: {
     sha: API_SESSION2,
-    source_kind: SOURCE_KINDS.SOURCE_REVISION,
+    source_kind: SOURCE_KINDS.REVIEWED_REVISION,
     repo: "cf-organization/afterworth-api",
-    ref: "refs/heads/main",
+    ancestor_of: "refs/heads/main",
+    in_lineage: true,
   },
   mobile_branch_b_source: {
     sha: MOBILE_SESSION2,
-    source_kind: SOURCE_KINDS.SOURCE_REVISION,
+    source_kind: SOURCE_KINDS.REVIEWED_REVISION,
     repo: "cf-organization/afterworth-mobile",
-    ref: "refs/heads/main",
+    ancestor_of: "refs/heads/main",
+    in_lineage: true,
+  },
+  resume_instrument: {
+    sha: RESUME_INSTRUMENT_SHA,
+    source_kind: SOURCE_KINDS.REVIEWED_REVISION,
+    repo: "cf-organization/afterworth-api",
+    ancestor_of: "refs/heads/main",
+    in_lineage: true,
   },
   admin_console_production: {
     sha: ADMIN_PRODUCTION,
@@ -237,11 +250,26 @@ describe("3 · source kind is load-bearing, checked BEFORE the sha", () => {
     expect(g?.detail).toContain("observation_source_kind_wrong");
   });
 
-  it("a source_revision from the wrong ref refuses", () => {
+  it("a reviewed_revision measured against the wrong branch refuses", () => {
     const r = session2({
-      api_branch_b_source: { ...HONEST_PROVENANCE.api_branch_b_source, ref: "refs/heads/release" },
+      api_branch_b_source: { ...HONEST_PROVENANCE.api_branch_b_source, ancestor_of: "refs/heads/release" },
     });
     expect(r.failed).toContain("provenance_api_branch_b_source");
+    expect(r.gates.find((g: any) => g.id === "provenance_api_branch_b_source")?.detail).toContain(
+      "observation_lineage_target_wrong"
+    );
+  });
+
+  it("★ a reviewed revision that is NOT in the lineage refuses — existing is not enough", () => {
+    for (const v of [false, undefined, null, "true"]) {
+      const r = session2({
+        api_branch_b_source: { ...HONEST_PROVENANCE.api_branch_b_source, in_lineage: v },
+      });
+      expect(r.failed, String(v)).toContain("provenance_api_branch_b_source");
+      expect(r.gates.find((g: any) => g.id === "provenance_api_branch_b_source")?.detail).toContain(
+        "revision_not_in_lineage"
+      );
+    }
   });
 
   it("a source_revision from the wrong repo refuses", () => {
@@ -509,45 +537,31 @@ describe("7 · STAGE 11 — every non-SHA gate survives, and exactly three do no
 });
 
 describe("8 · STAGE 19 — the resume instrument is a separate, fail-closed fact", () => {
-  it("★ a NULL instrument refuses rather than defaulting to the branch-b source revision", () => {
-    expect(ADD.resume_instrument).toBe(null);
-    const r = session2();
+  it("★ the instrument is PINNED to the merged remediation, and is NOT the evidence baseline", () => {
+    expect(ADD.resume_instrument).not.toBe(null);
+    expect(ADD.resume_instrument.sha).toBe(RESUME_INSTRUMENT_SHA);
+    expect(ADD.resume_instrument.sha).not.toBe(ADD.session2_provenance.api_branch_b_source.sha);
+    expect(session2().failed).not.toContain("resume_instrument_pinned");
+  });
+
+  it("★ a NULL instrument refuses rather than defaulting to the branch-b baseline", () => {
+    const a = structuredClone(ADDENDUM_RAW);
+    a.resume_instrument = null;
+    const r = session2({}, a);
     expect(r.failed).toContain("resume_instrument_pinned");
   });
 
-  it("once pinned it is compared like any other provenance fact", () => {
-    const addendum = structuredClone(ADDENDUM_RAW);
-    addendum.resume_instrument = {
-      sha: "d".repeat(40),
-      source_kind: SOURCE_KINDS.SOURCE_REVISION,
-      repo: "cf-organization/afterworth-api",
-      ref: "refs/heads/main",
-      semantic: "Session-2 resume instrument revision, pinned after the remediation merged.",
-    };
-    const ok = session2(
-      {
-        resume_instrument: {
-          sha: "d".repeat(40),
-          source_kind: SOURCE_KINDS.SOURCE_REVISION,
-          repo: "cf-organization/afterworth-api",
-          ref: "refs/heads/main",
-        },
-      },
-      addendum
-    );
-    expect(ok.failed).not.toContain("resume_instrument_pinned");
+  it("a WRONG instrument revision refuses", () => {
+    const wrong = session2({
+      resume_instrument: { ...HONEST_PROVENANCE.resume_instrument, sha: "e".repeat(40) },
+    });
+    expect(wrong.failed).toContain("resume_instrument_pinned");
+  });
 
-    const wrong = session2(
-      {
-        resume_instrument: {
-          sha: "e".repeat(40),
-          source_kind: SOURCE_KINDS.SOURCE_REVISION,
-          repo: "cf-organization/afterworth-api",
-          ref: "refs/heads/main",
-        },
-      },
-      addendum
-    );
+  it("an instrument revision outside the lineage refuses", () => {
+    const wrong = session2({
+      resume_instrument: { ...HONEST_PROVENANCE.resume_instrument, in_lineage: false },
+    });
     expect(wrong.failed).toContain("resume_instrument_pinned");
   });
 
@@ -696,6 +710,9 @@ describe("10 · the collector selectors, run as the production default", () => {
       throw new Error("gh unavailable");
     };
     expect(collectSourceRevision({ repo: "o/r", ref: "refs/heads/main", gh: boom })).toBe(null);
+    expect(
+      collectReviewedRevision({ repo: "o/r", sha: "a".repeat(40), ancestorOf: "refs/heads/main", gh: boom })
+    ).toBe(null);
     expect(collectProductionDeployment({ repo: "o/r", environment: "Production", gh: boom })).toBe(null);
     expect(collectLocalCheckout({ repoPath: "/x", repo: "o/r", git: boom })).toBe(null);
   });
@@ -710,10 +727,9 @@ describe("10 · the collector selectors, run as the production default", () => {
   it("★ a component whose transport fails stays NULL through the orchestrator, and refuses", () => {
     const ghFailsAdmin = (args: string[]) => {
       if (args[0].includes("afterworth-admin")) throw new Error("deployment metadata unavailable");
-      if (args[0].includes("/git/ref/")) {
-        const ref = `refs/${args[0].split("/git/ref/")[1]}`;
-        const sha = args[0].includes("afterworth-api") ? API_SESSION2 : MOBILE_SESSION2;
-        return JSON.stringify({ ref, object: { type: "commit", sha } });
+      if (args[0].includes("/compare/")) {
+        const base = args[0].split("/compare/")[1].split("...")[0];
+        return JSON.stringify({ status: "ahead", behind_by: 0, base_commit: { sha: base } });
       }
       return "[]";
     };
@@ -737,10 +753,9 @@ describe("10 · the collector selectors, run as the production default", () => {
     const calls: string[] = [];
     const gh = (args: string[]) => {
       calls.push(args[0]);
-      if (args[0].includes("/git/ref/")) {
-        const ref = `refs/${args[0].split("/git/ref/")[1]}`;
-        const sha = args[0].includes("afterworth-api") ? API_SESSION2 : MOBILE_SESSION2;
-        return JSON.stringify({ ref, object: { type: "commit", sha } });
+      if (args[0].includes("/compare/")) {
+        const base = args[0].split("/compare/")[1].split("...")[0];
+        return JSON.stringify({ status: "ahead", behind_by: 0, base_commit: { sha: base } });
       }
       if (args[0].includes("/deployments?")) {
         return JSON.stringify([
@@ -753,12 +768,57 @@ describe("10 · the collector selectors, run as the production default", () => {
     expect(collected.api_branch_b_source?.sha).toBe(API_SESSION2);
     expect(collected.mobile_branch_b_source?.sha).toBe(MOBILE_SESSION2);
     expect(collected.admin_console_production?.sha).toBe(ADMIN_PRODUCTION);
-    // the admin component was collected through the DEPLOYMENT path, never a ref lookup
-    expect(calls.some((c) => c.includes("afterworth-admin/git/ref/"))).toBe(false);
+    // the admin component was collected through the DEPLOYMENT path, never a lineage lookup
+    expect(calls.some((c) => c.includes("afterworth-admin/compare/"))).toBe(false);
     expect(calls.some((c) => c.includes("afterworth-admin/deployments?"))).toBe(true);
+    // and the reviewed baselines went through the LINEAGE path, never a moving-ref lookup
+    expect(calls.some((c) => c.includes("afterworth-api/compare/"))).toBe(true);
+    expect(calls.some((c) => c.includes("/git/ref/"))).toBe(false);
 
     const r = session2(collected as Record<string, unknown>);
     for (const name of PROVENANCE_COMPONENTS) expect(r.failed, name).not.toContain(`provenance_${name}`);
+  });
+});
+
+describe("10b · the lineage selector, run as the production default", () => {
+  const payload = (status: string, behind: number, sha: string) => ({
+    status,
+    behind_by: behind,
+    ahead_by: 1,
+    base_commit: { sha },
+  });
+
+  it("'ahead' with behind_by 0 is in the lineage; 'identical' is too", () => {
+    expect(selectLineage(payload("ahead", 0, API_SESSION2), API_SESSION2)?.in_lineage).toBe(true);
+    expect(selectLineage(payload("identical", 0, API_SESSION2), API_SESSION2)?.in_lineage).toBe(true);
+  });
+
+  it("★ 'diverged' is NOT in the lineage — the status word alone would have admitted it", () => {
+    // A parked or force-pushed commit reports `diverged` with a positive ahead_by, so a matcher
+    // that read only `status !== 'behind'` would pass it. behind_by is the load-bearing field.
+    expect(selectLineage(payload("diverged", 3, API_SESSION2), API_SESSION2)?.in_lineage).toBe(false);
+    expect(selectLineage(payload("behind", 2, API_SESSION2), API_SESSION2)?.in_lineage).toBe(false);
+  });
+
+  it("★ it refuses a payload describing a DIFFERENT commit than the one asked about", () => {
+    expect(selectLineage(payload("ahead", 0, MOBILE_SESSION2), API_SESSION2)).toBe(null);
+    expect(selectLineage(null, API_SESSION2)).toBe(null);
+    expect(selectLineage({ status: "ahead", behind_by: 0 }, API_SESSION2)).toBe(null);
+  });
+
+  it("the collector reports in_lineage=false rather than null when the commit exists but diverged", () => {
+    const gh = () => JSON.stringify(payload("diverged", 4, API_SESSION2));
+    const o = collectReviewedRevision({
+      repo: "cf-organization/afterworth-api",
+      sha: API_SESSION2,
+      ancestorOf: "refs/heads/main",
+      gh,
+    });
+    expect(o?.in_lineage).toBe(false);
+    // and that observation REFUSES rather than being read as absent
+    const verdict = compareProvenance(o, ADD.session2_provenance.api_branch_b_source);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.code).toBe("revision_not_in_lineage");
   });
 });
 
