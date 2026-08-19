@@ -239,10 +239,49 @@ describe("★ 7 · once Branch B exists, missing is never synthesized into state
     fixture_lock: "free",
   });
 
-  it("a complete, healthy observation is OK", () => {
-    const r = classifyBranchBSentinel({ standingFixture: INTACT, branchB: { ...PRESENT } });
+  /**
+   * ★ PHASE 11-P — A HEALTHY OBSERVATION IS NOT SELF-CERTIFYING. It must be pinned against the
+   * committed checkpoint, because once a drill is in flight "is it intact" means "is it still the
+   * SAME drill", and presence alone cannot answer that.
+   */
+  const EXPECTED = Object.freeze({
+    estate_uuid: PRESENT.estate_uuid,
+    case_uuid: uid(2),
+    lifecycle: "challenge_window",
+    owner_outbox_id: uid(3),
+    notice_accepted_at: null,
+    release_eligible_at: null,
+    reviewer_a_uid: uid(4),
+    reviewer_b_uid: uid(5),
+  });
+  const OBSERVED = Object.freeze({ ...PRESENT, ...EXPECTED });
+
+  it("a complete, healthy, PINNED observation is IN FLIGHT while the window runs", () => {
+    const r = classifyBranchBSentinel({
+      standingFixture: INTACT,
+      branchB: { ...OBSERVED },
+      expected: { ...EXPECTED },
+    });
     expect(r.findings).toEqual([]);
-    expect(r.verdict).toBe(SENTINEL.OK);
+    expect(r.verdict).toBe(SENTINEL.IN_FLIGHT);
+  });
+
+  it("★ an observation with NO checkpoint to pin against is refused, never certified", () => {
+    const r = classifyBranchBSentinel({ standingFixture: INTACT, branchB: { ...OBSERVED } });
+    expect(r.verdict).toBe(SENTINEL.DRIFTED);
+    expect(r.findings.map((f: { code: string }) => f.code)).toContain("branch_b_expectations_absent");
+  });
+
+  it("★ a drifted pin is caught field by field", () => {
+    for (const field of Object.keys(EXPECTED)) {
+      const mutated = { ...OBSERVED, [field]: field.endsWith("_at") ? "2026-01-01T00:00:00.000Z" : uid(9) };
+      const r = classifyBranchBSentinel({
+        standingFixture: INTACT,
+        branchB: mutated,
+        expected: { ...EXPECTED },
+      });
+      expect(r.verdict, `drifting ${field} was not caught`).toBe(SENTINEL.DRIFTED);
+    }
   });
 
   it("★ a PARTIAL observation is UNVERIFIABLE — a hole is not a null", () => {

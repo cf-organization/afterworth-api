@@ -33,9 +33,95 @@
 export const SENTINEL = Object.freeze({
   OK: 'BRANCH_B_SENTINEL_OK',
   ABSENT: 'BRANCH_B_FIXTURE_ABSENT',
+  IN_FLIGHT: 'BRANCH_B_IN_FLIGHT_WAITING',
   DRIFTED: 'BRANCH_B_SENTINEL_DRIFTED',
   UNVERIFIABLE: 'BRANCH_B_SENTINEL_UNVERIFIABLE',
 });
+
+/**
+ * ★ PHASE 11-P — THE FIELDS THE SENTINEL PINS AGAINST THE COMMITTED CHECKPOINT.
+ *
+ * The drill now EXISTS, so "is it intact" stops meaning "does it exist" and starts meaning "is it
+ * still the SAME drill". A sentinel that only checked presence would stay green while the case was
+ * replaced, the notice superseded, or the reviewer seats swapped — every one of which invalidates
+ * the release the checkpoint is being kept for.
+ *
+ * `null` is compared as a VALUE, not as absent: before the worker runs, `notice_accepted_at` must be
+ * null, and a non-null there is drift exactly as much as a wrong uuid is.
+ *
+ * ★ `generation` IS DELIBERATELY NOT PINNED HERE, AND ITS PROPERTY IS STILL COVERED. The checkpoint
+ * schema has no `generation` key — its key set IS its schema — so naming one produced a
+ * `checkpoint_field_missing` finding rather than a comparison. The stop condition it guards
+ * ("a superseded generation treated as current") is enforced more tightly by `owner_outbox_id`:
+ * the observation selects the row where `is_current`, so a re-notice makes the CURRENT row a
+ * DIFFERENT uuid and the pin fails. An id comparison subsumes an ordinal one.
+ */
+export const BRANCH_B_PINNED = Object.freeze([
+  'estate_uuid',
+  'case_uuid',
+  'lifecycle',
+  'owner_outbox_id',
+  'notice_accepted_at',
+  'release_eligible_at',
+  'reviewer_a_uid',
+  'reviewer_b_uid',
+]);
+
+/**
+ * Compare an observation against the checkpoint's pinned facts. Pure; returns findings only.
+ *
+ * ★ A MISSING KEY IS DRIFT, NEVER A SKIPPED COMPARISON. Reading `undefined === undefined` as
+ * agreement is how an audit passes against a projection that stopped publishing the field.
+ */
+
+/**
+ * ★ TIMESTAMPS ARE COMPARED AS INSTANTS, NOT AS SPELLINGS.
+ *
+ * PostgREST renders `2026-08-19T04:22:12.450582+00:00` (microseconds, numeric offset); the checkpoint
+ * stores `2026-08-19T04:22:12.450Z` (milliseconds, Z). Those are the SAME MOMENT and different
+ * strings, so a raw `!==` would have reported permanent drift on a perfectly intact drill — an
+ * instrument that cries wolf until somebody widens it until it means nothing.
+ *
+ * Everything else stays a strict identity comparison: uuids and lifecycle names have exactly one
+ * correct spelling, and normalizing those would be inventing tolerance where none is owed.
+ */
+const INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+function sameValue(a, b) {
+  if (a === b) return true;
+  if (typeof a === 'string' && typeof b === 'string' && INSTANT_RE.test(a) && INSTANT_RE.test(b)) {
+    const x = Date.parse(a);
+    const y = Date.parse(b);
+    return Number.isFinite(x) && Number.isFinite(y) && x === y;
+  }
+  return false;
+}
+
+export function compareBranchBExpectations(observed, expected, fields = BRANCH_B_PINNED) {
+  const findings = [];
+  if (!observed || typeof observed !== 'object') {
+    return [{ code: 'branch_b_observation_malformed', detail: typeof observed }];
+  }
+  if (!expected || typeof expected !== 'object') {
+    return [{ code: 'branch_b_expectations_absent', detail: 'no checkpoint supplied to pin against' }];
+  }
+  for (const f of fields) {
+    if (!(f in expected)) {
+      findings.push({ code: 'checkpoint_field_missing', detail: f });
+      continue;
+    }
+    if (!(f in observed)) {
+      findings.push({ code: 'observation_field_missing', detail: f });
+      continue;
+    }
+    if (!sameValue(observed[f], expected[f])) {
+      findings.push({
+        code: 'branch_b_drift',
+        detail: `${f}: observed=${String(observed[f])} checkpoint=${String(expected[f])}`,
+      });
+    }
+  }
+  return findings;
+}
 
 /**
  * Everything the sentinel checks once the Branch B estate EXISTS. Declared as data so the CLI, the
@@ -64,7 +150,12 @@ const SENTINEL_RE = /^(\d{1,4})\/(\d{1,4})$/;
  * @param {object|null} input.branchB          the observed Branch B world, or null if it does not exist
  * @param {string[]}   [input.expectedProperties]
  */
-export function classifyBranchBSentinel({ standingFixture, branchB, expectedProperties = BRANCH_B_PROPERTIES }) {
+export function classifyBranchBSentinel({
+  standingFixture,
+  branchB,
+  expected = null,
+  expectedProperties = BRANCH_B_PROPERTIES,
+}) {
   const findings = [];
   const note = (code, detail) => findings.push({ code, detail });
 
@@ -118,10 +209,26 @@ export function classifyBranchBSentinel({ standingFixture, branchB, expectedProp
     note('branch_b_fixture_lock_unreadable', String(branchB.fixture_lock));
   }
 
-  return frozen(findings.length === 0 ? SENTINEL.OK : SENTINEL.DRIFTED, findings, {
+  // ★ THE DISCLOSURE POSTURE IS A SAFETY PROPERTY, NOT A STATUS FIELD. Before release the
+  //   death-conditioned sentinel must be withheld; a `true` here means the drill already leaked.
+  if (branchB.disclosure_posture !== 'hidden') {
+    note('branch_b_disclosure_posture_wrong', String(branchB.disclosure_posture));
+  }
+
+  // ★ PINNED-FACT COMPARISON. Presence was the question while Branch B did not exist; identity is
+  //   the question now that it does.
+  for (const f of compareBranchBExpectations(branchB, expected)) findings.push(f);
+
+  const meta = {
     standing_fixture: `${passed}/${total}`,
     branch_b_properties_observed: expectedProperties.length,
-  });
+    branch_b_pinned_compared: expected ? BRANCH_B_PINNED.length : 0,
+  };
+  if (findings.length > 0) return frozen(SENTINEL.DRIFTED, findings, meta);
+
+  // Intact. `released_at === null` means the drill is still mid-flight and waiting, which is a
+  // DIFFERENT true answer from "the drill finished cleanly" and must not share a verdict with it.
+  return frozen(branchB.released_at === null ? SENTINEL.IN_FLIGHT : SENTINEL.OK, findings, meta);
 }
 
 function frozen(verdict, findings, extra = {}) {
@@ -130,7 +237,9 @@ function frozen(verdict, findings, extra = {}) {
 
 /** 0 = OK or the expected ABSENT · 1 = drifted · 2 = could not verify. Never a bare pass. */
 export function sentinelExitCode(verdict) {
-  if (verdict === SENTINEL.OK || verdict === SENTINEL.ABSENT) return 0;
+  if (verdict === SENTINEL.OK || verdict === SENTINEL.ABSENT || verdict === SENTINEL.IN_FLIGHT) {
+    return 0;
+  }
   if (verdict === SENTINEL.DRIFTED) return 1;
   return 2;
 }

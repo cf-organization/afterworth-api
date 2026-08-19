@@ -153,8 +153,20 @@ and `(…, 'released')` is `true`. `death_verified` and `challenge_halted` satis
 resume that fails four gates and reports one sends the operator round the loop four times. An
 unobserved fact is a **failed** gate, never a skipped one.
 
+> **★ SUPERSEDED BY PHASE D (11-OC), CORRECTED IN 11-P.** The paragraph below was written against the
+> Phase C door and said the clock anchor was `owner_notified_at`. **It is not, and has not been since
+> Phase D deployed.** The deployed authority is
+> `now() > notice_accepted_at + challenge_window_duration()`, strictly — anchored on the instant a
+> provider ACCEPTED the notice, not on the instant it was queued. The two differ by however long the
+> notice sits in the outbox, which for Branch B was over 22 hours, and on Branch A was **two days**.
+>
+> The formula is retained here only as history. `scripts/lib/branchBCheckpoint.mjs` has always been
+> correct and refuses a `coalesce(notice_accepted_at, owner_notified_at)` fallback by construction;
+> the stale text was in this prose alone. Anyone reading this section for instruction must use the
+> acceptance anchor.
+
 The window gate is **strict**: `now > release_eligible_at`, matching `authorize_release`, which uses
-`now() > owner_notified_at + challenge_window_duration()`. At the exact boundary instant the release
+`now() > notice_accepted_at + challenge_window_duration()`. At the exact boundary instant the release
 door refuses and the owner's challenge still wins. `recommended_resume_after` adds a five-minute
 margin so the resuming session does not race a door it knows is shut — **harness scheduling only; the
 seven-day policy is untouched.**
