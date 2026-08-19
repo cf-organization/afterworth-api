@@ -73,11 +73,30 @@ export const SUPERSEDED_LEGACY_GATE_IDS = Object.freeze([
 /**
  * ★ THE CLOSED SOURCE-KIND VOCABULARY. THIS IS THE CONTAINMENT MECHANISM.
  *
- * `source_revision`       — a named repository at a named ref, resolved from git metadata.
+ * `reviewed_revision`     — an IMMUTABLE reviewed commit, required to exist in the named repository
+ *                           and to lie in the lineage of its named branch. It does not move when the
+ *                           branch advances.
+ * `source_revision`       — a named repository at a named REF, resolved from git metadata. The ref
+ *                           is a moving target, so this kind asserts "the tip is exactly X".
  * `production_deployment` — a SUCCESSFUL deployment to the Production environment.
  * `local_checkout`        — a working-tree HEAD. Collectable, and NEVER expectable: see below.
+ *
+ * ★ PHASE 11-P.5b — WHY `reviewed_revision` HAD TO EXIST, PROVEN BY THIS FILE'S OWN MERGE.
+ *
+ * The first cut of this addendum pinned the reviewed Branch-B baseline `9f06a86` with source kind
+ * `source_revision` against `refs/heads/main`. Merging THIS REMEDIATION advanced main to `7c7c25c`,
+ * and the gate went red — not because provenance had drifted, but because a REVIEWED BASELINE had
+ * been tied to a MOVING REF. That is the same shape as the defect being remediated, one level up,
+ * and the architecture surfaced it rather than hiding it.
+ *
+ * A reviewed baseline is a claim about a COMMIT, not about a branch tip. What must stay true is that
+ * the commit still EXISTS and is still IN THE LINEAGE — it was not force-pushed away, rewritten, or
+ * left behind on an abandoned branch. What must NOT be required is that nothing else ever merges.
+ * A deployed runtime is the opposite: there the tip IS the fact, which is why
+ * `admin_console_production` keeps demanding the current successful Production deployment.
  */
 export const SOURCE_KINDS = Object.freeze({
+  REVIEWED_REVISION: 'reviewed_revision',
   SOURCE_REVISION: 'source_revision',
   PRODUCTION_DEPLOYMENT: 'production_deployment',
   LOCAL_CHECKOUT: 'local_checkout',
@@ -90,6 +109,7 @@ export const SOURCE_KINDS = Object.freeze({
  * would make them unlabelable — and an unlabelable read is one that gets labelled something else.
  */
 export const OBSERVABLE_SOURCE_KINDS = Object.freeze([
+  SOURCE_KINDS.REVIEWED_REVISION,
   SOURCE_KINDS.SOURCE_REVISION,
   SOURCE_KINDS.PRODUCTION_DEPLOYMENT,
   SOURCE_KINDS.LOCAL_CHECKOUT,
@@ -102,6 +122,7 @@ export const OBSERVABLE_SOURCE_KINDS = Object.freeze([
  * vocabulary, which is a visible change to a safety control rather than a data edit.
  */
 export const EXPECTABLE_SOURCE_KINDS = Object.freeze([
+  SOURCE_KINDS.REVIEWED_REVISION,
   SOURCE_KINDS.SOURCE_REVISION,
   SOURCE_KINDS.PRODUCTION_DEPLOYMENT,
 ]);
@@ -134,6 +155,9 @@ export function sha256Bytes(buf) {
  * anything that never looked at a deployment.
  */
 const COMPONENT_FIELDS_BY_KIND = Object.freeze({
+  [SOURCE_KINDS.REVIEWED_REVISION]: Object.freeze([
+    'sha', 'source_kind', 'repo', 'ancestor_of', 'semantic',
+  ]),
   [SOURCE_KINDS.SOURCE_REVISION]: Object.freeze(['sha', 'source_kind', 'repo', 'ref', 'semantic']),
   [SOURCE_KINDS.PRODUCTION_DEPLOYMENT]: Object.freeze([
     'sha', 'source_kind', 'repo', 'environment', 'semantic',
@@ -166,6 +190,9 @@ function checkComponent(name, c, errors) {
   if (!SEMANTIC_RE.test(String(c.semantic))) errors.push(`${p}.semantic: must be 8-200 printable ASCII`);
   if (c.source_kind === SOURCE_KINDS.SOURCE_REVISION && !REF_RE.test(String(c.ref))) {
     errors.push(`${p}.ref: must be a full ref such as refs/heads/main`);
+  }
+  if (c.source_kind === SOURCE_KINDS.REVIEWED_REVISION && !REF_RE.test(String(c.ancestor_of))) {
+    errors.push(`${p}.ancestor_of: must be a full ref such as refs/heads/main`);
   }
   if (c.source_kind === SOURCE_KINDS.PRODUCTION_DEPLOYMENT) {
     if (!ENVIRONMENT_RE.test(String(c.environment))) errors.push(`${p}.environment: malformed`);
@@ -316,6 +343,25 @@ export function compareProvenance(observed, expected) {
   }
   if (expected.source_kind === SOURCE_KINDS.SOURCE_REVISION && observed.ref !== expected.ref) {
     return { pass: false, code: 'observation_ref_wrong', detail: `observed ref=${observed.ref}` };
+  }
+  if (expected.source_kind === SOURCE_KINDS.REVIEWED_REVISION) {
+    // ★ The lineage claim is checked as its own fact. A commit that exists but has been abandoned —
+    //   force-pushed away, or living only on a parked branch — is NOT a reviewed baseline of this
+    //   line of development, and `in_lineage` is the only thing that can tell the two apart.
+    if (observed.ancestor_of !== expected.ancestor_of) {
+      return {
+        pass: false,
+        code: 'observation_lineage_target_wrong',
+        detail: `observed ancestor_of=${observed.ancestor_of}`,
+      };
+    }
+    if (observed.in_lineage !== true) {
+      return {
+        pass: false,
+        code: 'revision_not_in_lineage',
+        detail: `in_lineage=${observed.in_lineage} of ${expected.ancestor_of}`,
+      };
+    }
   }
   if (expected.source_kind === SOURCE_KINDS.PRODUCTION_DEPLOYMENT) {
     // ★ Three independent facts, all required. An unsuccessful deployment to Production and a

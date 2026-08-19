@@ -148,6 +148,51 @@ export function collectProductionDeployment({ repo, environment, gh = defaultGh,
 }
 
 /**
+ * PURE. Decide whether a compare payload proves the reviewed revision is in the branch's lineage.
+ *
+ * ★ `behind_by === 0` IS THE LOAD-BEARING CONDITION, NOT THE STATUS STRING. GitHub reports `ahead`
+ *   when the branch has advanced past the reviewed commit and `identical` when they are equal; both
+ *   mean the commit is an ancestor. `diverged` and `behind` mean it is NOT — it sits on a line the
+ *   branch never took, which is exactly a parked or force-pushed commit. Reading only the status
+ *   word would admit `diverged`, whose `ahead_by` is also positive.
+ */
+export function selectLineage(payload, expectedSha) {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const base = payload.base_commit;
+  if (base === null || typeof base !== 'object' || !SHA1_RE.test(String(base.sha))) return null;
+  if (base.sha !== expectedSha) return null;
+  const inLineage =
+    (payload.status === 'ahead' || payload.status === 'identical') && payload.behind_by === 0;
+  return { sha: base.sha, in_lineage: inLineage };
+}
+
+/**
+ * Collect a REVIEWED REVISION: prove the commit EXISTS in the repo and lies in the branch's lineage.
+ *
+ * ★ IT DOES NOT SIMPLY ECHO THE EXPECTED SHA. The value returned is the one GitHub resolved for the
+ *   commit in THAT repository, so a sha that does not exist there fails the request outright rather
+ *   than being handed back as though it had been verified.
+ */
+export function collectReviewedRevision({ repo, sha, ancestorOf, gh = defaultGh }) {
+  const branch = ancestorOf.replace(/^refs\/heads\//, '');
+  let payload;
+  try {
+    payload = JSON.parse(gh([`repos/${repo}/compare/${sha}...${branch}`]));
+  } catch {
+    return null; // the commit does not exist in this repo, or the API was unreachable
+  }
+  const r = selectLineage(payload, sha);
+  if (r === null) return null;
+  return Object.freeze({
+    sha: r.sha,
+    source_kind: SOURCE_KINDS.REVIEWED_REVISION,
+    repo,
+    ancestor_of: ancestorOf,
+    in_lineage: r.in_lineage,
+  });
+}
+
+/**
  * Collect a LOCAL WORKING-TREE HEAD, labelled honestly as such.
  *
  * ★ THIS EXISTS SO THE WRONG ANSWER CAN BE SAID OUT LOUD. It is never valid as provenance — the
@@ -177,7 +222,11 @@ export function collectLocalCheckout({ repoPath, repo, git = defaultGit }) {
 export function collectSession2Provenance({ addendum, gh = defaultGh }) {
   const out = {};
   for (const [name, expected] of Object.entries(addendum.session2_provenance)) {
-    if (expected.source_kind === SOURCE_KINDS.SOURCE_REVISION) {
+    if (expected.source_kind === SOURCE_KINDS.REVIEWED_REVISION) {
+      out[name] = collectReviewedRevision({
+        repo: expected.repo, sha: expected.sha, ancestorOf: expected.ancestor_of, gh,
+      });
+    } else if (expected.source_kind === SOURCE_KINDS.SOURCE_REVISION) {
       out[name] = collectSourceRevision({ repo: expected.repo, ref: expected.ref, gh });
     } else if (expected.source_kind === SOURCE_KINDS.PRODUCTION_DEPLOYMENT) {
       out[name] = collectProductionDeployment({ repo: expected.repo, environment: expected.environment, gh });
@@ -188,9 +237,11 @@ export function collectSession2Provenance({ addendum, gh = defaultGh }) {
   if (addendum.resume_instrument !== null) {
     const e = addendum.resume_instrument;
     out.resume_instrument =
-      e.source_kind === SOURCE_KINDS.SOURCE_REVISION
-        ? collectSourceRevision({ repo: e.repo, ref: e.ref, gh })
-        : collectProductionDeployment({ repo: e.repo, environment: e.environment, gh });
+      e.source_kind === SOURCE_KINDS.REVIEWED_REVISION
+        ? collectReviewedRevision({ repo: e.repo, sha: e.sha, ancestorOf: e.ancestor_of, gh })
+        : e.source_kind === SOURCE_KINDS.SOURCE_REVISION
+          ? collectSourceRevision({ repo: e.repo, ref: e.ref, gh })
+          : collectProductionDeployment({ repo: e.repo, environment: e.environment, gh });
   }
   return out;
 }

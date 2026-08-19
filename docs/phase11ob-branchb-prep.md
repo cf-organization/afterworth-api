@@ -193,9 +193,10 @@ seven-day policy is untouched.**
 >
 > | Component | Revision | Source of truth |
 > |---|---|---|
-> | API Branch-B source | `9f06a86` | `refs/heads/main` — source/instrument only, **NOT the release door** |
-> | Mobile Branch-B source | `58268bf` | `refs/heads/main` — no deployed mobile revision exists |
+> | API Branch-B baseline | `9f06a86` | reviewed revision, in the lineage of `main` — **NOT the release door** |
+> | Mobile Branch-B baseline | `58268bf` | reviewed revision, in the lineage of `main` — no deployed mobile revision exists |
 > | Admin console | `cd044fe` | successful **Production** deployment metadata, never a local checkout |
+> | Session-2 resume instrument | `7c7c25c` | reviewed revision, held separately from the baseline |
 >
 > The Postgres release door carries no git revision; its integrity is proven behaviourally by
 > `verifyPhaseDDeployment`, source/deployment drift, the Branch-B sentinel and the standing fixture.

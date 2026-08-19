@@ -71,9 +71,31 @@ gate remains authoritative and is retained verbatim.
 
 | Component | Revision | Source kind | Observation source |
 |---|---|---|---|
-| `api_branch_b_source` | `9f06a86` | `source_revision` | `refs/heads/main` of `cf-organization/afterworth-api` |
-| `mobile_branch_b_source` | `58268bf` | `source_revision` | `refs/heads/main` of `cf-organization/afterworth-mobile` |
+| `api_branch_b_source` | `9f06a86` | `reviewed_revision` | exists in repo **and** in the lineage of `refs/heads/main` |
+| `mobile_branch_b_source` | `58268bf` | `reviewed_revision` | exists in repo **and** in the lineage of `refs/heads/main` |
 | `admin_console_production` | `cd044fe` | `production_deployment` | successful **Production** deployment metadata |
+| `resume_instrument` | `7c7c25c` | `reviewed_revision` | exists in repo **and** in the lineage of `refs/heads/main` |
+
+### 3.0 · A reviewed baseline is a claim about a COMMIT, not about a branch tip
+
+**Proven by this remediation's own merge (Phase 11-P.5b).** The first cut pinned the reviewed
+baseline `9f06a86` as a `source_revision` against `refs/heads/main`. Merging the remediation advanced
+main to `7c7c25c`, and the gate went red — not because provenance had drifted, but because a
+**reviewed baseline had been tied to a moving ref**. That is the same shape as the defect being
+remediated, one level up. The architecture surfaced it instead of hiding it, which is exactly what
+Stage 19 asked for.
+
+So the two questions are given two kinds:
+
+- **`reviewed_revision`** — the commit must still EXIST and still be IN THE LINEAGE. It was not
+  force-pushed away, rewritten, or left behind on a parked branch. It does **not** move when main
+  advances, so an unrelated merge cannot falsely refuse a drill.
+- **`production_deployment`** — here the tip IS the fact, so the current successful Production
+  deployment is required and nothing older will do.
+
+Lineage is decided by `behind_by === 0` together with `status ∈ {ahead, identical}` — **never by the
+status word alone**, because `diverged` also reports a positive `ahead_by` and would otherwise be
+admitted (mutation M18).
 
 ### 3.1 · The API SHA is not the release door
 
@@ -109,6 +131,7 @@ The closed vocabulary is what makes `fd7ef03` unrecoverable as authority:
 
 | Kind | Expectable? | Observable? |
 |---|---|---|
+| `reviewed_revision` | yes | yes |
 | `source_revision` | yes | yes |
 | `production_deployment` | yes | yes |
 | `local_checkout` | **NO** | yes |
@@ -160,12 +183,16 @@ Superseded: **3**. Legacy total: **23**.
 
 ## 7 · The instrument revision is a separate fact
 
-`resume_instrument` is a first-class field, distinct from `api_branch_b_source`, and it is **null**
-today for an honest reason: the commit carrying this evaluator does not exist while the artifact is
-being written. Inventing a value would reproduce the exact self-referential defect being remediated.
+`resume_instrument` is a first-class field, distinct from `api_branch_b_source`. It was **null** in
+the first cut for an honest reason: the commit carrying the evaluator did not exist while the
+artifact was being written, and inventing a value would have reproduced the exact self-referential
+defect being remediated. **NULL refuses**, which made pinning it after merge mandatory rather than
+optional.
 
-**NULL refuses**, so pinning it after merge is mandatory rather than optional. Overloading it onto
-`api_branch_b_source` is how the checkpoint's `api_sha` came to mean neither thing.
+It is now pinned to `7c7c25c` — the merged Phase 11-P.5 remediation. The two fields hold **different
+revisions**, which is the whole point: `9f06a86` is the reviewed Branch-B evidence baseline and
+`7c7c25c` is the reviewed instrument. Overloading one onto the other is how the checkpoint's
+`api_sha` came to mean neither thing, and mutation M19 collapses them and is detected.
 
 ---
 
