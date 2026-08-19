@@ -27,7 +27,16 @@
  *   node scripts/branchBSession2Preflight.mjs --observed=<file.json> full resume evaluation
  *   node scripts/branchBSession2Preflight.mjs --now=<iso>            override the injected clock
  *
- * Exit: 0 provenance green · 1 a provenance gate refused · 2 could not verify
+ * Exit: 0 provenance green AND the instrument pinned and current
+ *       1 any provenance or instrument gate refused
+ *       2 could not verify
+ *
+ * ★ THE INSTRUMENT GATES COUNT TOWARD THE EXIT CODE, AND THAT IS NOT A DETAIL. The first version
+ *   scored only the provenance gates, so it exited 0 while printing
+ *   `RESUME INSTRUMENT: NOT READY` — a caller gating on the exit code would have read readiness that
+ *   the report itself denied. An instrument that is pinned to a superseded revision is not a smaller
+ *   problem than a mismatched revision; both mean the Session-2 evaluation would run against
+ *   something nobody reviewed.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -162,6 +171,7 @@ function main() {
   //   to stand in for the other. Collapsing them is how "the instrument is ready" would come to read
   //   as "the drill may proceed".
   const provenanceFailed = provenanceGates.filter((g) => !g.pass).map((g) => g.id);
+  const instrumentFailed = instrumentGates.filter((g) => !g.pass).map((g) => g.id);
   console.log('\n' + '='.repeat(96));
   console.log(`PROVENANCE VERDICT : ${provenanceFailed.length === 0 ? 'GREEN' : 'REFUSED'}`
     + (provenanceFailed.length ? `  failed=[${provenanceFailed.join(', ')}]` : ''));
@@ -171,7 +181,7 @@ function main() {
   console.log(`SESSION-2 VERDICT  : ${r.decision}`
     + (observedPath === null ? '   (production state unobserved — refusal expected)' : ''));
   console.log('RELEASE            : NOT AUTHORIZED BY THIS SCRIPT. It cannot authorize one.');
-  return provenanceFailed.length === 0 ? 0 : 1;
+  return provenanceFailed.length === 0 && instrumentFailed.length === 0 ? 0 : 1;
 }
 
 process.exit(main());
