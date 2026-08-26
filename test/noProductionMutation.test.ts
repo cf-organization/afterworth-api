@@ -273,6 +273,86 @@ describe("★ 2 · the forbidden list names real routines", () => {
   });
 });
 
+/**
+ * ★ PHASE 11-Q · THE DISCLOSURE INSTRUMENTS ARE AUDITED SEPARATELY, AND THE SEPARATION IS THE POINT.
+ *
+ * They are the only read-only instruments that must read TABLES rather than routines: half the
+ * evidence is the RLS-filtered product read path (`rls_visible`), and no RPC can stand in for it —
+ * `can_access_document` answers the policy question, not the "what does this person's own SELECT
+ * actually return" question. The verifier needs both, and refuses when they disagree.
+ *
+ * ★ SO THE ALLOWLIST IS WIDENED FOR THESE TWO FILES ONLY, AND NEVER FOR THE SHARED SET. Adding
+ *   `/rest/v1/documents` to the default list would hand every existing instrument a table surface it
+ *   has no reason to touch, to solve a problem only these two have.
+ *
+ * ★ AND A PATH PREFIX DOES NOT CONSTRAIN AN HTTP METHOD, WHICH IS THE HOLE THIS CLOSES. `/rest/v1/
+ *   documents` allowlisted alone would permit a DELETE to that table just as happily as a GET. The
+ *   method assertion below is the part the generic allowlist cannot express, so it is asserted
+ *   explicitly: in these files, every table path is read with a GET.
+ */
+const DISCLOSURE_INSTRUMENTS = [
+  "scripts/captureDisclosureSnapshot.mjs",
+  "scripts/verifyDisclosureEquivalence.mjs",
+];
+
+const DISCLOSURE_ALLOWED_PATHS = [
+  /^\/auth\/v1\//,
+  /^\/rest\/v1\/rpc\//,
+  /^\/rest\/v1\/documents\?/,
+  /^\/rest\/v1\/document_grants\?/,
+  /^\/rest\/v1\/estate_lifecycle\?/,
+];
+
+describe("★ 3b · PHASE 11-Q · the disclosure instruments are read-only, including their tables", () => {
+  it("the instruments exist and are non-trivial", () => {
+    for (const f of DISCLOSURE_INSTRUMENTS) {
+      const p = join(ROOT, f);
+      expect(existsSync(p), `${f} does not exist`).toBe(true);
+      expect(readFileSync(p, "utf8").length, `${f} is empty`).toBeGreaterThan(200);
+    }
+  });
+
+  it("★ no violation of any class, under a narrowly widened path allowlist", () => {
+    const r = auditReadOnlyScripts({
+      root: ROOT,
+      files: DISCLOSURE_INSTRUMENTS,
+      allowedPathPrefixes: DISCLOSURE_ALLOWED_PATHS,
+    });
+    expect(r.violations).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.scanned.length).toBe(DISCLOSURE_INSTRUMENTS.length);
+  });
+
+  it("★ NO MUTATION RPC IS NAMED — the shared list still governs these files", () => {
+    const r = auditReadOnlyScripts({
+      root: ROOT,
+      files: DISCLOSURE_INSTRUMENTS,
+      allowedPathPrefixes: DISCLOSURE_ALLOWED_PATHS,
+    });
+    expect(r.violations.filter((v) => v.code === "mutation_rpc_named")).toEqual([]);
+  });
+
+  it("★ every table read is a GET — a path prefix cannot say this, so it is said here", () => {
+    for (const f of DISCLOSURE_INSTRUMENTS) {
+      const src = stripComments(readFileSync(join(ROOT, f), "utf8"));
+      // Any fetch/req call that names a table path must not carry a write method.
+      for (const m of ["POST", "PATCH", "PUT", "DELETE"]) {
+        const writeToTable = new RegExp(`/rest/v1/(documents|document_grants|estate_lifecycle)[^\`'"]*[\`'"][^)]*${m}`, "i");
+        expect(writeToTable.test(src), `${f} appears to ${m} a table path`).toBe(false);
+      }
+    }
+  });
+
+  it("★ POSITIVE CONTROL — the widened allowlist still refuses a path outside it", () => {
+    const r = auditReadOnlyScripts({
+      root: ROOT,
+      files: DISCLOSURE_INSTRUMENTS,
+      allowedPathPrefixes: [/^\/auth\/v1\//],
+    });
+    expect(r.violations.some((v) => v.code === "disallowed_network_path")).toBe(true);
+  });
+});
+
 describe("★ 3 · THE AUDIT — every read-only instrument passes", () => {
   it("★ no violation of any class", () => {
     const r = auditReadOnlyScripts({ root: ROOT, files: READ_ONLY_FILES });

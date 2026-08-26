@@ -235,7 +235,6 @@ async function observeBranchB(checkpoint) {
       case: cf.case.status,
       owner_notice: notice.status,
       challenge_window: cf.lifecycle?.challenge_window_started_at ?? null,
-      release_authorizations: 0,
       released_at: cf.lifecycle?.released_at ?? null,
       disclosure_posture: posture,
       fixture_lock: existsSync(join(MOBILE_DIR, '.aw-fixture-lock')) ? 'held' : 'free',
@@ -328,7 +327,11 @@ if (JSON_OUT) {
     console.log(`  release_eligible_at ${observed.release_eligible_at}`);
     console.log(`  release authority  ready=${authority.ready} refusal=${authority.refusal_code} window=${authority.window_duration}`);
     console.log(`  reviewer A         ${observed.reviewer_a_uid}`);
-    console.log(`  reviewer B         ${observed.reviewer_b_uid}  (reserved, ${observed.release_authorizations} authorization(s))`);
+    // ★ NO AUTHORIZATION COUNT IS PRINTED, AND THAT IS THE CORRECTION. This line used to read
+    //   "(reserved, 0 authorization(s))" from a hardcoded literal, so it kept saying `reserved`
+    //   after a real release had happened. `release_authorizations` is RLS-sealed with zero grants,
+    //   so no honest count exists here; `released_at` above is the observable fact.
+    console.log(`  reviewer B         ${observed.reviewer_b_uid}`);
     console.log(`  designation        ${observed.designation}   membership ${observed.membership}`);
     console.log(`  disclosure         ${observed.disclosure_posture}`);
     console.log(`  fixture lock       ${observed.fixture_lock}`);
