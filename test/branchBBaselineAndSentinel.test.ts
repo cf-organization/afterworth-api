@@ -294,22 +294,37 @@ describe("★ 7 · once Branch B exists, missing is never synthesized into state
     }
   });
 
-  it("a released estate or an existing authorization is drift", () => {
-    expect(
-      classifyBranchBSentinel({ standingFixture: INTACT, branchB: { ...PRESENT, released_at: "2026-09-08T00:00:00Z" } })
-        .verdict
-    ).toBe(SENTINEL.DRIFTED);
-    expect(
-      classifyBranchBSentinel({ standingFixture: INTACT, branchB: { ...PRESENT, release_authorizations: 1 } }).verdict
-    ).toBe(SENTINEL.DRIFTED);
+  /**
+   * ★ PHASE 11-Q — NARROWED, NOT WEAKENED, AND THE SECOND HALF WAS DELETED BECAUSE IT WAS FICTION.
+   *
+   * This case used to assert two things. The first is still true and is now stated more precisely:
+   * a `released_at` on a `challenge_window` lifecycle is not generic drift, it is a HALF-RELEASED
+   * estate — `authorize_release` writes both in one transaction, so they cannot honestly disagree.
+   * `RELEASED_INCONSISTENT` names that, and still exits 1.
+   *
+   * The second half asserted that `release_authorizations: 1` is drift. That assertion could never
+   * have failed: the collector hardcoded the field to `0` and never read a database, so the
+   * consumer check was dead code and this test was pinning a value no observation could produce.
+   * The field is gone, so the assertion goes with it — see `branchBSentinelReleasedState.test.ts`,
+   * which pins its absence and forbids the literal returning.
+   */
+  it("★ a half-released estate is INCONSISTENT — a stronger claim than generic drift", () => {
+    const r = classifyBranchBSentinel({
+      standingFixture: INTACT,
+      branchB: { ...PRESENT, released_at: "2026-09-08T00:00:00Z" },
+    });
+    expect(r.verdict).toBe(SENTINEL.RELEASED_INCONSISTENT);
+    expect(r.findings.map((f: { code: string }) => f.code)).toContain("branch_b_release_state_inconsistent");
   });
 
   it("the property list is non-trivial and covers the named contract", () => {
     for (const p of [
       "estate_uuid", "designation", "membership", "grant", "lifecycle", "case", "owner_notice",
-      "challenge_window", "release_authorizations", "released_at", "disclosure_posture", "fixture_lock",
+      "challenge_window", "released_at", "disclosure_posture", "fixture_lock",
     ]) {
       expect(BRANCH_B_PROPERTIES).toContain(p);
     }
+    // ★ The removed field must stay removed: a count nothing observes is not part of the contract.
+    expect(BRANCH_B_PROPERTIES).not.toContain("release_authorizations");
   });
 });
