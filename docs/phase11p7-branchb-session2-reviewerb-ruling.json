@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "operator_ruling",
+  "created_at": "2026-08-26T05:45:23.000Z",
+  "operator_ruling": "PHASE_11P7_SESSION2_REVIEWER_B_INTRODUCTION_V1",
+
+  "supersedes": null,
+  "amends": null,
+  "note_on_scope": "This is a PROTOCOL ruling, not a provenance addendum. It deliberately does NOT use the addendum schema and is never read by decodeProvenanceAddendum. It waives no gate and edits no instrument.",
+
+  "prior_evidence": {
+    "directory": "docs/phase11p6-branchb-session2-preflight/",
+    "manifest_sha256": "689cce239874cfb399651137340f7969f15c0faf6f4a5a7269b1dd56aba0eefc",
+    "observation_artifact": "docs/phase11p6-branchb-session2-preflight/03-session2-observation.json",
+    "observation_sha256": "b0bff673cff4a4af16d858ff6a3595f0ac9d83876da980a2bcb957670d7398c1",
+    "preflight_output_sha256": "bf04c20746f7dc7697f0c3cb09fc6cd9f51ce4d6dd3c9cf636065d5607b4e236",
+    "recorded_result": "25/28 PASS",
+    "recorded_verdict": "REFUSE_RESUME",
+    "immutability": "PRESERVED EXACTLY AS OBSERVED. Not rewritten, not re-run to agree, not reinterpreted."
+  },
+
+  "finding": {
+    "circularity": "The prior protocol ordering was 28/28 -> RESUME -> introduce AW_ADMIN_TEST_B. Three of the 28 gates require facts belonging to the live authenticated reviewer-B session, so 28/28 was unreachable while AW_ADMIN_TEST_B stayed unused.",
+    "refusing_gates": [
+      "observed_reviewers_distinct",
+      "acting_admin_is_reviewer_b",
+      "acting_admin_has_aal2"
+    ],
+    "unobservable_fields": [
+      "acting_release_admin_uid",
+      "acting_admin_aal"
+    ],
+    "source_basis": "admin_get_death_verification_case projects release.reviewer_a and release.authorized. It has NO projection of an acting release admin; that fact does not exist until reviewer B acts. Verified in db/functions/operator_console.sql.",
+    "instrument_was_correct": "REFUSE_RESUME was the correct output for absent facts. An unobserved fact is a FAILED gate, never a skipped one.",
+    "vacuous_pass_noted": "reviewer_identities_not_swapped passed in the pre-B run only because its predicate is a negation over an absent acting identity. It is NOT evidence in that state and must be re-evaluated with the real reviewer-B identity present."
+  },
+
+  "ruling": [
+    "The pre-B Session-2 preflight result of 25/28 PASS / REFUSE_RESUME is preserved exactly as observed and is NOT equivalent to RESUME.",
+    "All production, provenance and release-readiness gates available before reviewer-B authentication were green.",
+    "The only refusing gates were observed_reviewers_distinct, acting_admin_is_reviewer_b and acting_admin_has_aal2.",
+    "Those three predicates require facts belonging to the live authenticated reviewer-B Session-2 operator and therefore cannot become evaluable or passing while AW_ADMIN_TEST_B remains unused.",
+    "This ruling authorizes introducing AW_ADMIN_TEST_B solely for establishing the reviewer-B Session-2 authenticated context required to evaluate those three gates and rerun the canonical preflight.",
+    "This ruling does NOT authorize release.",
+    "This ruling does NOT authorize invocation of the irreversible release writer.",
+    "The release boundary remains 28/28 PASS plus canonical verdict RESUME from a fresh authenticated reviewer-B Session-2 preflight."
+  ],
+
+  "authorized_actions": [
+    "authenticate AW_ADMIN_TEST_B via the canonical password + TOTP step-up path",
+    "read the authenticated session's own uid and assurance level from the canonical session source",
+    "collect a fresh Session-2 observation from the reviewer-B context",
+    "rerun the pinned canonical Session-2 preflight unmodified"
+  ],
+
+  "prohibited_actions": [
+    "invoke authorize_release or any irreversible release writer",
+    "perform any production release mutation",
+    "modify database identity records to satisfy a gate",
+    "fabricate acting_release_admin_uid or acting_admin_aal",
+    "simulate or hand-populate an AAL claim",
+    "substitute a service-role session for reviewer-B authentication",
+    "authenticate AW_ADMIN_TEST_A as reviewer B, or swap the identities",
+    "modify the preflight instrument, suppress a gate, or weaken an assertion",
+    "edit docs/phase11p6-branchb-session2-preflight/03-session2-observation.json or any prior evidence"
+  ],
+
+  "identity_constraints": {
+    "AW_ADMIN_TEST_A": "reviewer A only",
+    "AW_ADMIN_TEST_B": "reviewer B / Session-2 acting release admin only",
+    "distinctness": "must be established from actual canonical UIDs, never inferred from the labels A and B"
+  },
+
+  "authorized_state_transition": [
+    "PRE-B PREFLIGHT 25/28 REFUSE_RESUME",
+    "EXPLICIT PROTOCOL RULING (this artifact)",
+    "INTRODUCE AW_ADMIN_TEST_B",
+    "AUTHENTICATE REVIEWER B",
+    "REQUIRE AAL2",
+    "COLLECT FRESH LIVE SESSION-2 OPERATOR OBSERVATION",
+    "RERUN CANONICAL 28-GATE PREFLIGHT",
+    "REQUIRE 28/28 PASS",
+    "REQUIRE RESUME",
+    "STOP"
+  ],
+
+  "terminal_boundary": "STOP at RESUME. The irreversible release requires separate explicit authorization and is out of scope for this ruling."
+}
