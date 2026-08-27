@@ -24,6 +24,7 @@ import {
   REHEARSAL,
   discoverMigrations,
   rehearsalExitCode,
+  tableOperations,
   tablesTouched,
   unsatisfiedTableReferences,
 } from "../scripts/lib/freshDatabaseRehearsal.mjs";
@@ -150,6 +151,45 @@ describe("★ 3 · the dependency pre-flight sees what the SQL really does", () 
   });
 });
 
+describe("★ 3b · REGRESSION — the within-file ordering defect", () => {
+  /**
+   * ★ THIS PINS A DEFECT THAT SHIPPED. The first pre-flight held `created` and `altered` as two
+   * SETS and checked every alter before recording any creation from the same file, so a migration
+   * that creates a table and then alters it accused itself of a missing dependency. It inflated the
+   * published finding from 5 real gaps to 36 — 31 of them files complaining about their own tables.
+   */
+  test("★ a table CREATED then ALTERED in the same file is NOT a missing dependency", () => {
+    const gaps = unsatisfiedTableReferences([
+      { name: "0001_a.sql", sql: "create table public.foo (id int);\nalter table public.foo add column x int;" },
+    ]);
+    expect(gaps).toEqual([]);
+  });
+
+  test("★ POSITIVE CONTROL — a genuinely missing table is still detected", () => {
+    const gaps = unsatisfiedTableReferences([{ name: "0001_a.sql", sql: "alter table public.bar add column x int;" }]);
+    expect(gaps).toEqual([{ migration: "0001_a.sql", table: "bar" }]);
+  });
+
+  test("★ order WITHIN a file is respected — alter before create in one file IS a gap", () => {
+    const gaps = unsatisfiedTableReferences([
+      { name: "0001_a.sql", sql: "alter table public.baz add column x int;\ncreate table public.baz (id int);" },
+    ]);
+    expect(gaps).toEqual([{ migration: "0001_a.sql", table: "baz" }]);
+  });
+
+  test("tableOperations reports operations in source order", () => {
+    const ops = tableOperations("alter table public.b add column x int; create table public.a (id int);");
+    expect(ops.map((o) => `${o.op}:${o.table}`)).toEqual(["alter:b", "create:a"]);
+  });
+
+  test("★ the real set has exactly 5 distinct unsatisfied tables — the corrected figure", () => {
+    const names = discoverMigrations(readdirSync(MIGRATIONS_DIR)).ordered;
+    const files = names.map((name) => ({ name, sql: readFileSync(join(MIGRATIONS_DIR, name), "utf8") }));
+    const distinct = [...new Set(unsatisfiedTableReferences(files).map((g) => g.table))].sort();
+    expect(distinct).toEqual(["beneficiaries", "claim_packets", "documents", "invitations", "notifications"]);
+  });
+});
+
 describe("★ 4 · no remote target is expressible", () => {
   const src = readFileSync(RUNNER, "utf8");
   const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
@@ -220,6 +260,8 @@ describe("★ 6 · the recorded finding — this history does not build from zer
     expect(gaps.length).toBeGreaterThan(0);
     expect(gaps[0].migration).toBe(names[0]);
     expect(gaps[0].table).toBe("beneficiaries");
+    // Corrected figure: 5 distinct tables, not the 36 the defective pre-flight reported.
+    expect(new Set(gaps.map((g) => g.table)).size).toBe(5);
   });
 
   test("the base schema those migrations assume is not in db/tables or db/migrations", () => {

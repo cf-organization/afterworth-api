@@ -75,23 +75,34 @@ export function discoverMigrations(entries) {
 }
 
 /**
- * PURE. Which `public.<table>` does each statement CREATE, and which does it ALTER?
+ * PURE. The `public.<table>` operations a migration performs, IN SOURCE ORDER.
  *
- * ★ COMMENTS ARE STRIPPED AND STRINGS ARE KEPT, the same asymmetry every scanner in this repository
- *   uses. A migration that DISCUSSES a table in a header comment has not created it, and a table
- *   named inside a string literal (a policy body, a `raise` message) is still real SQL the planner
- *   will see.
+ * ★ ORDER IS THE WHOLE POINT, AND THE FIRST VERSION THREW IT AWAY. This returned two SETS —
+ *   `created` and `altered` — and the replay checked every alter before recording any creation from
+ *   the same file. A migration that creates a table and then alters it therefore accused itself of
+ *   a missing dependency. That inflated the published finding from 5 real gaps to 36, and 31 of
+ *   those were files complaining about their own tables.
+ *
+ * ★ COMMENTS ARE STRIPPED AND STRINGS ARE KEPT, the asymmetry every scanner here uses. A table
+ *   DISCUSSED in a header comment has not been created; a table named inside a policy body or a
+ *   `raise` message is real SQL the planner will see.
  */
-export function tablesTouched(sql) {
+export function tableOperations(sql) {
   const code = String(sql ?? '').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*--.*$/gm, ' ');
-  const grab = (re) => {
-    const out = new Set();
-    for (const m of code.matchAll(re)) out.add(m[1].toLowerCase());
-    return out;
-  };
+  const ops = [];
+  const re = /(create\s+table\s+(?:if\s+not\s+exists\s+)?|alter\s+table\s+(?:only\s+)?)public\.([a-z_]+)/gi;
+  for (const m of code.matchAll(re)) {
+    ops.push({ op: /^create/i.test(m[1]) ? 'create' : 'alter', table: m[2].toLowerCase(), at: m.index });
+  }
+  return ops;
+}
+
+/** Back-compatible set view. Order-insensitive by nature — never use it to decide dependencies. */
+export function tablesTouched(sql) {
+  const ops = tableOperations(sql);
   return {
-    created: grab(/create\s+table\s+(?:if\s+not\s+exists\s+)?public\.([a-z_]+)/gi),
-    altered: grab(/alter\s+table\s+(?:only\s+)?public\.([a-z_]+)/gi),
+    created: new Set(ops.filter((o) => o.op === 'create').map((o) => o.table)),
+    altered: new Set(ops.filter((o) => o.op === 'alter').map((o) => o.table)),
   };
 }
 
@@ -108,9 +119,12 @@ export function unsatisfiedTableReferences(files) {
   const built = new Set();
   const gaps = [];
   for (const { name, sql } of files) {
-    const { created, altered } = tablesTouched(sql);
-    for (const t of altered) if (!built.has(t)) gaps.push({ migration: name, table: t });
-    for (const t of created) built.add(t);
+    // ★ STATEMENT ORDER WITHIN THE FILE, not two sets. A table this migration creates satisfies a
+    //   later alter in the same migration — which is the ordinary shape of a slice file.
+    for (const { op, table } of tableOperations(sql)) {
+      if (op === 'create') built.add(table);
+      else if (!built.has(table)) gaps.push({ migration: name, table });
+    }
   }
   return gaps;
 }
