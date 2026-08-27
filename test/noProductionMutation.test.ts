@@ -94,6 +94,21 @@ const READ_ONLY_FILES = [
   "scripts/lib/branchBSentinel.mjs",
   "scripts/lib/disclosureOracle.mjs",
   "scripts/lib/canonicalJson.mjs",
+  /**
+   * ★ PARALLEL UNIT 2. The non-production seed/reset GUARD LAYER — a pure classifier that decides
+   * whether a seed or reset would be permitted, and executes nothing.
+   *
+   * It is listed here for the reason the list exists: the module's whole value is that it cannot
+   * reach a database, and "cannot" should be structural rather than argued. Registering it means a
+   * future edit that gives the guard a client, a secret, a mutating method or a network path fails
+   * HERE — at the audit that already governs every other read-only instrument — rather than in a
+   * bespoke rule somebody could quietly relax.
+   *
+   * Its own suite (`nonProdSeedGuard.test.ts`) additionally pins the stricter properties this audit
+   * does not model: no imports at all, no subprocess, no filesystem, no SQL verb, and no async
+   * surface. The two are complementary, and neither is presented as covering the other.
+   */
+  "scripts/lib/nonProdSeedGuard.mjs",
 ];
 
 /**
