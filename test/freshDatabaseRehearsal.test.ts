@@ -33,6 +33,19 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATIONS_DIR = join(ROOT, "db/migrations");
 const RUNNER = join(ROOT, "scripts/rehearseFreshDatabase.mjs");
 
+/**
+ * ★ THE HISTORICAL RANGE, READ FROM db/bootstrap/VERSION — NOT HARD-CODED.
+ *
+ * This suite pins a finding about the RECORDED HISTORY: it cannot build a database from zero.
+ * Under the ratified Model C contract, migrations 0061+ are never expected to build from zero —
+ * they layer on db/bootstrap@0060. Scanning the whole directory let a legitimate future migration
+ * perturb a pinned historical fact: a real 0061 that ALTERs `estates` turned "exactly 5 unsatisfied
+ * tables" into 6 and failed two tests that are describing 0001-0060.
+ */
+const BOOTSTRAP_CUTOFF = Number(readFileSync(join(ROOT, "db/bootstrap/VERSION"), "utf8").trim());
+const historicalOnly = (names: string[]) =>
+  names.filter((n) => { const q = Number(String(n).slice(0, 4)); return Number.isFinite(q) && q <= BOOTSTRAP_CUTOFF; });
+
 describe("0 · the scan set is real before any rule is believed", () => {
   test("the migration directory exists and is non-empty", () => {
     expect(existsSync(MIGRATIONS_DIR)).toBe(true);
@@ -183,7 +196,7 @@ describe("★ 3b · REGRESSION — the within-file ordering defect", () => {
   });
 
   test("★ the real set has exactly 5 distinct unsatisfied tables — the corrected figure", () => {
-    const names = discoverMigrations(readdirSync(MIGRATIONS_DIR)).ordered;
+    const names = historicalOnly(discoverMigrations(readdirSync(MIGRATIONS_DIR)).ordered);
     const files = names.map((name) => ({ name, sql: readFileSync(join(MIGRATIONS_DIR, name), "utf8") }));
     const distinct = [...new Set(unsatisfiedTableReferences(files).map((g) => g.table))].sort();
     expect(distinct).toEqual(["beneficiaries", "claim_packets", "documents", "invitations", "notifications"]);
@@ -254,7 +267,7 @@ describe("★ 6 · the recorded finding — this history does not build from zer
    *   quietly and the finding outliving it.
    */
   test("★ the real migration set still has unsatisfied table references", () => {
-    const names = discoverMigrations(readdirSync(MIGRATIONS_DIR)).ordered;
+    const names = historicalOnly(discoverMigrations(readdirSync(MIGRATIONS_DIR)).ordered);
     const files = names.map((name) => ({ name, sql: readFileSync(join(MIGRATIONS_DIR, name), "utf8") }));
     const gaps = unsatisfiedTableReferences(files);
     expect(gaps.length).toBeGreaterThan(0);

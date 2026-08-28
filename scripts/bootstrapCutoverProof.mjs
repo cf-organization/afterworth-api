@@ -15,6 +15,7 @@
  * Exit:  0 equivalent · 1 divergent · 2 could not verify
  */
 import { spawnSync } from 'node:child_process';
+import { inventory } from './lib/schemaInventory.mjs';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,13 +34,30 @@ const SNAP = arg('--snapshot');
 const die = (m) => { console.error(m); process.exit(2); };
 if (!SNAP || !existsSync(SNAP)) die('COULD NOT VERIFY — pass --snapshot.');
 
-const SYNTH = join(ROOT, 'test/fixtures/synthetic_future_migration.sql');
+// * THE FUTURE MIGRATION UNDER TEST IS SELECTABLE. Default is the test fixture; --future lets the
+//   proof run against a real production-path migration (e.g. a temporary 0061 probe) so the
+//   contract is exercised with the artifact it actually governs.
+const SYNTH = arg('--future') ? resolve(arg('--future')) : join(ROOT, 'test/fixtures/synthetic_future_migration.sql');
 if (!existsSync(SYNTH)) die('COULD NOT VERIFY — synthetic future migration fixture missing.');
 const SHIM = readFileSync(join(BOOT, 'testing/PLATFORM_SHIM_NOT_PRODUCTION.sql'), 'utf8');
 const phaseFiles = readdirSync(BOOT).filter((f) => /^\d+_.*\.sql$/.test(f)).sort((a, b) => Number(a.split('_')[0]) - Number(b.split('_')[0]));
 if (!phaseFiles.length) die('COULD NOT VERIFY — no bootstrap phases.');
 
 if (spawnSync('docker', ['info'], { stdio: 'ignore' }).status !== 0) die('COULD NOT VERIFY — Docker unavailable.');
+
+/** What the future migration is expected to introduce, parsed from its own DDL. */
+const futureSql = readFileSync(SYNTH, 'utf8');
+const futureInv = inventory(futureSql);
+const futureObjects = [
+  ...futureInv.tables.map((t) => ({ kind: 'table', name: t.name })),
+  ...futureInv.functions.map((f) => ({ kind: 'function', name: f.name })),
+  ...futureInv.policies.map((p) => ({ kind: 'policy', name: p.name })),
+  ...futureInv.indexes.map((i) => ({ kind: 'index', name: i.name })),
+  ...[...futureSql.matchAll(/alter\s+table\s+(?:only\s+)?(?:public\.)?\"?([a-z_]+)\"?\s+add\s+column\s+(?:if\s+not\s+exists\s+)?\"?([a-z_]+)\"?/gi)]
+      .map((m) => ({ kind: 'column', table: m[1].toLowerCase(), name: m[2].toLowerCase() })),
+];
+if (futureObjects.length === 0) die(`REFUSED — the future migration ${SYNTH} introduces no detectable object. A proof that checks nothing proves nothing.`);
+console.log(`  future migration: ${SYNTH.replace(/^.*\//, '')} — expecting ${futureObjects.length} object(s): ${futureObjects.map((o) => `${o.kind}:${o.name}`).join(', ')}`);
 
 /** Fingerprint every schema property the cutover contract depends on. */
 const FINGERPRINT = `
@@ -98,19 +116,25 @@ function runPath(label, container, build) {
     const synth = psql(`SET check_function_bodies = false;\nSET search_path = public, extensions, pg_catalog;\n${readFileSync(SYNTH, 'utf8')}`);
     if (synth.status !== 0) throw new Error(`${label}: synthetic migration failed\n${(synth.stderr || '').slice(0, 700)}`);
 
-    const probe = {
-      column: Number(q("select count(*) from information_schema.columns where table_schema='public' and table_name='estates' and column_name='synthetic_probe_note'") ?? 0),
-      table: Number(q("select count(*) from information_schema.tables where table_schema='public' and table_name='synthetic_probe_table'") ?? 0),
-      fn: Number(q("select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='synthetic_probe_fn'") ?? 0),
-      policy: Number(q("select count(*) from pg_policies where schemaname='public' and policyname='synthetic_probe_read'") ?? 0),
-    };
+    // * EXPECTED OBJECTS ARE DERIVED FROM THE MIGRATION BEING APPLIED, never hardcoded. The first
+    //   version checked for `synthetic_probe_*` by name, so running the proof against a real 0061
+    //   reported every probe as absent and returned DIVERGENT while the two fingerprints were
+    //   byte-identical. A check that only recognises one fixture is not a check of the contract.
+    const probe = {};
+    for (const c of futureObjects) {
+      if (c.kind === 'column') probe[`column:${c.table}.${c.name}`] = Number(q(`select count(*) from information_schema.columns where table_schema='public' and table_name='${c.table}' and column_name='${c.name}'`) ?? 0);
+      if (c.kind === 'table') probe[`table:${c.name}`] = Number(q(`select count(*) from information_schema.tables where table_schema='public' and table_name='${c.name}'`) ?? 0);
+      if (c.kind === 'function') probe[`function:${c.name}`] = Number(q(`select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='${c.name}'`) ?? 0);
+      if (c.kind === 'policy') probe[`policy:${c.name}`] = Number(q(`select count(*) from pg_policies where schemaname='public' and policyname='${c.name}'`) ?? 0);
+      if (c.kind === 'index') probe[`index:${c.name}`] = Number(q(`select count(*) from pg_indexes where schemaname='public' and indexname='${c.name}'`) ?? 0);
+    }
     return { fingerprint: q(FINGERPRINT) ?? '', probe };
   } finally {
     spawnSync('docker', ['rm', '-f', container], { stdio: 'ignore' });
   }
 }
 
-console.log('MODEL C CUTOVER CONTRACT PROOF — 0060 bootstrap + synthetic 0061');
+console.log('MODEL C CUTOVER CONTRACT PROOF — bootstrap@0060 + one future migration');
 console.log('='.repeat(92));
 let a, b;
 try {
@@ -174,7 +198,9 @@ try {
 console.log('');
 console.log(`  synthetic objects present  A: ${JSON.stringify(a.probe)}`);
 console.log(`                             B: ${JSON.stringify(b.probe)}`);
-const probesOk = JSON.stringify(a.probe) === JSON.stringify(b.probe) && Object.values(a.probe).every((v) => v === 1);
+const probesOk = JSON.stringify(a.probe) === JSON.stringify(b.probe)
+  && Object.keys(a.probe).length === futureObjects.length
+  && Object.values(a.probe).every((v) => v === 1);
 
 const la = a.fingerprint.split('\n').filter(Boolean);
 const lb = b.fingerprint.split('\n').filter(Boolean);

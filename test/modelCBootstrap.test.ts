@@ -17,6 +17,7 @@ import { execSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { FIXTURE_MARKERS } from "../scripts/lib/migrationAuthority.mjs";
 import {
   PHASES, PLATFORM_EXTENSIONS, PLATFORM_EVENT_TRIGGER_OWNERS,
   phaseOf, buildComponents, renderStoragePolicy, renderEventTrigger, parseTags,
@@ -63,13 +64,26 @@ describe("historical honesty", () => {
     }
   });
   test("★ migrations 0001-0060 are untouched by this work", () => {
-    const changed = execSync("git status --porcelain db/migrations/", { cwd: ROOT, encoding: "utf8" }).trim();
-    expect(changed).toBe("");
+    // * SCOPED TO THE HISTORICAL RANGE. The first version asserted the whole directory was clean,
+    //   so an UNTRACKED legitimate 0061 — which git reports as `??` — failed it. That conflated
+    //   "history was rewritten" with "a future migration exists", and the second is permitted.
+    const cutoff = Number(readFileSync(join(ROOT, "db/bootstrap/VERSION"), "utf8").trim());
+    const changed = execSync("git status --porcelain db/migrations/", { cwd: ROOT, encoding: "utf8" })
+      .trim().split("\n").filter(Boolean)
+      .map((l) => l.slice(3).trim().replace(/^.*\//, ""))
+      .filter((n) => { const q = Number(n.slice(0, 4)); return Number.isFinite(q) && q <= cutoff; });
+    expect(changed).toEqual([]);
   });
-  test("the synthetic future migration never entered production numbering", () => {
+  test("the synthetic FIXTURE never entered production numbering", () => {
+    // * THE TEST IS ABOUT FIXTURES, NOT ABOUT THE NUMBER 0061. Forbidding /^0061/ outright would
+    //   forbid the legitimate first future migration, which db/AUTHORITY.json explicitly authorizes.
     const names = readdirSync(join(ROOT, "db/migrations"));
     expect(names.filter((n) => /synthetic/i.test(n))).toEqual([]);
-    expect(names.filter((n) => /^0061/.test(n))).toEqual([]);
+    for (const n of names.filter((x) => x.endsWith(".sql"))) {
+      const sql = readFileSync(join(ROOT, "db/migrations", n), "utf8");
+      expect(FIXTURE_MARKERS.some((m) => sql.includes(m))).toBe(false);
+    }
+    expect(existsSync(join(ROOT, "test/fixtures/synthetic_future_migration.sql"))).toBe(true);
   });
 });
 

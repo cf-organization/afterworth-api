@@ -49,6 +49,30 @@ Migrations **0001–0060 are immutable historical records** and are never rewrit
 
 `VERSION` contains `0060`. A future migration is `0061_<date>_<name>.sql` and applies to both paths.
 
+### Future migration numbering
+
+**No future migration may be numbered at or below the bootstrap cutoff.**
+**Legitimate future migrations begin at 0061.**
+
+`VERSION = 0060` means *"this fixed artifact produces schema state through migration 0060"*. It is
+**not** a ceiling on migration numbers in the repository — an earlier validator read it that way and
+rejected a perfectly valid 0061, producing nine failures across three suites, every one a bug in the
+guard rather than a problem with the migration.
+
+Authoring a real `0061_<date>_<name>.sql`:
+
+| | |
+|---|---|
+| **does** change | `db/migrations/` |
+| **does not** change | `db/bootstrap/` |
+| **does not** change | `db/bootstrap/VERSION` (stays `0060`) |
+| **does not** require | regenerating the bootstrap |
+| **does not** cause | 0001–0060 to replay on virgin installs |
+
+Enforced by `scripts/lib/migrationAuthority.mjs` and `test/schemaAuthority.test.ts`: historical
+0001–0060 immutable, future numbers strictly increasing and unique, malformed names refused, and
+**test-fixture content refused from `db/migrations/` for being a fixture — never for its number**.
+
 ### `db/bootstrap` is a FIXED cutover base, not a rolling snapshot
 
 Future schema change is layered as `0061+`; it is **not** folded back into this directory. When real

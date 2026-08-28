@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { inventory } from "../scripts/lib/schemaInventory.mjs";
 import { SOURCE_ROLES, AUTHORITY_CONTRACT, roleOf, repositoryObjects, reconcile } from "../scripts/lib/schemaReconcile.mjs";
+import { classifyMigrations, validateVersion, VERDICT, FIXTURE_MARKERS } from "../scripts/lib/migrationAuthority.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const A = AUTHORITY_CONTRACT;
@@ -153,40 +154,154 @@ describe("PHASE E — legacy artifacts cannot supply what the bootstrap lacks", 
 
 describe("PHASE G — VERSION semantics are machine-enforced", () => {
   const VERSION = readFileSync(join(ROOT, "db/bootstrap/VERSION"), "utf8").trim();
-  const migrationNumbers = readdirSync(join(ROOT, "db/migrations"))
-    .filter((f) => /^\d{4}_/.test(f)).map((f) => Number(f.slice(0, 4)));
+  const CUTOFF = Number(VERSION);
+  const FUTURE_START = Number(A.future_migration_authority.starts_at);
+  const names = readdirSync(join(ROOT, "db/migrations")).filter((f) => f.endsWith(".sql"));
+  // * SYNTHETIC SETS ARE BUILT FROM THE HISTORICAL SUBSET. Building them from whatever is on disk
+  //   meant a temporary probe 0061 collided with the synthetic 0061 these fixtures append, so six
+  //   tests failed on a duplicate-number problem they never meant to exercise. The fixtures are
+  //   about the RULE, so their input must be the stable historical range.
+  const historicalNames = names.filter((n) => Number(n.slice(0, 4)) <= Number(readFileSync(join(ROOT, "db/bootstrap/VERSION"), "utf8").trim()));
+  const gitChanged = () =>
+    execSync("git status --porcelain db/migrations/", { cwd: ROOT, encoding: "utf8" })
+      .trim().split("\n").filter(Boolean).map((l) => l.slice(3).trim());
 
-  test("VERSION is exactly four digits", () => {
+  test("VERSION is exactly four digits and equals the declared cutoff", () => {
     expect(VERSION).toMatch(/^\d{4}$/);
-    expect(VERSION).toBe("0060");
+    expect(VERSION).toBe(A.bootstrap_authority.through_version);
   });
-  test("★ MUTATION 4: a malformed or lower VERSION is rejected", () => {
-    const valid = (v: string, maxHistorical: number) => /^\d{4}$/.test(v) && Number(v) >= maxHistorical;
-    const maxHistorical = Math.max(...migrationNumbers);
-    expect(valid(VERSION, maxHistorical)).toBe(true);
-    expect(valid("60", maxHistorical)).toBe(false);        // malformed
-    expect(valid("garbage", maxHistorical)).toBe(false);   // garbage
-    expect(valid("0059", maxHistorical)).toBe(false);      // lower than the historical cutoff
+
+  test("★ VERSION means 'produces schema through 0060', NOT 'no migration may exceed 0060'", () => {
+    // The first validator enforced the second reading and rejected a legitimate 0061 — nine
+    // failures across three suites, every one a bug in the guard. VERSION is validated against the
+    // HISTORICAL range only, so authoring a future migration can never invalidate the bootstrap
+    // it is layered on.
+    const withFuture = [...historicalNames, "0061_20260901_real.sql", "0099_20261231_much_later.sql"];
+    const historicalOf = (set: string[]) => set.filter((n) => Number(n.slice(0, 4)) <= CUTOFF);
+
+    // The historical subset is what VERSION is validated against, and future migrations do not
+    // enter it. That is the whole mechanism: authoring 0061 or 0099 leaves the cutoff untouched.
+    expect(historicalOf(withFuture)).toEqual(historicalNames);
+    expect(validateVersion(VERSION, historicalNames).ok).toBe(true);
+    expect(validateVersion(VERSION, historicalOf(withFuture)).ok).toBe(true);
+
+    // And the set as a whole stays valid with those future migrations present.
+    expect(classifyMigrations(withFuture, CUTOFF, FUTURE_START).verdict).toBe(VERDICT.OK);
   });
-  test("VERSION is >= every historical migration number", () => {
-    expect(Number(VERSION)).toBeGreaterThanOrEqual(Math.max(...migrationNumbers));
+
+  test.each([
+    ["60", "malformed — not four digits"],
+    ["garbage", "not numeric"],
+    ["0059", "below the highest historical migration"],
+    ["", "empty"],
+  ])("★ VERSION %s is refused (%s)", (v) => {
+    const historical = names.filter((n) => Number(n.slice(0, 4)) <= CUTOFF);
+    expect(validateVersion(v, historical).ok).toBe(false);
   });
-  test("★ MUTATION 11: no production migration may be numbered <= the cutoff after cutover", () => {
-    // Existing 0001-0060 are historical and legitimate; the rule binds NEW files only.
-    expect(migrationNumbers.filter((n) => n > Number(VERSION))).toEqual([]);
-    const wouldBeRejected = (n: number) => n <= Number(VERSION);
-    expect(wouldBeRejected(60)).toBe(true);
-    expect(wouldBeRejected(61)).toBe(false);
+
+  test("the live migration set is valid under the authority contract", () => {
+    const r = classifyMigrations(names, CUTOFF, FUTURE_START, { addedOrModified: gitChanged() });
+    expect(r.problems).toEqual([]);
+    expect(r.verdict).toBe(VERDICT.OK);
+    expect(r.historical).toHaveLength(60);
   });
-  test("★ MUTATION 12: the synthetic fixture is not in the real migrations directory", () => {
-    const names = readdirSync(join(ROOT, "db/migrations"));
+
+  test("★ POSITIVE CONTROL: a legitimate future 0061 is ACCEPTED", () => {
+    const r = classifyMigrations([...historicalNames, "0061_20260901_real_feature.sql"], CUTOFF, FUTURE_START);
+    expect(r.verdict).toBe(VERDICT.OK);
+    expect(r.future).toEqual(["0061_20260901_real_feature.sql"]);
+    expect(r.historical).toHaveLength(60);
+  });
+
+  test("★ POSITIVE CONTROL: 0062 following 0061 is accepted, and 0061 alone is not required forever", () => {
+    expect(classifyMigrations([...historicalNames, "0061_20260901_a.sql", "0062_20260902_b.sql"], CUTOFF, FUTURE_START).verdict).toBe(VERDICT.OK);
+    expect(classifyMigrations([...historicalNames, "0062_20260902_b.sql"], CUTOFF, FUTURE_START).verdict).toBe(VERDICT.OK);
+  });
+
+  test.each([
+    ["a NEW file inside the historical range", ["0042_20260901_renumbered.sql"], { addedOrModified: ["0042_20260901_renumbered.sql"] }],
+    ["a MODIFIED historical file", [], { addedOrModified: ["db/migrations/0030_20260719_claim_evidence_storage_rls.sql"] }],
+  ])("★ MUTATION: %s is refused", (_label, extra, opts) => {
+    const r = classifyMigrations([...historicalNames, ...extra], CUTOFF, FUTURE_START, opts);
+    expect(r.verdict).toBe(VERDICT.INVALID);
+    expect(r.problems.join(" ")).toMatch(/historical range is immutable|duplicate migration number/);
+  });
+
+  test("★ MUTATION: a duplicate future number is refused", () => {
+    const r = classifyMigrations([...historicalNames, "0061_20260901_a.sql", "0061_20260902_b.sql"], CUTOFF, FUTURE_START);
+    expect(r.verdict).toBe(VERDICT.INVALID);
+    expect(r.problems.join(" ")).toMatch(/duplicate migration number 0061/);
+  });
+
+  test("★ MUTATION: a malformed future migration name is refused", () => {
+    expect(classifyMigrations([...historicalNames, "61_20260901_x.sql"], CUTOFF, FUTURE_START).verdict).toBe(VERDICT.INVALID);
+    expect(classifyMigrations([...historicalNames, "0061-20260901-x.sql"], CUTOFF, FUTURE_START).verdict).toBe(VERDICT.INVALID);
+  });
+
+  test("★ MUTATION: a future migration at or below the cutoff is refused", () => {
+    const below = classifyMigrations([...historicalNames, "0058_20260901_x.sql"], CUTOFF, FUTURE_START, { addedOrModified: ["0058_20260901_x.sql"] });
+    expect(below.verdict).toBe(VERDICT.INVALID);
+  });
+
+  test("★ MUTATION: test-fixture content is refused for BEING A FIXTURE, not for its number", () => {
+    const fixture = classifyMigrations([...historicalNames, "0061_20260901_x.sql"], CUTOFF, FUTURE_START, {
+      contents: { "0061_20260901_x.sql": "-- TEST FIXTURE ONLY — NEVER A REAL MIGRATION\nselect 1;" },
+    });
+    expect(fixture.verdict).toBe(VERDICT.INVALID);
+    expect(fixture.problems.join(" ")).toMatch(/test-fixture content may not live in db\/migrations/);
+    // ...and the SAME number with real content is fine. The number was never the problem.
+    expect(classifyMigrations([...historicalNames, "0061_20260901_x.sql"], CUTOFF, FUTURE_START, {
+      contents: { "0061_20260901_x.sql": "alter table public.estates add column if not exists x text;" },
+    }).verdict).toBe(VERDICT.OK);
+  });
+
+  test("the synthetic fixture lives outside db/migrations and is marked as a fixture", () => {
     expect(names.filter((n) => /synthetic/i.test(n))).toEqual([]);
-    expect(names.filter((n) => /^0061/.test(n))).toEqual([]);
-    expect(existsSync(join(ROOT, "test/fixtures/synthetic_future_migration.sql"))).toBe(true);
+    const fx = readFileSync(join(ROOT, "test/fixtures/synthetic_future_migration.sql"), "utf8");
+    expect(FIXTURE_MARKERS.some((m) => fx.includes(m))).toBe(true);
   });
-  test("historical migrations count exactly 60 and none was modified", () => {
-    expect(migrationNumbers.length).toBe(60);
-    expect(execSync("git status --porcelain db/migrations/", { cwd: ROOT, encoding: "utf8" }).trim()).toBe("");
+
+  test("no COMMITTED future migration exists today", () => {
+    // * COMMITTED state, not the working tree. A temporary probe 0061 on disk is exactly what the
+    //   positive control needs to create; forbidding it on disk would forbid testing the contract.
+    const tracked = execSync("git ls-files db/migrations/", { cwd: ROOT, encoding: "utf8" })
+      .trim().split("\n").map((n) => n.replace(/^.*\//, "")).filter((n) => n.endsWith(".sql"));
+    expect(tracked.filter((n) => Number(n.slice(0, 4)) > CUTOFF)).toEqual([]);
+    expect(tracked).toHaveLength(60);
+  });
+
+  test("★ CONTRADICTION GUARD: the contract's declared future start must be accepted by the validator", () => {
+    // If AUTHORITY.json says future migrations begin at 0061 but the validator rejects a
+    // structurally valid 0061, that is a structural contradiction and this suite must fail.
+    const probe = `${String(FUTURE_START).padStart(4, "0")}_20260901_contract_probe.sql`;
+    const r = classifyMigrations([...historicalNames, probe], CUTOFF, FUTURE_START);
+    expect(r.verdict).toBe(VERDICT.OK);
+    expect(r.future).toContain(probe);
+    expect(FUTURE_START).toBe(CUTOFF + 1);
+  });
+
+  test("★ the documented rule matches the enforced rule", () => {
+    const readme = readFileSync(join(ROOT, "db/bootstrap/README.md"), "utf8");
+    // The corrected phrasing must be present...
+    expect(readme).toMatch(/No future migration may be numbered at or below the bootstrap cutoff/i);
+    expect(readme).toMatch(/Legitimate future migrations begin at 0061/i);
+    // ...and the phrasing that expressed the contradiction must not return.
+    expect(readme).not.toMatch(/no production migration numbered above the cutoff/i);
+    expect(A.future_migration_authority.rule).toMatch(/never a ceiling on migration numbers/i);
+    expect(A.future_migration_authority.adding_a_future_migration.requires_bootstrap_regeneration).toBe(false);
+    expect(A.future_migration_authority.adding_a_future_migration.does_not_change).toContain("db/bootstrap/VERSION");
+  });
+  test("★ positive control: the guard CAN see the contradictory phrasing", () => {
+    expect(/no production migration numbered above the cutoff/i.test("no production migration numbered above the cutoff")).toBe(true);
+  });
+
+  test("historical migrations: exactly 60, none modified", () => {
+    expect(names.filter((n) => Number(n.slice(0, 4)) <= CUTOFF)).toHaveLength(60);
+    const changed = gitChanged().filter((n) => {
+      const seq = Number(n.replace(/^.*\//, "").slice(0, 4));
+      return Number.isFinite(seq) && seq <= CUTOFF;
+    });
+    expect(changed).toEqual([]);
   });
 });
 
