@@ -13,8 +13,8 @@ REMOTE ACTIVITY       1 credential-safe project listing · 0 SQL reads · 0 writ
 
 | Supabase name | ref | region | actual role |
 |---|---|---|---|
-| `afterworth-prod` | `rpjjwkoezuihpobotbjh` | East US (N. Virginia) | **role unestablished — referenced nowhere in this repository** |
-| `afterworth-dev` | `yiaavvkulrpqkkbqhwit` | West US (Oregon) | **the database the deployed application uses** |
+| `afterworth-prod` | `rpjjwkoezuihpobotbjh` | `us-east-1` | **INACTIVE (paused)** · retained as a future production candidate · referenced nowhere in this repository |
+| `afterworth-dev` | `yiaavvkulrpqkkbqhwit` | `us-west-2` | **ACTIVE** · the database the deployed application uses |
 
 `README.md` pins `SUPABASE_URL = https://yiaavvkulrpqkkbqhwit.supabase.co` for Vercel, corroborated
 by ten `docs/*-proof.md` files. **The project named "dev" is production in function.** The project
@@ -35,7 +35,7 @@ Neither project is an R-02 target. Both are refused with distinct, evidenced rea
 | ref | protected_reason |
 |---|---|
 | `yiaavvkulrpqkkbqhwit` | `APPLICATION_FACING_EXISTING_DATABASE` |
-| `rpjjwkoezuihpobotbjh` | `EXISTING_PROJECT_ROLE_UNESTABLISHED` |
+| `rpjjwkoezuihpobotbjh` | `EXISTING_PAUSED_FUTURE_PRODUCTION_CANDIDATE` |
 
 The second is **protected by uncertainty**. It previously received `DRY_RUN_AUTHORIZED` from the
 seed guard because nothing had established what it is — which is backwards. **An absence of
@@ -55,17 +55,24 @@ information is not a licence: unknown real infrastructure is not disposable infr
 |---|---|
 | name | `afterworth-nonprod` (avoids the prod/dev naming trap entirely) |
 | organization | `rvudommjwqgtluhvfgcw` (the existing org) |
-| region | West US (Oregon) — matches the app-facing project, so latency/behaviour differences are not confounders |
+| region | `us-west-2` (West US, Oregon) — the code was read from the existing project, not guessed |
 | classification | nonproduction |
 | lifecycle | disposable; expected to be reset repeatedly, possibly deleted after R-02 |
 | retention | decide after R-02 whether it becomes a standing staging environment |
 | cost | a Supabase project has a plan cost; **not discoverable from the CLI** and must be confirmed by the account owner before provisioning |
 
-> ### COST_CONFIRMATION_REQUIRED
+> ### COST_CONFIRMATION_REQUIRED — and the CLI cannot resolve it
 >
-> A Supabase project carries a plan cost that is **not discoverable from the CLI**. The account owner
-> must confirm it before provisioning. No project-creation command has been executed, and none
-> appears in this repository.
+> `supabase billing`, `supabase usage` and `supabase plan` **are not real commands** — each falls
+> through to top-level help. The CLI exposes no plan, quota or billing information at all, so
+> whether a third project fits the current plan **cannot be established from tooling**.
+>
+> `supabase projects create` additionally takes `--size` (an instance-size / compute selection with
+> no discoverable default) and `--db-password` **as a command-line flag** — which would place the
+> database password in shell history and the process table. Provisioning must therefore go through
+> the dashboard, or an interactive CLI session the operator drives.
+>
+> No project-creation command has been executed.
 >
 > **USER AUTHORIZATION REQUIRED TO CREATE NON-PRODUCTION SUPABASE PROJECT** — not crossed.
 

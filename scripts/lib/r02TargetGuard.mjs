@@ -76,14 +76,16 @@ export const FORBIDDEN_TARGETS = Object.freeze([
   Object.freeze({
     ref: 'rpjjwkoezuihpobotbjh',
     supabaseName: 'afterworth-prod',
-    protectedReason: 'EXISTING_PROJECT_ROLE_UNESTABLISHED',
+    protectedReason: 'EXISTING_PAUSED_FUTURE_PRODUCTION_CANDIDATE',
     reason: R02_REFUSAL.ROLE_UNESTABLISHED_TARGET,
+    observedStatus: 'INACTIVE',
+    region: 'us-east-1',
     // ★ PROTECTED BY UNCERTAINTY, WHICH IS NOT THE SAME AS PROTECTED BY EVIDENCE.
     //   This project is listed by the API and referenced nowhere in the repository. "Appears unused"
     //   is an absence of information, and an absence of information is not a licence: unknown real
     //   infrastructure is not disposable infrastructure. It is refused until somebody establishes
     //   what it is — and establishing that is a separate unit, not a side effect of needing a target.
-    evidence: 'Listed by `supabase projects list` as afterworth-prod, referenced nowhere in this repository. Operational role UNESTABLISHED. Refused on uncertainty, not on evidence of importance.',
+    evidence: 'Listed by `supabase projects list` as afterworth-prod, region us-east-1, API-reported status INACTIVE (paused) — which corroborates the owner\'s report rather than resting on it. Referenced nowhere in this repository, and RETAINED by explicit decision as a candidate for future production use. Refused on uncertainty and on retention, never on evidence of unimportance.',
   }),
 ]);
 
@@ -96,6 +98,17 @@ export const FORBIDDEN_TARGETS = Object.freeze([
  * test greps this module to prove no name-based branch exists.
  */
 export const NAME_BASED_CLASSIFICATION_FORBIDDEN = true;
+
+/**
+ * Retention decision, recorded so a future reader does not mistake "paused" for "disposable".
+ * ★ NEITHER EXISTING PROJECT MAY BE DELETED BY ANY R-02 WORKFLOW. Deletion is not among this
+ *   module's concerns and no code path performs it; this constant exists to make the intent
+ *   explicit and testable rather than implied by silence.
+ */
+export const EXISTING_PROJECT_DISPOSITION = Object.freeze({
+  yiaavvkulrpqkkbqhwit: Object.freeze({ retained: true, deletable: false, r02_target: false, note: 'application-facing database' }),
+  rpjjwkoezuihpobotbjh: Object.freeze({ retained: true, deletable: false, r02_target: false, note: 'paused; retained as future production candidate' }),
+});
 
 /**
  * ★ MIGRATION EXECUTION MODEL — ADJUDICATED, NOT ASSUMED.
