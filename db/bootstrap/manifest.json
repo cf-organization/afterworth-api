@@ -1,0 +1,142 @@
+{
+  "model": "C — componentized current-state bootstrap",
+  "bootstrap_schema_version": "0060",
+  "generated_from": {
+    "snapshot": "live-schema-20260827.sql",
+    "evidence": {
+      "live-schema-20260827.sql": "a21df219616e2f80e2885d3b29fb61723174300b6909af637bfa8c4f0ea1f8b7",
+      "event-trigger-bindings-20260828.csv": "e5c005cb27f959421a5f33c218eeb3c10819fd3c9b8070b2a31ce5681c1cb0a9",
+      "event-trigger-binding-controls-20260828.csv": "7b1c894a4ea851eea768db2066c7be6e30b19aadda15d3a483e656009ed1f21c",
+      "storage-policies-20260828.csv": "7b0adbe21f95fc61ff1773c31a1a89b6cbbce27dd819d59f2548a7426c98f13e",
+      "storage-policy-controls-20260828.csv": "7bfc85be19b07c0d1518dcbe9290322c2f99468777a9e099d4e6e8796bf422c4"
+    }
+  },
+  "classification": "CURRENT AUTHORITATIVE SCHEMA SNAPSHOT (not a pre-0001 baseline)",
+  "historical_migrations": {
+    "range": "0001-0060",
+    "role": "immutable historical delta records",
+    "replayed_during_virgin_bootstrap": false
+  },
+  "future_migrations": {
+    "start": "0061"
+  },
+  "phases": [
+    {
+      "id": "00",
+      "file": "00_platform_contract.sql",
+      "title": "platform contract / prerequisites",
+      "statements": 2
+    },
+    {
+      "id": "10",
+      "file": "10_extensions.sql",
+      "title": "extensions",
+      "statements": 2
+    },
+    {
+      "id": "20",
+      "file": "20_types.sql",
+      "title": "custom types",
+      "statements": 1
+    },
+    {
+      "id": "30",
+      "file": "30_tables.sql",
+      "title": "tables + sequences (no FKs yet)",
+      "statements": 42
+    },
+    {
+      "id": "40",
+      "file": "40_constraints.sql",
+      "title": "constraints, sequence ownership, defaults",
+      "statements": 128
+    },
+    {
+      "id": "50",
+      "file": "50_indexes.sql",
+      "title": "indexes",
+      "statements": 59
+    },
+    {
+      "id": "60",
+      "file": "60_functions.sql",
+      "title": "functions",
+      "statements": 147
+    },
+    {
+      "id": "70",
+      "file": "70_triggers.sql",
+      "title": "triggers",
+      "statements": 9
+    },
+    {
+      "id": "80",
+      "file": "80_rls_enable.sql",
+      "title": "RLS enablement",
+      "statements": 41
+    },
+    {
+      "id": "90",
+      "file": "90_policies.sql",
+      "title": "policies on application tables",
+      "statements": 36
+    },
+    {
+      "id": "100",
+      "file": "100_grants.sql",
+      "title": "ownership, grants, default privileges",
+      "statements": 452
+    },
+    {
+      "id": "110",
+      "file": "110_storage_policies.sql",
+      "title": "application policies on platform storage.objects",
+      "statements": 2
+    },
+    {
+      "id": "120",
+      "file": "120_event_triggers.sql",
+      "title": "event triggers (HOSTED_COMPATIBILITY_PROOF_REQUIRED)",
+      "statements": 1
+    }
+  ],
+  "totals": {
+    "statements_emitted": 922,
+    "statements_skipped_session_or_platform": 13,
+    "unassigned": 0
+  },
+  "live_inventory": {
+    "tables": 41,
+    "columns": 415,
+    "functions": 147,
+    "policies": 36,
+    "indexes": 59,
+    "triggers": 9,
+    "types": 1,
+    "sequences": 1,
+    "rls_enabled": 41,
+    "security_definer": 131,
+    "security_definer_without_search_path": 0
+  },
+  "application_owned_on_platform": [
+    "storage.objects.documents_estate_insert",
+    "storage.objects.documents_estate_read"
+  ],
+  "event_triggers": {
+    "application_owned": [
+      "ensure_rls"
+    ],
+    "platform_owned_excluded": [
+      "issue_graphql_placeholder",
+      "issue_pg_cron_access",
+      "issue_pg_graphql_access",
+      "issue_pg_net_access",
+      "pgrst_ddl_watch",
+      "pgrst_drop_watch"
+    ],
+    "hosted_compatibility_proven": false
+  },
+  "legacy_compatibility_surface": {
+    "public.assets": "APPLICATION-OWNED LEGACY-COMPATIBILITY SURFACE — consumed at runtime by the shipping SwiftUI client. DROP NOT AUTHORIZED."
+  }
+}
