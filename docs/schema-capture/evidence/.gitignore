@@ -1,0 +1,6 @@
+# Raw schema captures are EVIDENCE, not canonical artifacts, and may reveal internal
+# structure before it has been reviewed. Nothing here is tracked until a capture has been
+# analysed and a curated artifact is proposed deliberately.
+*
+!.gitignore
+!README.md

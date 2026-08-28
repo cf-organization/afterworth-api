@@ -1,0 +1,239 @@
+{
+  "$comment": "MACHINE-READABLE SCHEMA-AUTHORITY CONTRACT. Enforced by test/schemaAuthority.test.ts. A path under db/ that bears schema-definition material and is not classified here FAILS CLOSED \u2014 it may not become competing authority by simply appearing.",
+  "bootstrap_authority": {
+    "path": "db/bootstrap",
+    "through_version": "0060",
+    "role": "LEVEL_1_VIRGIN_BASE",
+    "description": "The only canonical virgin-install base. Generated from the verified afterworth-dev live-state snapshot plus hashed catalog captures.",
+    "generated": true,
+    "generator": "scripts/generateBootstrap.mjs",
+    "rolling": false,
+    "rolling_rationale": "VERSION 0060 is a FIXED CUTOVER BASE. Future schema change is layered as db/migrations/0061+, never folded back into the bootstrap. A rolling snapshot would make the bootstrap's version a moving target, so a virgin install and an upgraded install would no longer be provably the same schema \u2014 which is the single property this whole model exists to guarantee."
+  },
+  "future_migration_authority": {
+    "path": "db/migrations",
+    "starts_at": "0061",
+    "role": "LEVEL_2_FUTURE_DELTA",
+    "description": "Authoritative schema change after bootstrap version 0060. Applies to BOTH a virgin bootstrap and an installation that traversed the real history.",
+    "rule": "No future migration may be numbered at or below the bootstrap cutoff. Legitimate future migrations begin at 0061. VERSION is a statement about what the bootstrap PRODUCES, never a ceiling on migration numbers in the repository.",
+    "adding_a_future_migration": {
+      "changes": [
+        "db/migrations/"
+      ],
+      "does_not_change": [
+        "db/bootstrap/",
+        "db/bootstrap/VERSION"
+      ],
+      "requires_bootstrap_regeneration": false,
+      "replays_historical_on_virgin": false
+    }
+  },
+  "historical_migrations": {
+    "path": "db/migrations",
+    "range": "0001-0060",
+    "role": "LEVEL_3_HISTORICAL_RECORD",
+    "immutable": true,
+    "virgin_bootstrap": false,
+    "description": "Immutable record for installations that actually traversed it. NEVER executed during a virgin bootstrap: the bootstrap already contains their outcome, and these files cannot build from zero anyway (proven \u2014 they fail on 0001).",
+    "protections": [
+      "existing 0001-0060 files are immutable (modification refused)",
+      "no new file may be added at or below the cutoff",
+      "duplicate numbers refused",
+      "the range is fully occupied 60/60, so both rules cover any addition"
+    ]
+  },
+  "non_authoritative_paths": [
+    {
+      "path": "db/tables",
+      "role": "LEVEL_4_LEGACY_COMPATIBILITY",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Current-state DDL captured 2026-07-10, roughly forty migrations into the schema's life. Predates db/bootstrap and was never a complete base \u2014 it holds 17 of 41 live tables.",
+      "generated": false,
+      "consumers": [
+        {
+          "path": "scripts/reconFiduciaryAuthority.mjs",
+          "kind": "GENERATOR_INPUT",
+          "note": "recon/reporting only, no deployment effect"
+        },
+        {
+          "path": "test/freshDatabaseRehearsal.test.ts",
+          "kind": "LOCAL_TEST"
+        },
+        {
+          "path": "test/schemaReconciliation.test.ts",
+          "kind": "LOCAL_TEST"
+        },
+        {
+          "path": "docs/*",
+          "kind": "DOCUMENTATION_ONLY"
+        }
+      ],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "It is a partial historical capture, not a mirror of current state. Requiring equivalence would force edits to a legacy artifact every time the schema moves, for no consumer that needs it. What IS enforced: it can never SUPPLY an object missing from db/bootstrap.",
+      "removal_prerequisite": "Port reconFiduciaryAuthority.mjs and the three tests onto db/bootstrap, then delete. Not done here: removing files to reduce duplication is not a reason to remove them."
+    },
+    {
+      "path": "db/functions",
+      "role": "LEVEL_4_LEGACY_COMPATIBILITY",
+      "disposition": "GENERATOR_INPUT",
+      "reason": "Hand-maintained function bodies that are the SOURCE for db/bundles/*.sql deployment slices and for the SQL-authorization harness. Actively consumed; removing it would break 15 bundle builders and the 469-assertion authorization suite.",
+      "generated": false,
+      "consumers": [
+        {
+          "path": "scripts/build*Bundle.mjs",
+          "kind": "GENERATOR_INPUT",
+          "note": "15 builders emit db/bundles/*.sql"
+        },
+        {
+          "path": "scripts/lib/sqlSuiteParts.mjs",
+          "kind": "LOCAL_TEST",
+          "note": "SQL-authorization suite loads named function files"
+        },
+        {
+          "path": "scripts/verifySqlAuthorization.mjs",
+          "kind": "LOCAL_TEST"
+        },
+        {
+          "path": "scripts/verifySourceDeploymentDrift.mjs",
+          "kind": "PRODUCTION_DEPLOYMENT",
+          "note": "drift verifier for deployed function bodies"
+        },
+        {
+          "path": "test/*.test.ts",
+          "kind": "LOCAL_TEST",
+          "note": "several suites read specific function files"
+        }
+      ],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "These bodies are deployed via bundles to an already-live database; db/bootstrap builds a virgin one. Both derive from the same live state today. Enforced instead: db/functions can never SUPPLY a function missing from db/bootstrap, so it cannot make reconciliation appear complete.",
+      "removal_prerequisite": "Re-source the bundle builders and the SQL-auth harness from db/bootstrap/60_functions.sql. Substantial, and out of scope here."
+    },
+    {
+      "path": "db/bundles",
+      "role": "LEVEL_4_GENERATED_OUTPUT",
+      "disposition": "DERIVED",
+      "reason": "Deployment slices generated from db/functions by scripts/build*Bundle.mjs. Every file carries 'GENERATED ... DO NOT EDIT'.",
+      "generated": true,
+      "generator": "scripts/build*Bundle.mjs",
+      "consumers": [
+        {
+          "path": "manual Supabase SQL editor deployment",
+          "kind": "PRODUCTION_DEPLOYMENT"
+        }
+      ],
+      "drift_tolerated": false,
+      "exact_equivalence_required": false,
+      "drift_rationale": "Must match its own generator input (enforced by CI 'git diff --exit-code' after regeneration), not db/bootstrap.",
+      "removal_prerequisite": "None planned \u2014 this is the live deployment path for an existing installation."
+    },
+    {
+      "path": "db/tests",
+      "role": "LEVEL_4_TEST_FIXTURE",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Test preambles. db/tests/preamble_real_auth.sql holds the only CREATE TABLE for beneficiaries and notifications outside db/bootstrap \u2014 which is exactly why it must never count as a schema source.",
+      "generated": false,
+      "consumers": [
+        {
+          "path": "scripts/verifySqlAuthorization.mjs",
+          "kind": "LOCAL_TEST"
+        }
+      ],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "A minimal test model, deliberately not production shape.",
+      "removal_prerequisite": "None \u2014 it is test infrastructure and should stay."
+    },
+    {
+      "path": "db/bootstrap/testing",
+      "role": "LEVEL_4_TEST_FIXTURE",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Local platform shim fabricating auth.users/storage.objects for container runs. Must never be read as application-owned schema.",
+      "generated": false,
+      "consumers": [
+        {
+          "path": "scripts/bootstrapFreshRun.mjs",
+          "kind": "LOCAL_TEST"
+        },
+        {
+          "path": "scripts/bootstrapCutoverProof.mjs",
+          "kind": "LOCAL_TEST"
+        }
+      ],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "It fakes a platform it does not own; equivalence with anything is meaningless.",
+      "removal_prerequisite": "A Supabase-local stack replacing the vanilla-Postgres container."
+    },
+    {
+      "path": "db/hotfix",
+      "role": "LEVEL_3_HISTORICAL_RECORD",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Out-of-band delta applied to the live database.",
+      "generated": false,
+      "consumers": [],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "Historical.",
+      "removal_prerequisite": "None."
+    },
+    {
+      "path": "db/verification",
+      "role": "LEVEL_4_TEST_FIXTURE",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Read-only verification queries.",
+      "generated": false,
+      "consumers": [
+        {
+          "path": "manual verification",
+          "kind": "DOCUMENTATION_ONLY"
+        }
+      ],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "Contains no CREATE statements.",
+      "removal_prerequisite": "None."
+    },
+    {
+      "path": "db/grants.sql",
+      "role": "LEVEL_4_LEGACY_COMPATIBILITY",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Hand-maintained table GRANTs for the live database; db/bootstrap/100_grants.sql is the canonical virgin equivalent.",
+      "generated": false,
+      "consumers": [
+        {
+          "path": "manual Supabase SQL editor deployment",
+          "kind": "PRODUCTION_DEPLOYMENT"
+        }
+      ],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "Deployment-path artifact for an existing installation.",
+      "removal_prerequisite": "Re-source deployment grants from db/bootstrap/100_grants.sql."
+    },
+    {
+      "path": "db/seed_admin.sql",
+      "role": "LEVEL_4_LEGACY_COMPATIBILITY",
+      "disposition": "LEGACY_COMPATIBILITY",
+      "reason": "Data seed, not schema.",
+      "generated": false,
+      "consumers": [],
+      "drift_tolerated": true,
+      "exact_equivalence_required": false,
+      "drift_rationale": "Contains no schema DDL.",
+      "removal_prerequisite": "None."
+    }
+  ],
+  "hosted_compatibility": {
+    "proven": false,
+    "blocked_by": "R-02 \u2014 no non-production Supabase environment exists",
+    "requires_proof": [
+      "CREATE EVENT TRIGGER ensure_rls under a hosted Supabase migration role",
+      "migration metadata / cutover behaviour (whether supabase_migrations.schema_migrations must be pre-seeded so the CLI does not attempt 0001-0060)",
+      "extension creation privileges for pgcrypto and uuid-ossp under the hosted role",
+      "ownership statements (ALTER ... OWNER TO postgres) under the hosted role"
+    ],
+    "note": "Local container success does NOT clear any of these. The containers grant superuser; hosted Supabase does not."
+  }
+}
