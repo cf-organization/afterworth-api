@@ -25,6 +25,12 @@ import { inventory } from './schemaInventory.mjs';
 
 /** Path -> the authority that path carries. Order matters: first match wins. */
 export const SOURCE_ROLES = Object.freeze([
+  // * ORDER MATTERS AND testing/ COMES FIRST. db/bootstrap/testing/ holds a platform SHIM that
+  //   fabricates auth.users and storage.objects for container tests. If the generic bootstrap rule
+  //   matched it first, a fake auth.users would be classified as an application-owned base
+  //   definition — the precise confusion the shim's filename shouts about.
+  { match: /^db\/bootstrap\/testing\//, role: 'test-only', authority: 'local platform shim — NOT a schema source' },
+  { match: /^db\/bootstrap\//, role: 'base', authority: 'Model C canonical current-state bootstrap (through 0060)' },
   { match: /^db\/tables\//, role: 'base', authority: 'current-state capture (2026-07-10)' },
   { match: /^db\/functions\//, role: 'base', authority: 'current-state function bodies' },
   { match: /^db\/grants\.sql$/, role: 'base', authority: 'current-state grants' },

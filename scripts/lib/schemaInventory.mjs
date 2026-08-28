@@ -224,7 +224,7 @@ export function inventory(sql) {
     tables: [], columns: [], functions: [], policies: [], indexes: [], triggers: [],
     types: [], sequences: [], extensions: [], schemas: [], views: [],
     rlsEnabled: [], rlsForced: [], grants: [], revokes: [], defaultPrivileges: [],
-    constraints: [], comments: [], alterTables: [], sets: [], publications: [], drops: [], doBlocks: [], transactionControl: [], psqlMeta: [], dml: [], unclassified: [],
+    constraints: [], comments: [], alterTables: [], sets: [], publications: [], drops: [], doBlocks: [], transactionControl: [], psqlMeta: [], dml: [], eventTriggers: [], unclassified: [],
   };
 
   for (const raw of statements) {
@@ -354,6 +354,19 @@ export function inventory(sql) {
       });
       continue;
     }
+    // * EVENT TRIGGERS ARE A DISTINCT OBJECT CLASS, not table triggers. No repository file created
+    //   one until db/bootstrap/120 did, so the parser had never needed the rule — and reported the
+    //   statement unclassified the moment the class appeared. That is the honesty channel working.
+    if ((m = new RegExp(`^CREATE\\s+EVENT\\s+TRIGGER\\s+(${QN})([\\s\\S]*)$`, 'i').exec(stmt))) {
+      inv.eventTriggers.push({
+        name: parseQualified(m[1]).name,
+        event: (/\bON\s+([a-z_]+)/i.exec(m[2]) || [])[1] ?? null,
+        tags: [...(m[2].match(/'([^']+)'/g) ?? [])].map((t) => t.slice(1, -1)),
+        executes: (new RegExp(`EXECUTE\\s+(?:PROCEDURE|FUNCTION)\\s+(${QUAL})`, 'i').exec(m[2]) || [])[1] ?? null,
+        sql: stmt,
+      });
+      continue;
+    }
     if ((m = new RegExp(`^CREATE\\s+SCHEMA\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${QN})`, 'i').exec(stmt))) {
       inv.schemas.push({ name: parseQualified(m[1]).name, sql: stmt }); continue;
     }
@@ -398,7 +411,7 @@ export function inventory(sql) {
     if (/^\\[a-z]/i.test(stmt)) { inv.psqlMeta.push({ sql: stmt }); continue; }
     if (/^(INSERT|UPDATE|DELETE|TRUNCATE|WITH|SELECT|VALUES|ANALYZE|VACUUM|REFRESH)\b/i.test(stmt)) { inv.dml.push({ sql: stmt }); continue; }
     if (/^CREATE\s+(TEMP|TEMPORARY|UNLOGGED)\s/i.test(stmt)) { inv.dml.push({ transient: true, sql: stmt }); continue; }
-    if (/^DO\s*\$/i.test(stmt) || /^BEGIN$|^END$|^DECLARE$/i.test(h)) {
+    if (/^DO\s*\$[A-Za-z_0-9]*\$/i.test(stmt) || /^BEGIN$|^END$|^DECLARE$/i.test(h)) {
       inv.doBlocks.push({ sql: stmt });
       // ★ DDL INSIDE A `do` BLOCK IS STILL DDL, AND THIS REPOSITORY RELIES ON IT.
       //   `db/tables/jurisdiction_policy.sql` creates the `verification_level` enum as
