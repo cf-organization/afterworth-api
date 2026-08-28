@@ -22,6 +22,7 @@ import {
   OPERATIONS,
   PRODUCTION_PROJECT_REFS,
   REFUSAL_REASONS,
+  PROTECTED_PROJECT_REFS,
   RESET_FK_ORDER,
   classifySeedRequest,
   isApprovedSyntheticIdentity,
@@ -412,6 +413,10 @@ describe("★ 9 · cross-guard composition", () => {
     const cases: Req[] = [
       okSeed(), okReset(),
       okSeed({ targetRef: "" }), okSeed({ targetRef: "bad" }), okSeed({ targetRef: PROD }),
+      // An existing real project whose operational role is unestablished — refused on uncertainty,
+      // distinct from the evidenced production pin. Added when PROTECTED_PROJECT_REFS was introduced;
+      // the vocabulary test caught the new reason as unexercised, which is exactly its job.
+      okSeed({ targetRef: PROTECTED_PROJECT_REFS[0] }),
       okSeed({ declaredEnvironment: "" }), okSeed({ declaredEnvironment: "dev" }), okSeed({ declaredEnvironment: "production" }),
       okSeed({ operation: "" }), okSeed({ operation: "drop" }),
       okSeed({ operation: "reset" }), okReset({ confirmDestructiveTarget: OTHER_NONPROD }),

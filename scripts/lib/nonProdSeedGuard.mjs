@@ -73,6 +73,23 @@
 export const PRODUCTION_PROJECT_REFS = Object.freeze(['yiaavvkulrpqkkbqhwit']);
 
 /**
+ * Existing real projects that are NOT the production pin and are still not disposable.
+ *
+ * * PROTECTED BY UNCERTAINTY. `rpjjwkoezuihpobotbjh` is listed by `supabase projects list` as
+ *   "afterworth-prod" and is referenced NOWHERE in this repository. Before this rule it received
+ *   DRY_RUN_AUTHORIZED — permitted because nothing had established what it is. That is backwards:
+ *   an absence of information is not a licence, and unknown real infrastructure is not disposable
+ *   infrastructure.
+ *
+ * * THE PRODUCTION PIN ABOVE IS DELIBERATELY UNCHANGED. Earlier in this programme it was briefly
+ *   "corrected" to this very ref on the strength of the Supabase display names — which would have
+ *   removed protection from the database that actually serves the application (README.md pins
+ *   yiaavvkulrpqkkbqhwit as the app's SUPABASE_URL). This list is additive hardening only; it takes
+ *   nothing away from the pin.
+ */
+export const PROTECTED_PROJECT_REFS = Object.freeze(['rpjjwkoezuihpobotbjh']);
+
+/**
  * A Supabase project ref: exactly 20 lowercase letters. Shape is checked so a URL, a connection
  * string, an empty-ish value or a pasted fragment cannot be mistaken for an identity — an
  * "ambiguous project identity" is on the threat list, and the honest response to one is refusal
@@ -103,6 +120,7 @@ const DESTRUCTIVE_OPERATIONS = Object.freeze(['reset']);
  */
 export const DEFAULT_GUARD_POLICY = Object.freeze({
   productionProjectRefs: PRODUCTION_PROJECT_REFS,
+  protectedProjectRefs: PROTECTED_PROJECT_REFS,
   syntheticEmailDomain: 'after-worth.com',
 });
 
@@ -130,6 +148,7 @@ export const RESET_FK_ORDER = Object.freeze([
  * a different guess — and one of those guesses is production.
  */
 export const REFUSAL_REASONS = Object.freeze([
+  'protected_target_forbidden',
   'guard_policy_unresolved',
   'target_missing',
   'target_malformed',
@@ -208,6 +227,7 @@ export function classifySeedRequest(request, policy = DEFAULT_GUARD_POLICY) {
    * scanner that inspects nothing and reports clean.
    */
   const prodRefs = arr(policy?.productionProjectRefs).filter((r) => typeof r === 'string' && r.length > 0);
+  const protectedRefs = arr(policy?.protectedProjectRefs).filter((r) => typeof r === 'string' && r.length > 0);
   const syntheticDomain = str(policy?.syntheticEmailDomain);
   const policyUsable = prodRefs.length > 0 && syntheticDomain !== '';
   if (!policyUsable) reasons.push('guard_policy_unresolved');
@@ -231,6 +251,10 @@ export function classifySeedRequest(request, policy = DEFAULT_GUARD_POLICY) {
    * operator declared "development" would be exactly the accident this tool exists to prevent. */
   if (policyUsable && targetRef !== '' && prodRefs.includes(targetRef)) {
     fail('G2_production_pin', 'production_target_forbidden');
+  } else if (policyUsable && targetRef !== '' && protectedRefs.includes(targetRef)) {
+    // Existing real project whose operational role is unestablished. Refused on UNCERTAINTY, with
+    // its own reason so it can never be confused with the evidenced production pin.
+    fail('G2_production_pin', 'protected_target_forbidden');
   } else if (!policyUsable) {
     fail('G2_production_pin', 'guard_policy_unresolved');
   } else {
