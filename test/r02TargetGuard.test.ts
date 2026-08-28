@@ -66,7 +66,7 @@ describe("the two REAL projects are refused, by evidenced role and never by name
     const r = classifyR02Target(m, { operation: R02_OPERATIONS.READ_ONLY_PREFLIGHT });
     expect(r.decision).toBe(R02_DECISION.REFUSED);
     expect(r.reasons).toContain(R02_REFUSAL.ROLE_UNESTABLISHED_TARGET);
-    expect(FORBIDDEN_TARGETS.find((f) => f.ref === "rpjjwkoezuihpobotbjh")!.protectedReason).toBe("EXISTING_PROJECT_ROLE_UNESTABLISHED");
+    expect(FORBIDDEN_TARGETS.find((f) => f.ref === "rpjjwkoezuihpobotbjh")!.protectedReason).toBe("EXISTING_PAUSED_FUTURE_PRODUCTION_CANDIDATE");
   });
   test("★ the application-facing classification is backed by README, not by the project's name", () => {
     const readme = readFileSync(join(ROOT, "README.md"), "utf8");
@@ -76,7 +76,7 @@ describe("the two REAL projects are refused, by evidenced role and never by name
     expect(appFacing.evidence).toMatch(/README/);
   });
   test("★ the name-only project is genuinely absent from the repository", () => {
-    const nameOnly = FORBIDDEN_TARGETS.find((f) => f.protectedReason === "EXISTING_PROJECT_ROLE_UNESTABLISHED")!;
+    const nameOnly = FORBIDDEN_TARGETS.find((f) => f.protectedReason === "EXISTING_PAUSED_FUTURE_PRODUCTION_CANDIDATE")!;
     const readme = readFileSync(join(ROOT, "README.md"), "utf8");
     expect(readme).not.toContain(nameOnly.ref);
     expect(nameOnly.supabaseName).toBe("afterworth-prod");
@@ -311,5 +311,58 @@ describe("PHASE G — the hosted query pack is SELECT-only, with all seven verbs
   });
   test("the pack warns against running it on the application-facing project", () => {
     expect(pack).toMatch(/DO NOT RUN AGAINST yiaavvkulrpqkkbqhwit/i);
+  });
+});
+
+
+describe("paused is not disposable — the retention decision is explicit and testable", () => {
+  test("★ a PAUSED project is still refused for every R-02 operation", async () => {
+    const { EXISTING_PROJECT_DISPOSITION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    for (const op of Object.values(R02_OPERATIONS)) {
+      const m = ok();
+      (m.supabase as Record<string, unknown>).project_ref = "rpjjwkoezuihpobotbjh";
+      (m.safety as Record<string, unknown>).allowlisted_refs = ["rpjjwkoezuihpobotbjh"];
+      (m.safety as Record<string, unknown>).bootstrap_authorized = true;
+      (m.safety as Record<string, unknown>).destructive_reset_authorized = true;
+      const r = classifyR02Target(m, { operation: op, bootstrapVersion: "0060" });
+      expect(r.decision).toBe(R02_DECISION.REFUSED);          // even fully "authorized"
+      expect(r.reasons).toContain(R02_REFUSAL.ROLE_UNESTABLISHED_TARGET);
+    }
+    expect(EXISTING_PROJECT_DISPOSITION.rpjjwkoezuihpobotbjh.r02_target).toBe(false);
+  });
+  test("★ neither existing project is deletable by any R-02 workflow", async () => {
+    const { EXISTING_PROJECT_DISPOSITION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    for (const ref of ["yiaavvkulrpqkkbqhwit", "rpjjwkoezuihpobotbjh"]) {
+      expect(EXISTING_PROJECT_DISPOSITION[ref].retained).toBe(true);
+      expect(EXISTING_PROJECT_DISPOSITION[ref].deletable).toBe(false);
+    }
+    // The module names "projects delete" only to REFUSE it. The property under test is that no
+    // code path can execute anything at all, so assert the absence of execution primitives —
+    // matching the literal string caught the refusal list and asserted the opposite of the intent.
+    const src = readFileSync(join(ROOT, "scripts/lib/r02TargetGuard.mjs"), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+    // Precise: bare "exec" matches RegExp.prototype.exec, which this module uses legitimately.
+    for (const primitive of ["child_process", "spawnSync", "spawn(", "execSync", "execFile", "fetch(", "require(", "node:http", "node:fs"]) {
+      expect(code, `${primitive} must not appear`).not.toContain(primitive);
+    }
+    expect(isRemoteMutationCommand("supabase projects delete rpjjwkoezuihpobotbjh")).toBe(true);
+  });
+  test("the paused status is recorded as OBSERVED from the control plane, not merely reported", () => {
+    const paused = FORBIDDEN_TARGETS.find((f) => f.ref === "rpjjwkoezuihpobotbjh")!;
+    expect(paused.observedStatus).toBe("INACTIVE");
+    expect(paused.evidence).toMatch(/INACTIVE/);
+  });
+  test("★ positive control: the execution-primitive scanner CAN see one when present", () => {
+    const sample = 'import { spawnSync } from "node:child_process";';
+    expect(sample).toContain("spawnSync");
+    expect(sample).toContain("child_process");
+    // ...and the precise patterns do NOT fire on a legitimate regex call, which is why they are precise.
+    expect("REF.exec(ref)").not.toContain("execSync");
+  });
+  test("every disposition entry is explicitly non-target — none defaults to permissive", async () => {
+    const { EXISTING_PROJECT_DISPOSITION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    const entries = Object.entries(EXISTING_PROJECT_DISPOSITION);
+    expect(entries.length).toBe(2);
+    for (const [, v] of entries) expect(v.r02_target).toBe(false);
   });
 });
