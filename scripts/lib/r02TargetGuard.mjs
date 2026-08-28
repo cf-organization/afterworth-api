@@ -1,0 +1,227 @@
+/**
+ * R-02 TARGET GUARD — which Supabase project may receive a Model C hosted-compatibility test.
+ *
+ * ════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★ ALLOWLIST, NOT DENYLIST. An unknown project ref is REFUSED, not permitted-by-default. The
+ *   existing seed guard is a denylist (it names production and lets everything else through at
+ *   dry-run), which is right for its job and wrong for this one: R-02 will eventually run
+ *   destructive bootstrap operations, and "we forgot to add it to the deny list" must not be the
+ *   thing standing between a test and a real database.
+ *
+ * ★ NAMES ARE NOT IDENTITY — THIS MODULE EXISTS BECAUSE THAT NEARLY WENT WRONG.
+ *
+ *   `supabase projects list` reports two projects:
+ *     afterworth-prod   rpjjwkoezuihpobotbjh
+ *     afterworth-dev    yiaavvkulrpqkkbqhwit
+ *
+ *   The project NAMED "dev" is the one the deployed application actually connects to — README.md
+ *   pins `SUPABASE_URL=https://yiaavvkulrpqkkbqhwit.supabase.co` for Vercel, and ten proof documents
+ *   corroborate it. The project NAMED "prod" appears nowhere in the repository.
+ *
+ *   Reading the CLI's names at face value, this session briefly "corrected" the seed guard's
+ *   production pin to the name-only project — which would have REMOVED protection from the database
+ *   that actually serves users. The existing test caught it by corroborating the ref against README
+ *   and the proof docs. Classification here is therefore by ROLE, evidenced, never by name.
+ *
+ * ★ NO FORCE FLAG, NO ENV ESCAPE HATCH. There is deliberately no argument, environment variable or
+ *   policy override that turns a refusal into an approval. PURE — no filesystem, no network.
+ */
+
+/** Refusal vocabulary. Closed set; a reason outside it is a bug, not a new policy. */
+export const R02_REFUSAL = Object.freeze({
+  MANIFEST_MISSING: 'manifest_missing',
+  MANIFEST_MALFORMED: 'manifest_malformed',
+  TARGET_MISSING: 'target_missing',
+  TARGET_MALFORMED: 'target_malformed',
+  APPLICATION_FACING_TARGET: 'application_facing_existing_database_forbidden',
+  ROLE_UNESTABLISHED_TARGET: 'existing_project_role_unestablished_forbidden',
+  TARGET_NOT_ALLOWLISTED: 'target_not_allowlisted',
+  CLASSIFICATION_MISSING: 'environment_classification_missing',
+  CLASSIFICATION_PRODUCTION: 'environment_classification_is_production',
+  CLASSIFICATION_UNRECOGNIZED: 'environment_classification_unrecognized',
+  OPERATION_MISSING: 'operation_missing',
+  OPERATION_UNRECOGNIZED: 'operation_unrecognized',
+  MUTATION_NOT_AUTHORIZED: 'bootstrap_mutation_not_authorized',
+  DESTRUCTIVE_NOT_AUTHORIZED: 'destructive_reset_not_authorized',
+  BOOTSTRAP_VERSION_MISMATCH: 'bootstrap_version_mismatch',
+  SECRET_IN_MANIFEST: 'secret_material_in_manifest',
+});
+
+export const R02_DECISION = Object.freeze({
+  READ_ONLY_AUTHORIZED: 'READ_ONLY_AUTHORIZED',
+  MUTATION_AUTHORIZED: 'MUTATION_AUTHORIZED',
+  REFUSED: 'REFUSED',
+});
+
+export const R02_OPERATIONS = Object.freeze({
+  READ_ONLY_PREFLIGHT: 'read_only_preflight',
+  BOOTSTRAP_APPLY: 'bootstrap_apply',
+  DESTRUCTIVE_RESET: 'destructive_reset',
+});
+
+export const R02_CLASSIFICATIONS = Object.freeze(['nonproduction', 'production']);
+
+/**
+ * Refs that may never be an R-02 target, with the EVIDENCE for each classification.
+ * ★ Recorded as data with a reason, so a future reader cannot mistake either for a name judgement.
+ */
+export const FORBIDDEN_TARGETS = Object.freeze([
+  Object.freeze({
+    ref: 'yiaavvkulrpqkkbqhwit',
+    supabaseName: 'afterworth-dev',
+    protectedReason: 'APPLICATION_FACING_EXISTING_DATABASE',
+    reason: R02_REFUSAL.APPLICATION_FACING_TARGET,
+    evidence: 'README.md pins SUPABASE_URL=https://yiaavvkulrpqkkbqhwit.supabase.co for the deployed Vercel app; corroborated by ten docs/*-proof.md. Despite its Supabase name, this is the database serving users, and it is also the source of the authoritative Model C snapshot.',
+  }),
+  Object.freeze({
+    ref: 'rpjjwkoezuihpobotbjh',
+    supabaseName: 'afterworth-prod',
+    protectedReason: 'EXISTING_PROJECT_ROLE_UNESTABLISHED',
+    reason: R02_REFUSAL.ROLE_UNESTABLISHED_TARGET,
+    // ★ PROTECTED BY UNCERTAINTY, WHICH IS NOT THE SAME AS PROTECTED BY EVIDENCE.
+    //   This project is listed by the API and referenced nowhere in the repository. "Appears unused"
+    //   is an absence of information, and an absence of information is not a licence: unknown real
+    //   infrastructure is not disposable infrastructure. It is refused until somebody establishes
+    //   what it is — and establishing that is a separate unit, not a side effect of needing a target.
+    evidence: 'Listed by `supabase projects list` as afterworth-prod, referenced nowhere in this repository. Operational role UNESTABLISHED. Refused on uncertainty, not on evidence of importance.',
+  }),
+]);
+
+/**
+ * ★ DISPLAY NAMES ARE NEVER AN INPUT TO A SAFETY DECISION.
+ *
+ * The Supabase project named "dev" is the application's database and the one named "prod" is
+ * unreferenced. Any rule keyed on the strings prod/dev/staging would therefore get BOTH projects
+ * exactly backwards. Classification is by project ref plus an adjudicated, evidenced role — and a
+ * test greps this module to prove no name-based branch exists.
+ */
+export const NAME_BASED_CLASSIFICATION_FORBIDDEN = true;
+
+/**
+ * ★ MIGRATION EXECUTION MODEL — ADJUDICATED, NOT ASSUMED.
+ *
+ * The Supabase CLI migration workflow is NOT adopted for R-02 hosted bootstrap. AfterWorth keeps its
+ * migrations in `db/migrations/` with `NNNN_YYYYMMDD_` names and has no `supabase/` directory, so
+ * `supabase migration up` would today see no local migrations at all.
+ *
+ * Writing `supabase_migrations.schema_migrations` before an execution model exists would manufacture
+ * history with no operational meaning — recording that 0001-0060 "ran" on a database where they
+ * demonstrably did not. Model C's whole value is refusing to pretend that. Metadata and cutover are
+ * a separate proof stage, after hosted compatibility is established.
+ *
+ * This concerns EXECUTION TOOLING ONLY. The schema contract is untouched: bootstrap@0060 + 0061+.
+ */
+export const MIGRATION_EXECUTION_MODEL = Object.freeze({
+  current: 'MANUAL_MODEL_C_HOSTED_COMPATIBILITY',
+  supabase_cli_workflow_adopted: false,
+  schema_migrations_preseed_authorized: false,
+  migration_repair_authorized: false,
+  rationale: 'Repository migrations live in db/migrations/; no supabase/migrations/ exists; no CLI migration workflow has been adopted. Remote migration metadata will not be written before an execution model is adjudicated.',
+  unchanged_schema_contract: 'bootstrap@0060 + future migrations 0061+',
+});
+
+/** A Supabase project ref: exactly 20 lowercase letters. */
+const REF = /^[a-z]{20}$/;
+
+/** Keys whose presence in a manifest means a secret was stored where it must never be. */
+export const SECRET_KEY_PATTERN = /(password|passwd|secret|service_role|access_token|api_?key|anon_key|connection_string|db_url|dsn)/i;
+
+const str = (v) => (typeof v === 'string' ? v.trim() : '');
+
+/**
+ * Decide what, if anything, may be done against a target.
+ *
+ * @param manifest  the local non-secret environment manifest
+ * @param request   { operation, bootstrapVersion }
+ */
+export function classifyR02Target(manifest, request = {}) {
+  const reasons = [];
+  const guards = [];
+  const fail = (id, reason) => { guards.push({ id, pass: false, reason }); if (!reasons.includes(reason)) reasons.push(reason); };
+  const pass = (id) => guards.push({ id, pass: true, reason: null });
+
+  /* ── R1 · A MANIFEST MUST EXIST AND BE AN OBJECT ─────────────────────────────────────────── */
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    return { decision: R02_DECISION.REFUSED, reasons: [R02_REFUSAL.MANIFEST_MISSING], guards: [{ id: 'R1_manifest_present', pass: false, reason: R02_REFUSAL.MANIFEST_MISSING }] };
+  }
+  pass('R1_manifest_present');
+
+  /* ── R2 · NO SECRET MATERIAL, ANYWHERE IN THE MANIFEST ───────────────────────────────────── */
+  const secretKeys = [];
+  const walk = (node, path) => {
+    if (!node || typeof node !== 'object') return;
+    for (const [k, v] of Object.entries(node)) {
+      if (SECRET_KEY_PATTERN.test(k)) secretKeys.push([...path, k].join('.'));
+      walk(v, [...path, k]);
+    }
+  };
+  walk(manifest, []);
+  if (secretKeys.length) fail('R2_no_secrets', R02_REFUSAL.SECRET_IN_MANIFEST); else pass('R2_no_secrets');
+
+  /* ── R3 · EXPLICIT, WELL-FORMED TARGET ───────────────────────────────────────────────────── */
+  const ref = str(manifest?.supabase?.project_ref);
+  if (ref === '') fail('R3_explicit_target', R02_REFUSAL.TARGET_MISSING);
+  else if (!REF.test(ref)) fail('R3_explicit_target', R02_REFUSAL.TARGET_MALFORMED);
+  else pass('R3_explicit_target');
+
+  /* ── R4 · FORBIDDEN TARGETS, BY EVIDENCED ROLE ───────────────────────────────────────────── */
+  // Matched on REF ONLY. `supabaseName` is carried for human readers and asserted by tests; it is
+  // never consulted here, so a project rename cannot change what this guard decides.
+  const forbidden = FORBIDDEN_TARGETS.find((f) => f.ref === ref);
+  if (forbidden) fail('R4_forbidden_target', forbidden.reason); else pass('R4_forbidden_target');
+
+  /* ── R5 · ALLOWLIST — UNKNOWN IS REFUSED ─────────────────────────────────────────────────── */
+  const allow = Array.isArray(manifest?.safety?.allowlisted_refs) ? manifest.safety.allowlisted_refs.filter((r) => typeof r === 'string') : [];
+  if (ref === '' || !allow.includes(ref)) fail('R5_allowlisted', R02_REFUSAL.TARGET_NOT_ALLOWLISTED); else pass('R5_allowlisted');
+
+  /* ── R6 · EXPLICIT NON-PRODUCTION CLASSIFICATION ─────────────────────────────────────────── */
+  const cls = str(manifest?.environment?.classification);
+  if (cls === '') fail('R6_classification', R02_REFUSAL.CLASSIFICATION_MISSING);
+  else if (!R02_CLASSIFICATIONS.includes(cls)) fail('R6_classification', R02_REFUSAL.CLASSIFICATION_UNRECOGNIZED);
+  else if (cls === 'production') fail('R6_classification', R02_REFUSAL.CLASSIFICATION_PRODUCTION);
+  else pass('R6_classification');
+  if (manifest?.safety?.production === true) fail('R6_classification', R02_REFUSAL.CLASSIFICATION_PRODUCTION);
+
+  /* ── R7 · OPERATION FROM A CLOSED SET ────────────────────────────────────────────────────── */
+  const op = str(request?.operation);
+  if (op === '') fail('R7_operation', R02_REFUSAL.OPERATION_MISSING);
+  else if (!Object.values(R02_OPERATIONS).includes(op)) fail('R7_operation', R02_REFUSAL.OPERATION_UNRECOGNIZED);
+  else pass('R7_operation');
+
+  /* ── R8 · MUTATION REQUIRES ITS OWN EXPLICIT AUTHORIZATION ───────────────────────────────── */
+  if (op === R02_OPERATIONS.BOOTSTRAP_APPLY && manifest?.safety?.bootstrap_authorized !== true) {
+    fail('R8_mutation_authorized', R02_REFUSAL.MUTATION_NOT_AUTHORIZED);
+  } else if (op === R02_OPERATIONS.DESTRUCTIVE_RESET && manifest?.safety?.destructive_reset_authorized !== true) {
+    fail('R8_mutation_authorized', R02_REFUSAL.DESTRUCTIVE_NOT_AUTHORIZED);
+  } else pass('R8_mutation_authorized');
+
+  /* ── R9 · THE MANIFEST MUST AGREE WITH THE REPOSITORY'S BOOTSTRAP VERSION ─────────────────── */
+  const want = str(request?.bootstrapVersion);
+  const have = str(manifest?.expected_model?.bootstrap_version);
+  if (want !== '' && have !== want) fail('R9_bootstrap_version', R02_REFUSAL.BOOTSTRAP_VERSION_MISMATCH); else pass('R9_bootstrap_version');
+
+  if (reasons.length) return { decision: R02_DECISION.REFUSED, reasons, guards };
+  return {
+    decision: op === R02_OPERATIONS.READ_ONLY_PREFLIGHT ? R02_DECISION.READ_ONLY_AUTHORIZED : R02_DECISION.MUTATION_AUTHORIZED,
+    reasons: [], guards,
+  };
+}
+
+/**
+ * PURE. Static refusal of any command string that would mutate a remote database.
+ * ★ Complements the manifest guard: even an authorized target may only receive commands from the
+ *   read-only set during preflight.
+ */
+export const FORBIDDEN_REMOTE_COMMANDS = Object.freeze([
+  'db push', 'db reset', 'migration up', 'migration repair', 'migration down',
+  'db dump --data-only', 'projects create', 'projects delete', 'db remote commit',
+  // Any write to the migration history table is refused while the execution model is unadjudicated.
+  'insert into supabase_migrations', 'update supabase_migrations', 'delete from supabase_migrations',
+]);
+
+export function isRemoteMutationCommand(cmd) {
+  const c = String(cmd ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (c === '') return false;
+  if (FORBIDDEN_REMOTE_COMMANDS.some((f) => c.includes(f))) return true;
+  return /^\s*(create|alter|drop|insert|update|delete|truncate|grant|revoke)\b/i.test(c);
+}

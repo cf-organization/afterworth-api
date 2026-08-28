@@ -1,0 +1,25 @@
+{
+  "$comment": "TEMPLATE ONLY — no real target exists yet. R-02 state is R02_0_NO_NONPROD. Copy to ~/aw-r02-evidence/environment-manifest.json once a project is provisioned; do NOT commit a populated manifest without separate authorization. NEVER add a password, service-role key, access token, connection string or DSN — scripts/lib/r02TargetGuard.mjs refuses a manifest containing any such key.",
+  "environment": {
+    "name": "afterworth-nonprod",
+    "classification": "nonproduction",
+    "purpose": "R-02 Model C hosted-compatibility testing only",
+    "lifecycle": "disposable — expected to be reset repeatedly and possibly deleted after R-02"
+  },
+  "supabase": {
+    "project_ref": "<20-lowercase-letter ref, filled in after provisioning>",
+    "region": "<region>",
+    "organization_id": "rvudommjwqgtluhvfgcw"
+  },
+  "safety": {
+    "production": false,
+    "allowlisted_refs": ["<the same ref, stated twice on purpose — see note>"],
+    "bootstrap_authorized": false,
+    "destructive_reset_authorized": false
+  },
+  "expected_model": {
+    "bootstrap_version": "0060",
+    "future_migration_start": "0061"
+  },
+  "note": "allowlisted_refs is deliberately redundant with project_ref. The guard requires the target to be BOTH named and allowlisted, so a ref pasted into project_ref by accident — the exact way a wrong target gets selected — does not become authorized. Both mutation flags start false and are raised one at a time, by a human, for one operation."
+}
