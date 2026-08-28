@@ -20,16 +20,58 @@ migrations ever built a database from zero — they did not, and
 
 ## The cutover contract
 
-| environment | how its schema is built |
-|---|---|
-| **virgin** | `db/bootstrap/` (this directory) → then migrations **0061+** |
-| **existing** | its real history: migrations 0001–0060 already applied → then 0061+ |
+> ### Do NOT run migrations 0001–0060 after this bootstrap.
+>
+> They are never executed during a virgin bootstrap. This directory already contains their outcome;
+> re-applying them would replay deltas onto a schema that has already absorbed them. They also
+> cannot build from zero — that is a proven fact, not a caution.
 
-Migrations **0001–0060 are immutable historical records**. They are never rewritten and are **never
-executed during a virgin bootstrap**. Running them over this bootstrap would re-apply deltas to a
-schema that already contains their outcome.
+**Virgin install**
+
+```
+platform prerequisites (Supabase-provided: auth, storage, roles, extensions schema)
+  → db/bootstrap/  (00 … 120, in numeric order)   ← schema through 0060
+  → db/migrations/0061+
+```
+
+**Existing install**
+
+```
+its real history: migrations 0001–0060, already applied over time
+  → db/migrations/0061+
+```
+
+Both paths converge on the same schema, and that is tested rather than asserted —
+`scripts/bootstrapCutoverProof.mjs` applies one synthetic future migration to a restored live-state
+snapshot and to this bootstrap, then compares 944 schema fingerprint lines.
+
+Migrations **0001–0060 are immutable historical records** and are never rewritten.
 
 `VERSION` contains `0060`. A future migration is `0061_<date>_<name>.sql` and applies to both paths.
+
+### `db/bootstrap` is a FIXED cutover base, not a rolling snapshot
+
+Future schema change is layered as `0061+`; it is **not** folded back into this directory. When real
+0061 is authored, the file that must change is `db/migrations/0061_*.sql` — and nothing here.
+Re-generating the bootstrap for every migration would make its version a moving target, so a virgin
+install and an upgraded install would no longer be provably the same schema, which is the one
+property this model exists to guarantee. See `db/AUTHORITY.json`.
+
+## Schema authority
+
+`db/AUTHORITY.json` is the machine-readable contract, enforced by `test/schemaAuthority.test.ts`.
+
+| level | path | role |
+|---|---|---|
+| 1 | `db/bootstrap/` | **canonical virgin base through 0060** |
+| 2 | `db/migrations/0061+` | future delta authority |
+| 3 | `db/migrations/0001–0060` | immutable historical record |
+| 4 | `db/tables/`, `db/functions/`, `db/bundles/`, `db/tests/`, `db/grants.sql` | **non-authoritative** |
+
+Level-4 paths still exist because real tooling consumes them — `db/functions/` is the source for 15
+bundle builders and the SQL-authorization suite. They cannot supply an object missing from this
+bootstrap, and a **new** schema-bearing directory under `db/` that nobody classified **fails
+closed**.
 
 **Migration metadata is deliberately NOT initialized here.** Whether Supabase's
 `supabase_migrations.schema_migrations` must be pre-seeded so the CLI does not attempt 0001–0060 is
@@ -67,6 +109,27 @@ Phases run in numeric order. Two constraints are real rather than stylistic:
 Present deliberately. It is an **application-owned legacy-compatibility surface**: the still-shipping
 predecessor SwiftUI client performs runtime `SELECT`/`INSERT`/`DELETE` against it. **Dropping it is
 not authorized**, and `estate_assets` is not a licence to remove it.
+
+## Hosted Supabase compatibility — NOT PROVEN
+
+`HOSTED_COMPATIBILITY_PROOF_REQUIRED` applies to:
+
+- **`CREATE EVENT TRIGGER ensure_rls`** — event triggers conventionally require privileges a hosted
+  migration role may not hold. Local containers grant superuser; hosted Supabase does not.
+- **Migration metadata / cutover behaviour** — whether `supabase_migrations.schema_migrations` must
+  be pre-seeded so the CLI does not attempt 0001–0060 against a virgin bootstrap.
+- **Extension creation** (`pgcrypto`, `uuid-ossp`) under the hosted role.
+- **Ownership statements** (`ALTER … OWNER TO postgres`) under the hosted role.
+
+No local test clears any of these, and none may be cleared by local success. **R-02 is BLOCKED** —
+no non-production Supabase environment exists.
+
+## Provenance of the evidence
+
+The snapshot was captured from **`afterworth-dev`**, not from production. Where this work observes
+that the schema-only dump is less complete than the captured live state, the claim is about
+**`afterworth-dev` live-state evidence** — the Supabase CLI dump excludes platform-owned schemas and
+emits no cluster-level or event-trigger material. **No claim is made about production state.**
 
 ## Regenerating
 

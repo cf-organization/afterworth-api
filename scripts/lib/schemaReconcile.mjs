@@ -21,26 +21,47 @@
  *
  * PURE. The caller supplies { path, sql } records.
  */
+import { readFileSync } from 'node:fs';
 import { inventory } from './schemaInventory.mjs';
 
 /** Path -> the authority that path carries. Order matters: first match wins. */
+/**
+ * Path -> the authority that path carries.
+ *
+ * * DERIVED FROM db/AUTHORITY.json, NOT DUPLICATED HERE. The authority contract is machine-readable
+ *   precisely so that code and documentation cannot drift into disagreeing about which directory is
+ *   canonical. A second hand-maintained list would be the same duplicate-authority problem this
+ *   consolidation exists to remove, one level up.
+ *
+ * * EXACTLY ONE PATH MAY CARRY `base`. db/tables and db/functions previously did too, and the
+ *   reconciler reported 160 DUPLICATE_BASE objects — two directories able to satisfy the same live
+ *   object, with nothing keeping them in agreement. Only db/bootstrap is bootstrap authority now.
+ */
+const AUTHORITY = JSON.parse(readFileSync(new URL('../../db/AUTHORITY.json', import.meta.url), 'utf8'));
+
+const escape = (p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export const SOURCE_ROLES = Object.freeze([
-  // * ORDER MATTERS AND testing/ COMES FIRST. db/bootstrap/testing/ holds a platform SHIM that
-  //   fabricates auth.users and storage.objects for container tests. If the generic bootstrap rule
-  //   matched it first, a fake auth.users would be classified as an application-owned base
-  //   definition — the precise confusion the shim's filename shouts about.
-  { match: /^db\/bootstrap\/testing\//, role: 'test-only', authority: 'local platform shim — NOT a schema source' },
-  { match: /^db\/bootstrap\//, role: 'base', authority: 'Model C canonical current-state bootstrap (through 0060)' },
-  { match: /^db\/tables\//, role: 'base', authority: 'current-state capture (2026-07-10)' },
-  { match: /^db\/functions\//, role: 'base', authority: 'current-state function bodies' },
-  { match: /^db\/grants\.sql$/, role: 'base', authority: 'current-state grants' },
-  { match: /^db\/migrations\//, role: 'delta', authority: 'historical delta history' },
-  { match: /^db\/bundles\//, role: 'bundle', authority: 'deployment slice (derived)' },
-  { match: /^db\/tests\//, role: 'test-only', authority: 'test preamble — NOT a schema source' },
-  { match: /^db\/verification\//, role: 'verification', authority: 'read-only checks' },
-  { match: /^db\/hotfix\//, role: 'delta', authority: 'out-of-band delta' },
-  { match: /^db\/seed_admin\.sql$/, role: 'seed', authority: 'data seed — not schema' },
+  // Test fixtures and shims first — a nested path must never be captured by its parent's rule.
+  ...AUTHORITY.non_authoritative_paths
+    .filter((e) => e.role === 'LEVEL_4_TEST_FIXTURE')
+    .map((e) => ({ match: new RegExp(`^${escape(e.path)}/`), role: 'test-only', authority: `${e.disposition} — ${e.reason.slice(0, 60)}` })),
+
+  { match: new RegExp(`^${escape(AUTHORITY.bootstrap_authority.path)}/`), role: 'base',
+    authority: `canonical virgin base through ${AUTHORITY.bootstrap_authority.through_version}` },
+
+  ...AUTHORITY.non_authoritative_paths
+    .filter((e) => e.role !== 'LEVEL_4_TEST_FIXTURE')
+    .map((e) => ({
+      match: e.path.endsWith('.sql') ? new RegExp(`^${escape(e.path)}$`) : new RegExp(`^${escape(e.path)}/`),
+      role: e.disposition === 'DERIVED' ? 'bundle' : e.path === 'db/migrations' ? 'delta' : 'legacy-compat',
+      authority: `NON-AUTHORITATIVE (${e.disposition})`,
+    })),
+
+  { match: /^db\/migrations\//, role: 'delta', authority: 'historical delta record 0001-0060 / future authority 0061+' },
 ]);
+
+export const AUTHORITY_CONTRACT = AUTHORITY;
 
 export function roleOf(path) {
   for (const r of SOURCE_ROLES) if (r.match.test(path)) return r;

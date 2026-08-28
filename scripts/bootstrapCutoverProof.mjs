@@ -3,7 +3,8 @@
  * MODEL C — CUTOVER CONTRACT PROOF (synthetic future migration).
  *
  * ★ THE PROPERTY UNDER TEST: a post-cutover migration must land IDENTICALLY on
- *     PATH A — a database restored from the authoritative snapshot (the upgraded production shape)
+ *     PATH A — a database restored from the authoritative snapshot (the upgraded afterworth-dev
+ *              live-state shape; no claim is made about production)
  *     PATH B — a database built by the componentized Model C bootstrap
  *   If those diverge, the bootstrap is not a substitute for the real schema and the 0060/0061
  *   contract is unsound. This is the only thing that makes "virgin installs skip 0001-0060" safe.
@@ -114,7 +115,9 @@ console.log('='.repeat(92));
 let a, b;
 try {
   a = runPath('PATH A', `aw-cutover-a-${process.pid}`, (psql) => {
-    // ★ PATH A restores the AUTHORITATIVE SNAPSHOT — the upgraded production shape, not a replay of
+    // ★ PATH A restores the AUTHORITATIVE SNAPSHOT — the upgraded afterworth-dev live-state shape.
+    //   The evidence came from afterworth-dev, NOT production, and nothing here observes production.
+    //   It is not a replay of
     //   0001-0060 (which cannot build from zero; that is the finding this whole programme rests on).
     //   ★ PLATFORM-ONLY EXTENSIONS ARE FILTERED, AND THAT IS ITSELF A FINDING. The raw dump
     //     contains `CREATE EXTENSION supabase_vault` and `pg_stat_statements`; vanilla Postgres has
@@ -135,11 +138,15 @@ try {
     if (r.status !== 0) throw new Error(`PATH A: snapshot restore failed\n${(r.stderr || '').slice(0, 700)}`);
 
     //   ★ THE SUPPLEMENTS ARE PART OF PATH A TOO, AND THE REASON IS NOT CONVENIENCE.
-    //     Path A models the EXISTING UPGRADED PRODUCTION DATABASE. That database demonstrably has
+    //     Path A models the EXISTING UPGRADED afterworth-dev DATABASE. That database demonstrably has
     //     the two storage.objects policies and the ensure_rls event trigger — the hashed captures
     //     prove it. `pg_dump` simply cannot express either: it excludes platform schemas and emits
-    //     no CREATE EVENT TRIGGER. Restoring the dump alone therefore builds something STRICTLY
-    //     LESS COMPLETE than production, and comparing that against Model C measured the dump's
+    //     Restoring the dump alone therefore builds something strictly less complete than the
+    //     authoritative afterworth-dev live-state evidence, because the Supabase CLI dump excludes
+    //     platform-owned schemas and emits no cluster-level or event-trigger material. That is a
+    //     claim about the DUMP FORMAT and about afterworth-dev — never about production, which
+    //     nothing in this programme has observed. Comparing an unsupplemented Path A against
+    //     Model C measured the dump's blind spots rather than the cutover contract.
     //     blind spots rather than the cutover contract.
     //
     //     Run without this block, the proof reported exactly three B-only objects:
@@ -150,7 +157,7 @@ try {
       if (sr.status !== 0) throw new Error(`PATH A: supplement ${f} failed\n${(sr.stderr || '').slice(0, 500)}`);
     }
   });
-  console.log('  PATH A  snapshot restore (upgraded production shape) + synthetic migration   ok');
+  console.log('  PATH A  snapshot restore (upgraded afterworth-dev live state) + synthetic migration   ok');
 
   b = runPath('PATH B', `aw-cutover-b-${process.pid}`, (psql) => {
     for (const f of phaseFiles) {

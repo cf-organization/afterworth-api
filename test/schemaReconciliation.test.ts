@@ -47,6 +47,9 @@ describe("scan set is asserted before any rule is evaluated", () => {
     expect(roleOf("db/tests/preamble_real_auth.sql").role).toBe("test-only");
     expect(SOURCE_ROLES.some((r) => r.match.test("db/tests/x.sql") && r.role === "base")).toBe(false);
   });
+  test("★ exactly one path carries base authority — no duplicate-base is expressible", () => {
+    expect(SOURCE_ROLES.filter((r) => r.role === "base")).toHaveLength(1);
+  });
 });
 
 describe("comment stripping — the defect that made 201 files look unparseable", () => {
@@ -143,10 +146,10 @@ describe("reconciliation detects mutation of the live side", () => {
     ALTER TABLE "public"."estates" ENABLE ROW LEVEL SECURITY;
   `);
   const repo = repositoryObjects([
-    { path: "db/tables/estates.sql", sql: `create table if not exists public.estates (id uuid);
+    { path: "db/bootstrap/30_tables.sql", sql: `create table if not exists public.estates (id uuid);
        create policy estates_owner_all on public.estates for all using (true);
        alter table public.estates enable row level security;` },
-    { path: "db/functions/is_estate_owner.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
+    { path: "db/bootstrap/60_functions.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
   ]);
 
   test("a fully covered schema reports no gap — the baseline", () => {
@@ -156,13 +159,13 @@ describe("reconciliation detects mutation of the live side", () => {
   });
 
   test("MUTATION: removing the table from the repo is detected", () => {
-    const r2 = repositoryObjects([{ path: "db/functions/is_estate_owner.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` }]);
+    const r2 = repositoryObjects([{ path: "db/bootstrap/60_functions.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` }]);
     const rows = reconcile({ live: baseLive, repo: r2 });
     expect(rows.find((r) => r.kind === "table" && r.name === "estates")?.disposition).toBe("NO_REPO_DEFINITION");
   });
 
   test("MUTATION: removing the function is detected", () => {
-    const r2 = repositoryObjects([{ path: "db/tables/estates.sql", sql: `create table if not exists public.estates (id uuid);
+    const r2 = repositoryObjects([{ path: "db/bootstrap/30_tables.sql", sql: `create table if not exists public.estates (id uuid);
       create policy estates_owner_all on public.estates for all using (true);
       alter table public.estates enable row level security;` }]);
     const rows = reconcile({ live: baseLive, repo: r2 });
@@ -171,9 +174,9 @@ describe("reconciliation detects mutation of the live side", () => {
 
   test("MUTATION: an RLS enable-state present live but absent in repo is detected", () => {
     const r2 = repositoryObjects([
-      { path: "db/tables/estates.sql", sql: `create table if not exists public.estates (id uuid);
+      { path: "db/bootstrap/30_tables.sql", sql: `create table if not exists public.estates (id uuid);
         create policy estates_owner_all on public.estates for all using (true);` },
-      { path: "db/functions/is_estate_owner.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
+      { path: "db/bootstrap/60_functions.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
     ]);
     const rows = reconcile({ live: baseLive, repo: r2 });
     expect(rows.find((r) => r.kind === "rls" && r.name === "estates")?.disposition).toBe("NO_REPO_DEFINITION");
@@ -184,7 +187,7 @@ describe("reconciliation detects mutation of the live side", () => {
       { path: "db/tests/preamble_real_auth.sql", sql: `create table if not exists public.estates (id uuid);
         create policy estates_owner_all on public.estates for all using (true);
         alter table public.estates enable row level security;` },
-      { path: "db/functions/is_estate_owner.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
+      { path: "db/bootstrap/60_functions.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
     ]);
     const rows = reconcile({ live: baseLive, repo: r2 });
     expect(rows.find((r) => r.kind === "table" && r.name === "estates")?.disposition).toBe("TEST_ONLY_DEFINITION");
@@ -195,7 +198,7 @@ describe("reconciliation detects mutation of the live side", () => {
       { path: "db/migrations/0011_20260707_x.sql", sql: `create table if not exists public.estates (id uuid);
         create policy estates_owner_all on public.estates for all using (true);
         alter table public.estates enable row level security;` },
-      { path: "db/functions/is_estate_owner.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
+      { path: "db/bootstrap/60_functions.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` },
     ]);
     const rows = reconcile({ live: baseLive, repo: r2 });
     expect(rows.find((r) => r.kind === "table" && r.name === "estates")?.disposition).toBe("DELTA_ONLY_NO_BASE");
@@ -203,20 +206,26 @@ describe("reconciliation detects mutation of the live side", () => {
 
   test("★ a repository-only object does NOT appear as live coverage — reconciliation is live-anchored", () => {
     const r2 = repositoryObjects([
-      ...[{ path: "db/tables/estates.sql", sql: `create table if not exists public.estates (id uuid);
+      ...[{ path: "db/bootstrap/30_tables.sql", sql: `create table if not exists public.estates (id uuid);
         create policy estates_owner_all on public.estates for all using (true);
         alter table public.estates enable row level security;` },
-      { path: "db/functions/is_estate_owner.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` }],
-      { path: "db/tables/phantom.sql", sql: `create table if not exists public.phantom (id uuid);` },
+      { path: "db/bootstrap/60_functions.sql", sql: `create or replace function public.is_estate_owner(e uuid) returns boolean language sql as $$ select true $$;` }],
+      { path: "db/bootstrap/30_phantom.sql", sql: `create table if not exists public.phantom (id uuid);` },
     ]);
     const rows = reconcile({ live: baseLive, repo: r2 });
     expect(rows.some((r) => r.name === "phantom")).toBe(false);
   });
 
   test("current-state and historical-delta roles cannot collapse", () => {
-    expect(roleOf("db/tables/x.sql").role).toBe("base");
+    // Re-anchored on db/bootstrap. When this was written db/tables carried base authority; the
+    // authority consolidation deliberately removed that (see db/AUTHORITY.json), so the fixture
+    // moved to the path that carries it now. The property under test is unchanged: base and delta
+    // must remain distinct roles, and no legacy path may hold base authority.
+    expect(roleOf("db/bootstrap/30_tables.sql").role).toBe("base");
     expect(roleOf("db/migrations/0001_x.sql").role).toBe("delta");
-    expect(roleOf("db/tables/x.sql").role).not.toBe(roleOf("db/migrations/0001_x.sql").role);
+    expect(roleOf("db/bootstrap/30_tables.sql").role).not.toBe(roleOf("db/migrations/0001_x.sql").role);
+    expect(roleOf("db/tables/x.sql").role).toBe("legacy-compat");
+    expect(roleOf("db/functions/x.sql").role).toBe("legacy-compat");
   });
 });
 
@@ -360,7 +369,7 @@ describe("A5 · the two historical false results cannot recur", () => {
   });
   test("★ the synthetic giant gap cannot recur: a fully-covered pair reports zero gaps", () => {
     const live = inventory(`CREATE TABLE IF NOT EXISTS "public"."t" ("id" "uuid");`);
-    const repo = repositoryObjects([{ path: "db/tables/t.sql", sql: "-- a comment header\ncreate table if not exists public.t (id uuid);" }]);
+    const repo = repositoryObjects([{ path: "db/bootstrap/30_tables.sql", sql: "-- a comment header\ncreate table if not exists public.t (id uuid);" }]);
     const rows = reconcile({ live, repo });
     expect(rows).toHaveLength(1);
     expect(rows[0].disposition).toBe("COVERED");
@@ -370,7 +379,7 @@ describe("A5 · the two historical false results cannot recur", () => {
 describe("A6 · a degraded parse can never report clean", () => {
   const okLive = inventory(`CREATE TABLE IF NOT EXISTS "public"."t" ("id" "uuid");
     CREATE POLICY "p" ON "public"."t" FOR SELECT TO "authenticated" USING (true);`);
-  const okRepo = repositoryObjects([{ path: "db/tables/t.sql", sql: "create table if not exists public.t (id uuid);\ncreate policy p on public.t for select to authenticated using (true);" }]);
+  const okRepo = repositoryObjects([{ path: "db/bootstrap/30_tables.sql", sql: "create table if not exists public.t (id uuid);\ncreate policy p on public.t for select to authenticated using (true);" }]);
 
   test("a healthy pair passes the gate", () => {
     expect(parseHealth({ live: okLive, repo: okRepo })).toEqual({ ok: true, problems: [] });
