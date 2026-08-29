@@ -43,6 +43,9 @@ export const R02_REFUSAL = Object.freeze({
   OPERATION_UNRECOGNIZED: 'operation_unrecognized',
   MUTATION_NOT_AUTHORIZED: 'bootstrap_mutation_not_authorized',
   DESTRUCTIVE_NOT_AUTHORIZED: 'destructive_reset_not_authorized',
+  HOSTED_SQL_READ_NOT_AUTHORIZED: 'hosted_sql_read_not_authorized',
+  MIGRATION_METADATA_WRITE_NOT_AUTHORIZED: 'migration_metadata_write_not_authorized',
+  DEPLOY_NOT_AUTHORIZED: 'deployment_not_authorized',
   BOOTSTRAP_VERSION_MISMATCH: 'bootstrap_version_mismatch',
   SECRET_IN_MANIFEST: 'secret_material_in_manifest',
 });
@@ -54,9 +57,34 @@ export const R02_DECISION = Object.freeze({
 });
 
 export const R02_OPERATIONS = Object.freeze({
+  /** Local planning against the manifest. Touches no database. */
+  READ_ONLY_PLANNING: 'read_only_planning',
+  /** Alias retained for callers written before the registry existed. */
   READ_ONLY_PREFLIGHT: 'read_only_preflight',
+  /** Executing the SELECT-only capability pack against the hosted target. */
+  HOSTED_SQL_READ: 'hosted_sql_read',
   BOOTSTRAP_APPLY: 'bootstrap_apply',
   DESTRUCTIVE_RESET: 'destructive_reset',
+  MIGRATION_METADATA_WRITE: 'migration_metadata_write',
+  DEPLOY: 'deploy',
+});
+
+/**
+ * Operations that touch nothing remote. Everything else needs its own explicit authorization flag.
+ * ★ THE DEFAULT SIDE OF THIS LINE IS "NEEDS AUTHORIZATION". A new operation added to the union
+ *   without a flag lands in the authorized-required set, not the free set.
+ */
+export const LOCAL_ONLY_OPERATIONS = Object.freeze([
+  'read_only_planning', 'read_only_preflight',
+]);
+
+/** operation -> the manifest flag that must be exactly true. */
+export const OPERATION_AUTHORIZATION_FLAG = Object.freeze({
+  hosted_sql_read: 'hosted_sql_read_authorized',
+  bootstrap_apply: 'bootstrap_authorized',
+  destructive_reset: 'destructive_reset_authorized',
+  migration_metadata_write: 'migration_metadata_write_authorized',
+  deploy: 'deployment_authorized',
 });
 
 export const R02_CLASSIFICATIONS = Object.freeze(['nonproduction', 'production']);
@@ -133,6 +161,32 @@ export const MIGRATION_EXECUTION_MODEL = Object.freeze({
   unchanged_schema_contract: 'bootstrap@0060 + future migrations 0061+',
 });
 
+/**
+ * The registered R-02 candidate target — control-plane identity only.
+ *
+ * ★ REGISTERED DOES NOT MEAN AUTHORIZED. Being in this registry makes a ref ELIGIBLE to be named in
+ *   a manifest; every hosted operation still needs its own explicit flag, all of which are false.
+ *   `afterworth-nonprod` was created by the operator in the Supabase Dashboard, never by this code.
+ *
+ * ★ THIS IS CONTROL-PLANE IDENTITY, NOT DATABASE IDENTITY. The management API tells us which project
+ *   was created; it does not tell us that a future session actually connects to that database under
+ *   the expected execution identity. Proving that is a separate, separately-authorized read-only
+ *   step — which is exactly why R-02 stops at R02_1_NONPROD_IDENTIFIED here and not at R02_2.
+ */
+export const CANDIDATE_R02_TARGETS = Object.freeze([
+  Object.freeze({
+    ref: 'qxzeougbaarecaiiqsay',
+    projectName: 'afterworth-nonprod',
+    organization: 'rvudommjwqgtluhvfgcw',
+    region: 'us-west-2',
+    classification: 'CANDIDATE_R02_NONPROD',
+    observedStatus: 'ACTIVE_HEALTHY',
+    createdAt: '2026-08-28T21:25:53.48028Z',
+    creationMethod: 'USER_SUPABASE_DASHBOARD',
+    evidence: 'Discovered via `supabase projects list` (control plane, credential-safe). Distinct from both protected refs, in the expected organization and region, and the sole project bearing this name.',
+  }),
+]);
+
 /** A Supabase project ref: exactly 20 lowercase letters. */
 const REF = /^[a-z]{20}$/;
 
@@ -201,12 +255,27 @@ export function classifyR02Target(manifest, request = {}) {
   else if (!Object.values(R02_OPERATIONS).includes(op)) fail('R7_operation', R02_REFUSAL.OPERATION_UNRECOGNIZED);
   else pass('R7_operation');
 
-  /* ── R8 · MUTATION REQUIRES ITS OWN EXPLICIT AUTHORIZATION ───────────────────────────────── */
-  if (op === R02_OPERATIONS.BOOTSTRAP_APPLY && manifest?.safety?.bootstrap_authorized !== true) {
-    fail('R8_mutation_authorized', R02_REFUSAL.MUTATION_NOT_AUTHORIZED);
-  } else if (op === R02_OPERATIONS.DESTRUCTIVE_RESET && manifest?.safety?.destructive_reset_authorized !== true) {
-    fail('R8_mutation_authorized', R02_REFUSAL.DESTRUCTIVE_NOT_AUTHORIZED);
-  } else pass('R8_mutation_authorized');
+  /* ── R8 · EVERY REMOTE OPERATION NEEDS ITS OWN EXPLICIT FLAG ─────────────────────────────────
+   * ★ ONE FLAG PER OPERATION, NEVER A SHARED "MUTATION" FLAG. Authorizing a bootstrap must not
+   *   incidentally authorize a reset, a metadata write, or a deploy — each is a different decision
+   *   with a different blast radius, and collapsing them is how one approval becomes five. */
+  const flagFor = { ...OPERATION_AUTHORIZATION_FLAG };
+  const reasonFor = {
+    hosted_sql_read: R02_REFUSAL.HOSTED_SQL_READ_NOT_AUTHORIZED,
+    bootstrap_apply: R02_REFUSAL.MUTATION_NOT_AUTHORIZED,
+    destructive_reset: R02_REFUSAL.DESTRUCTIVE_NOT_AUTHORIZED,
+    migration_metadata_write: R02_REFUSAL.MIGRATION_METADATA_WRITE_NOT_AUTHORIZED,
+    deploy: R02_REFUSAL.DEPLOY_NOT_AUTHORIZED,
+  };
+  if (Object.prototype.hasOwnProperty.call(flagFor, op)) {
+    if (manifest?.safety?.[flagFor[op]] !== true) fail('R8_operation_authorized', reasonFor[op]);
+    else pass('R8_operation_authorized');
+  } else if (LOCAL_ONLY_OPERATIONS.includes(op)) {
+    pass('R8_operation_authorized');
+  } else {
+    // Unrecognized operation already failed R7; refuse here too rather than fall through to a pass.
+    fail('R8_operation_authorized', R02_REFUSAL.OPERATION_UNRECOGNIZED);
+  }
 
   /* ── R9 · THE MANIFEST MUST AGREE WITH THE REPOSITORY'S BOOTSTRAP VERSION ─────────────────── */
   const want = str(request?.bootstrapVersion);
@@ -215,7 +284,7 @@ export function classifyR02Target(manifest, request = {}) {
 
   if (reasons.length) return { decision: R02_DECISION.REFUSED, reasons, guards };
   return {
-    decision: op === R02_OPERATIONS.READ_ONLY_PREFLIGHT ? R02_DECISION.READ_ONLY_AUTHORIZED : R02_DECISION.MUTATION_AUTHORIZED,
+    decision: LOCAL_ONLY_OPERATIONS.includes(op) ? R02_DECISION.READ_ONLY_AUTHORIZED : R02_DECISION.MUTATION_AUTHORIZED,
     reasons: [], guards,
   };
 }

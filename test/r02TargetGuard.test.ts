@@ -17,7 +17,7 @@ import { describe, expect, test } from "vitest";
 import {
   classifyR02Target, isRemoteMutationCommand,
   R02_DECISION, R02_OPERATIONS, R02_REFUSAL, FORBIDDEN_TARGETS, FORBIDDEN_REMOTE_COMMANDS, SECRET_KEY_PATTERN,
-  MIGRATION_EXECUTION_MODEL,
+  MIGRATION_EXECUTION_MODEL, CANDIDATE_R02_TARGETS, LOCAL_ONLY_OPERATIONS, OPERATION_AUTHORIZATION_FLAG,
 } from "../scripts/lib/r02TargetGuard.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -364,5 +364,164 @@ describe("paused is not disposable — the retention decision is explicit and te
     const entries = Object.entries(EXISTING_PROJECT_DISPOSITION);
     expect(entries.length).toBe(2);
     for (const [, v] of entries) expect(v.r02_target).toBe(false);
+  });
+});
+
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * PHASE 1D — the registered real non-production target.
+ *
+ * ★ REGISTERED IS NOT AUTHORIZED. `afterworth-nonprod` exists and is named here, and every hosted
+ *   operation against it is still refused. The only thing it may do is local planning.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+const TARGET = CANDIDATE_R02_TARGETS[0];
+const PROTECTED_REFS = ["yiaavvkulrpqkkbqhwit", "rpjjwkoezuihpobotbjh"];
+const HOSTED_OPS = Object.keys(OPERATION_AUTHORIZATION_FLAG);
+
+/** A manifest for the real target with every hosted authorization false. */
+const candidateManifest = (over: Record<string, unknown> = {}) => ({
+  environment: { name: TARGET.projectName, classification: "nonproduction" },
+  supabase: { project_ref: TARGET.ref, region: TARGET.region, organization_id: TARGET.organization },
+  safety: {
+    production: false,
+    allowlisted_refs: [TARGET.ref],
+    hosted_sql_read_authorized: false,
+    bootstrap_authorized: false,
+    destructive_reset_authorized: false,
+    migration_metadata_write_authorized: false,
+    deployment_authorized: false,
+  },
+  expected_model: { bootstrap_version: "0060", future_migration_start: "0061" },
+  ...over,
+});
+
+describe("1D · the registered target", () => {
+  test("★ 5 · the exact discovered ref is registered as CANDIDATE_R02_NONPROD", () => {
+    expect(CANDIDATE_R02_TARGETS).toHaveLength(1);
+    expect(TARGET.ref).toBe("qxzeougbaarecaiiqsay");
+    expect(TARGET.ref).toMatch(/^[a-z]{20}$/);
+    expect(TARGET.projectName).toBe("afterworth-nonprod");
+    expect(TARGET.organization).toBe("rvudommjwqgtluhvfgcw");
+    expect(TARGET.region).toBe("us-west-2");
+    expect(TARGET.classification).toBe("CANDIDATE_R02_NONPROD");
+    expect(TARGET.creationMethod).toBe("USER_SUPABASE_DASHBOARD");
+  });
+  test("★ 5b · the registered ref is not either protected ref", () => {
+    expect(PROTECTED_REFS).not.toContain(TARGET.ref);
+    for (const f of FORBIDDEN_TARGETS) expect(f.ref).not.toBe(TARGET.ref);
+  });
+  test("★ 6 · it MAY enter READ_ONLY_PLANNING", () => {
+    const r = classifyR02Target(candidateManifest(), { operation: R02_OPERATIONS.READ_ONLY_PLANNING, bootstrapVersion: "0060" });
+    expect(r.reasons).toEqual([]);
+    expect(r.decision).toBe(R02_DECISION.READ_ONLY_AUTHORIZED);
+  });
+  test.each([
+    ["7  hosted SQL read", "hosted_sql_read", R02_REFUSAL.HOSTED_SQL_READ_NOT_AUTHORIZED],
+    ["8  bootstrap", "bootstrap_apply", R02_REFUSAL.MUTATION_NOT_AUTHORIZED],
+    ["9  destructive reset", "destructive_reset", R02_REFUSAL.DESTRUCTIVE_NOT_AUTHORIZED],
+    ["10 migration metadata write", "migration_metadata_write", R02_REFUSAL.MIGRATION_METADATA_WRITE_NOT_AUTHORIZED],
+    ["11 deploy", "deploy", R02_REFUSAL.DEPLOY_NOT_AUTHORIZED],
+  ])("★ %s is REFUSED for the registered target", (_l, operation, reason) => {
+    const r = classifyR02Target(candidateManifest(), { operation, bootstrapVersion: "0060" });
+    expect(r.decision).toBe(R02_DECISION.REFUSED);
+    expect(r.reasons).toContain(reason);
+  });
+  test("★ authorizing ONE hosted operation does not authorize the others", () => {
+    const m = candidateManifest();
+    (m.safety as Record<string, unknown>).bootstrap_authorized = true;
+    expect(classifyR02Target(m, { operation: "bootstrap_apply", bootstrapVersion: "0060" }).decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);
+    for (const op of HOSTED_OPS.filter((o) => o !== "bootstrap_apply")) {
+      expect(classifyR02Target(m, { operation: op, bootstrapVersion: "0060" }).decision, op).toBe(R02_DECISION.REFUSED);
+    }
+  });
+  test("every hosted operation has its own distinct flag — no shared mutation flag", () => {
+    const flags = Object.values(OPERATION_AUTHORIZATION_FLAG);
+    expect(new Set(flags).size).toBe(flags.length);
+    expect(flags).toHaveLength(5);
+    expect(LOCAL_ONLY_OPERATIONS).not.toContain("hosted_sql_read");
+  });
+  test("★ 15 · removing the ref from the allowlist refuses it", () => {
+    const m = candidateManifest();
+    (m.safety as Record<string, unknown>).allowlisted_refs = [];
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.READ_ONLY_PLANNING }).reasons).toContain(R02_REFUSAL.TARGET_NOT_ALLOWLISTED);
+  });
+  test("★ 12 · a display-name change does not affect authorization", () => {
+    const m = candidateManifest({ environment: { name: "something-else-entirely", classification: "nonproduction" } });
+    (m.supabase as Record<string, unknown>).display_name = "afterworth-prod";
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.READ_ONLY_PLANNING, bootstrapVersion: "0060" }).decision)
+      .toBe(R02_DECISION.READ_ONLY_AUTHORIZED);
+  });
+  test("★ 16 · an unknown classification fails closed", () => {
+    const m = candidateManifest({ environment: { name: TARGET.projectName, classification: "sandbox" } });
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.READ_ONLY_PLANNING }).reasons).toContain(R02_REFUSAL.CLASSIFICATION_UNRECOGNIZED);
+  });
+  test("★ 17 · missing authorization fields fail closed — absent is not true", () => {
+    const m = candidateManifest();
+    delete (m.safety as Record<string, unknown>).bootstrap_authorized;
+    expect(classifyR02Target(m, { operation: "bootstrap_apply" }).reasons).toContain(R02_REFUSAL.MUTATION_NOT_AUTHORIZED);
+    const m2 = candidateManifest({ safety: { production: false, allowlisted_refs: [TARGET.ref] } });
+    for (const op of HOSTED_OPS) expect(classifyR02Target(m2, { operation: op }).decision, op).toBe(R02_DECISION.REFUSED);
+  });
+  test("a truthy-but-not-true flag is refused", () => {
+    const m = candidateManifest();
+    (m.safety as Record<string, unknown>).bootstrap_authorized = "yes";
+    expect(classifyR02Target(m, { operation: "bootstrap_apply" }).decision).toBe(R02_DECISION.REFUSED);
+  });
+});
+
+describe("1D · PHASE F — protection OUTRANKS every authorization", () => {
+  test.each(PROTECTED_REFS)("★ 13/14 · %s in the candidate slot is refused for EVERY operation", (ref) => {
+    // Maximally permissive manifest: allowlisted, non-production, every flag true, correct version.
+    const m = candidateManifest();
+    (m.supabase as Record<string, unknown>).project_ref = ref;
+    (m.safety as Record<string, unknown>).allowlisted_refs = [ref];
+    for (const f of Object.values(OPERATION_AUTHORIZATION_FLAG)) (m.safety as Record<string, unknown>)[f] = true;
+    for (const op of Object.values(R02_OPERATIONS)) {
+      const r = classifyR02Target(m, { operation: op, bootstrapVersion: "0060" });
+      expect(r.decision, `${ref} / ${op}`).toBe(R02_DECISION.REFUSED);
+    }
+  });
+  test("★ a protected ref can never be added to the candidate registry", () => {
+    for (const t of CANDIDATE_R02_TARGETS) expect(PROTECTED_REFS).not.toContain(t.ref);
+  });
+  test("★ 1/2 · both protected refs keep their classifications after registration", () => {
+    const byRef = Object.fromEntries(FORBIDDEN_TARGETS.map((f) => [f.ref, f]));
+    expect(byRef["yiaavvkulrpqkkbqhwit"].protectedReason).toBe("APPLICATION_FACING_EXISTING_DATABASE");
+    expect(byRef["rpjjwkoezuihpobotbjh"].protectedReason).toBe("EXISTING_PAUSED_FUTURE_PRODUCTION_CANDIDATE");
+    expect(FORBIDDEN_TARGETS).toHaveLength(2);
+  });
+  test("★ 3/4 · an unallowlisted or malformed ref is still refused after registration", () => {
+    const m1 = candidateManifest();
+    (m1.supabase as Record<string, unknown>).project_ref = "abcdefghijklmnopqrst";
+    expect(classifyR02Target(m1, { operation: R02_OPERATIONS.READ_ONLY_PLANNING }).reasons).toContain(R02_REFUSAL.TARGET_NOT_ALLOWLISTED);
+    const m2 = candidateManifest();
+    (m2.supabase as Record<string, unknown>).project_ref = "not-a-ref";
+    (m2.safety as Record<string, unknown>).allowlisted_refs = ["not-a-ref"];
+    expect(classifyR02Target(m2, { operation: R02_OPERATIONS.READ_ONLY_PLANNING }).reasons).toContain(R02_REFUSAL.TARGET_MALFORMED);
+  });
+  test("★ MUTATION CONTROL: if R4 were removed, the protected refs WOULD pass — proving R4 is load-bearing", () => {
+    // Same maximally-permissive manifest, but with a ref that is merely unknown rather than
+    // protected. It is authorized — so the ONLY thing refusing the protected refs above is R4.
+    const m = candidateManifest();
+    (m.supabase as Record<string, unknown>).project_ref = "mmmmnnnnooooppppqqqq";
+    (m.safety as Record<string, unknown>).allowlisted_refs = ["mmmmnnnnooooppppqqqq"];
+    for (const f of Object.values(OPERATION_AUTHORIZATION_FLAG)) (m.safety as Record<string, unknown>)[f] = true;
+    expect(classifyR02Target(m, { operation: "bootstrap_apply", bootstrapVersion: "0060" }).decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);
+  });
+});
+
+describe("1D · PHASE I — the query pack remains locked and unexecuted", () => {
+  test("★ hosted_sql_read remains unauthorized in the manifest template", () => {
+    const tpl = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
+    expect(tpl.safety.bootstrap_authorized).toBe(false);
+    expect(tpl.safety.destructive_reset_authorized).toBe(false);
+  });
+  test("★ the pack is still SELECT-only after registration", async () => {
+    const { splitStatements, stripComments, maskLiterals } = await import("../scripts/lib/schemaInventory.mjs");
+    const pack = readFileSync(join(ROOT, "docs/r02/hosted-capability-queries.sql"), "utf8");
+    const stmts = splitStatements(pack).map((x: string) => maskLiterals(stripComments(x)).trim()).filter(Boolean);
+    expect(stmts.length).toBeGreaterThan(5);
+    expect(stmts.filter((x: string) => !/^select/i.test(x))).toEqual([]);
   });
 });

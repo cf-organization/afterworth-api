@@ -1,7 +1,7 @@
 # R-02 — non-production Supabase environment, hosted compatibility
 
 ```
-R-02 STATE            R02_0_NO_NONPROD   (no suitable non-production project exists)
+R-02 STATE            R02_1_NONPROD_IDENTIFIED   (control-plane identity only)
 HOSTED COMPATIBILITY  NOT PROVEN
 BOOTSTRAP VERSION     0060  (fixed cutover base, rolling = false)
 REMOTE ACTIVITY       1 credential-safe project listing · 0 SQL reads · 0 writes · 0 provisions
@@ -49,7 +49,37 @@ information is not a licence: unknown real infrastructure is not disposable infr
 - `rpjjwkoezuihpobotbjh` — role unestablished. An unestablished role is not a licence to treat a
   project as disposable.
 
-**A new project is required.** Proposed specification:
+## The registered target
+
+```
+name          afterworth-nonprod
+ref           qxzeougbaarecaiiqsay
+organization  rvudommjwqgtluhvfgcw
+region        us-west-2 (West US, Oregon)
+status        ACTIVE_HEALTHY
+created       2026-08-28T21:25:53Z  by the operator, in the Supabase Dashboard
+class         CANDIDATE_R02_NONPROD
+```
+
+**Registered is not authorized.** Every hosted operation against it is refused:
+
+| operation | flag | state |
+|---|---|---|
+| `hosted_sql_read` | `hosted_sql_read_authorized` | **false** |
+| `bootstrap_apply` | `bootstrap_authorized` | **false** |
+| `destructive_reset` | `destructive_reset_authorized` | **false** |
+| `migration_metadata_write` | `migration_metadata_write_authorized` | **false** |
+| `deploy` | `deployment_authorized` | **false** |
+
+Only `read_only_planning` is permitted, and it touches no database. One flag per operation, never a
+shared "mutation" flag — authorizing a bootstrap must not incidentally authorize a reset.
+
+**This is control-plane identity, not database identity.** The management API tells us which project
+was created. It does not tell us that a future session connects to *that* database under the expected
+execution identity. Proving that is `R02_2_IDENTITY_VERIFIED`, and it needs its own authorization —
+which is why this unit stops at `R02_1`.
+
+### Original specification (met)
 
 | | |
 |---|---|
