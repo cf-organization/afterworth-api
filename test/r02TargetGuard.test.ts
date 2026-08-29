@@ -436,9 +436,18 @@ describe("1D · the registered target", () => {
     }
   });
   test("every hosted operation has its own distinct flag — no shared mutation flag", () => {
+    // * DERIVED, NOT A MAGIC NUMBER. This asserted length 5 and broke when event_trigger_probe was
+    //   added a phase later — a true property expressed as a count that any new operation
+    //   invalidates. The property is: every operation is either local-only or has its OWN distinct
+    //   flag, with no flag shared between two operations.
     const flags = Object.values(OPERATION_AUTHORIZATION_FLAG);
-    expect(new Set(flags).size).toBe(flags.length);
-    expect(flags).toHaveLength(5);
+    expect(new Set(flags).size).toBe(flags.length);            // no flag serves two operations
+    const ops = Object.values(R02_OPERATIONS);
+    const flagged = Object.keys(OPERATION_AUTHORIZATION_FLAG);
+    for (const op of ops) {
+      expect(LOCAL_ONLY_OPERATIONS.includes(op) || flagged.includes(op), `${op} is unclassified`).toBe(true);
+    }
+    expect(flags.length).toBe(ops.length - LOCAL_ONLY_OPERATIONS.length);
     expect(LOCAL_ONLY_OPERATIONS).not.toContain("hosted_sql_read");
   });
   test("★ 15 · removing the ref from the allowlist refuses it", () => {
