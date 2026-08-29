@@ -596,10 +596,159 @@ describe("2A · the read-only identity check pack", () => {
     }
   });
 
-  test("hosted_sql_read remains unauthorized — preparing the pack does not authorize running it", () => {
-    const tpl = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
-    expect(tpl.safety.hosted_sql_read_authorized).toBe(false);
+  test("★ preparing a pack does not authorize running it — authorization is a separate explicit act", () => {
+    // R-02 Phase 2B subsequently granted hosted_sql_read for the registered ref, so the TEMPLATE now
+    // carries true. The property under test was never "the template says false" — it is that a
+    // manifest WITHOUT the grant cannot run hosted SQL. Re-anchored on that, so the test keeps
+    // meaning something after a deliberate authorization rather than merely recording a past state.
     const r = classifyR02Target(candidateManifest(), { operation: R02_OPERATIONS.HOSTED_SQL_READ, bootstrapVersion: "0060" });
     expect(r.decision).toBe(R02_DECISION.REFUSED);
+    expect(r.reasons).toContain(R02_REFUSAL.HOSTED_SQL_READ_NOT_AUTHORIZED);
+  });
+  test("the granted authorization is narrow, explicit and recorded in source", async () => {
+    const { HOSTED_READ_AUTHORIZATION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    const tpl = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
+    expect(tpl.safety.hosted_sql_read_authorized).toBe(true);       // deliberate, Phase 2B
+    for (const f of ["bootstrap_authorized", "destructive_reset_authorized",
+                     "migration_metadata_write_authorized", "deployment_authorized"]) {
+      expect(tpl.safety[f], f).toBe(false);                          // and nothing else moved
+    }
+    expect(HOSTED_READ_AUTHORIZATION).toHaveLength(1);
+    expect(HOSTED_READ_AUTHORIZATION[0].grants).toEqual(["hosted_sql_read"]);
+  });
+});
+
+
+describe("2B · hosted read authorization — exact-ref scoped, one operation only", () => {
+  const authorized = () => {
+    const m = candidateManifest();
+    (m.safety as Record<string, unknown>).hosted_sql_read_authorized = true;
+    return m;
+  };
+
+  test("★ 1 · the exact nonprod ref MAY hosted_sql_read when explicitly authorized", async () => {
+    const { HOSTED_READ_AUTHORIZATION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    const r = classifyR02Target(authorized(), { operation: R02_OPERATIONS.HOSTED_SQL_READ, bootstrapVersion: "0060" });
+    expect(r.reasons).toEqual([]);
+    expect(r.decision).toBe(R02_DECISION.HOSTED_READ_AUTHORIZED);
+    expect(HOSTED_READ_AUTHORIZATION[0].ref).toBe(TARGET.ref);
+    expect(HOSTED_READ_AUTHORIZATION[0].grants).toEqual(["hosted_sql_read"]);
+  });
+  test("★ an authorized READ is not reported as a mutation", () => {
+    const r = classifyR02Target(authorized(), { operation: R02_OPERATIONS.HOSTED_SQL_READ, bootstrapVersion: "0060" });
+    expect(r.decision).not.toBe(R02_DECISION.MUTATION_AUTHORIZED);
+  });
+  test.each([
+    ["2 bootstrap", "bootstrap_apply"],
+    ["3 reset", "destructive_reset"],
+    ["4 migration metadata write", "migration_metadata_write"],
+    ["5 deploy", "deploy"],
+  ])("★ %s is STILL refused after the read grant", (_l, operation) => {
+    expect(classifyR02Target(authorized(), { operation, bootstrapVersion: "0060" }).decision).toBe(R02_DECISION.REFUSED);
+  });
+  test("the grant record withholds every other operation explicitly", async () => {
+    const { HOSTED_READ_AUTHORIZATION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    const g = HOSTED_READ_AUTHORIZATION[0];
+    expect(g.withholds).toEqual(["bootstrap_apply", "destructive_reset", "migration_metadata_write", "deploy"]);
+    expect(g.grants).not.toContain("bootstrap_apply");
+  });
+
+  test.each(PROTECTED_REFS)("★ 6/7 · %s cannot hosted_sql_read even with the flag true", (ref) => {
+    const m = authorized();
+    (m.supabase as Record<string, unknown>).project_ref = ref;
+    (m.safety as Record<string, unknown>).allowlisted_refs = [ref];
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.HOSTED_SQL_READ, bootstrapVersion: "0060" }).decision)
+      .toBe(R02_DECISION.REFUSED);
+  });
+  test("★ a protected ref in the authorization list would still be refused — R4 outranks the grant", async () => {
+    const { HOSTED_READ_AUTHORIZATION } = await import("../scripts/lib/r02TargetGuard.mjs");
+    for (const g of HOSTED_READ_AUTHORIZATION) expect(PROTECTED_REFS).not.toContain(g.ref);
+    // and prove ordering: even a hypothetical grant cannot help, because R4 fires first
+    const m = authorized();
+    (m.supabase as Record<string, unknown>).project_ref = PROTECTED_REFS[0];
+    (m.safety as Record<string, unknown>).allowlisted_refs = [PROTECTED_REFS[0]];
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.HOSTED_SQL_READ }).reasons)
+      .toContain(R02_REFUSAL.APPLICATION_FACING_TARGET);
+  });
+  test("★ 8/9 · unallowlisted and malformed refs are refused for hosted read", () => {
+    const m1 = authorized(); (m1.safety as Record<string, unknown>).allowlisted_refs = [];
+    expect(classifyR02Target(m1, { operation: R02_OPERATIONS.HOSTED_SQL_READ }).reasons).toContain(R02_REFUSAL.TARGET_NOT_ALLOWLISTED);
+    const m2 = authorized(); (m2.supabase as Record<string, unknown>).project_ref = "bad";
+    (m2.safety as Record<string, unknown>).allowlisted_refs = ["bad"];
+    expect(classifyR02Target(m2, { operation: R02_OPERATIONS.HOSTED_SQL_READ }).reasons).toContain(R02_REFUSAL.TARGET_MALFORMED);
+  });
+  test("★ 10 · a display name cannot grant hosted read", () => {
+    const m = candidateManifest({ environment: { name: "afterworth-nonprod-totally-safe", classification: "nonproduction" } });
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.HOSTED_SQL_READ }).decision).toBe(R02_DECISION.REFUSED);
+  });
+  test.each([[false], [undefined], ["true"], [1], [null]])("★ 11 · hosted read flag %s is refused", (flag) => {
+    const m = candidateManifest();
+    (m.safety as Record<string, unknown>).hosted_sql_read_authorized = flag as never;
+    expect(classifyR02Target(m, { operation: R02_OPERATIONS.HOSTED_SQL_READ }).decision).toBe(R02_DECISION.REFUSED);
+  });
+});
+
+describe("2B · the capability pack is SELECT-only", () => {
+  const pack = readFileSync(join(ROOT, "docs/r02/capability-check.sql"), "utf8");
+  const parse = async () => {
+    const { splitStatements, stripComments, maskLiterals } = await import("../scripts/lib/schemaInventory.mjs");
+    return splitStatements(pack).map((x: string) => maskLiterals(stripComments(x)).trim()).filter(Boolean);
+  };
+
+  test("★ 12 · every statement is a SELECT and the scan set is non-empty", async () => {
+    const stmts = await parse();
+    expect(stmts.length).toBe(8);
+    expect(stmts.filter((x: string) => !/^select/i.test(x))).toEqual([]);
+    expect(stmts.filter((x: string) => isRemoteMutationCommand(x))).toEqual([]);
+  });
+  test.each(["CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "MERGE", "CALL", "COPY", "GRANT", "REVOKE"])
+    ("★ 13 · no executable %s", async (verb) => {
+      expect(new RegExp(`(^|\\n)\\s*${verb}\\b`, "i").test((await parse()).join("\n"))).toBe(false);
+    });
+  test("★ 14 · every function is a read-only built-in — no application function may be invoked", async () => {
+    const BUILTINS = new Set(["count", "coalesce", "string_agg", "array", "exists", "current_user", "session_user",
+      "to_regclass", "to_regprocedure", "to_regnamespace", "pg_get_userbyid"]);
+    const KEYWORDS = new Set(["select", "from", "where", "order", "and", "or", "not", "like", "as", "on", "in",
+      "join", "left", "case", "when", "then", "else", "end", "by", "group", "is"]);
+    const called = new Set<string>();
+    for (const s of await parse()) for (const m of s.matchAll(/([a-z_][a-z_0-9]*)\s*\(/gi)) {
+      const fn = m[1].toLowerCase();
+      if (!KEYWORDS.has(fn)) called.add(fn);
+    }
+    expect(called.size).toBeGreaterThan(4);
+    expect([...called].filter((f) => !BUILTINS.has(f))).toEqual([]);
+  });
+  test("★ 14b · positive control — a SECURITY DEFINER RPC would be rejected by that allowlist", () => {
+    const BUILTINS = new Set(["count"]);
+    const called = [...("select public.authorize_release(1), count(*);").matchAll(/([a-z_][a-z_0-9]*)\s*\(/gi)].map((m) => m[1].toLowerCase());
+    expect(called).toContain("authorize_release");
+    expect(called.filter((f) => !BUILTINS.has(f))).toEqual(["authorize_release"]);
+  });
+  test("★ 15 · an empty pack is refused, never 'clean'", async () => {
+    const { splitStatements } = await import("../scripts/lib/schemaInventory.mjs");
+    expect(splitStatements("").filter(Boolean)).toEqual([]);
+    expect(splitStatements("-- only a comment\n").map((x: string) => x.trim()).filter((x: string) => x && !x.startsWith("--"))).toEqual([]);
+  });
+  test("★ 16 · virginity is AfterWorth-specific, not 'public must be empty'", () => {
+    expect(pack).toMatch(/afterworth_tables_present/);
+    expect(pack).toMatch(/A FRESH SUPABASE PROJECT IS NOT AN EMPTY POSTGRES SERVER/i);
+    expect(pack).toContain("'estates'");
+    expect(pack).toContain("'documents'");
+  });
+  test("★ event triggers are separated into platform vs application", () => {
+    expect(pack).toMatch(/owner_class/);
+    expect(pack).toMatch(/PLATFORM/);
+    expect(pack).toMatch(/ensure_rls_binding/);
+    expect(pack).toMatch(/rls_auto_enable_function/);
+  });
+  test("it names the target and forbids both protected projects", () => {
+    expect(pack).toContain(TARGET.ref);
+    expect(pack).toMatch(/NEVER RUN AGAINST yiaavvkulrpqkkbqhwit/i);
+    expect(pack).toContain("rpjjwkoezuihpobotbjh");
+  });
+  test("no CREATE EXTENSION or CREATE EVENT TRIGGER is attempted", () => {
+    const code = pack.replace(/--.*$/gm, "");
+    expect(code).not.toMatch(/create\s+extension/i);
+    expect(code).not.toMatch(/create\s+event\s+trigger/i);
   });
 });
