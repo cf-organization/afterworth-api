@@ -1,10 +1,10 @@
 {
-  "$comment": "TEMPLATE. The target below is REGISTERED (control-plane identity confirmed) but NOT AUTHORIZED for any hosted operation — every flag is false and each must be raised separately, by a human, for one operation at a time. Copy to ~/aw-r02-evidence/environment-manifest.json. NEVER add a password, service-role key, anon/publishable key, access token, connection string or DSN: scripts/lib/r02TargetGuard.mjs refuses a manifest containing any such key.",
+  "$comment": "TEMPLATE. The target below is REGISTERED (control-plane identity confirmed) but NOT AUTHORIZED for any hosted operation \u2014 every flag is false and each must be raised separately, by a human, for one operation at a time. Copy to ~/aw-r02-evidence/environment-manifest.json. NEVER add a password, service-role key, anon/publishable key, access token, connection string or DSN: scripts/lib/r02TargetGuard.mjs refuses a manifest containing any such key.",
   "environment": {
     "name": "afterworth-nonprod",
     "classification": "nonproduction",
     "purpose": "R-02 Model C hosted-compatibility testing only",
-    "lifecycle": "disposable — expected to be reset repeatedly and possibly deleted after R-02"
+    "lifecycle": "disposable \u2014 expected to be reset repeatedly and possibly deleted after R-02"
   },
   "supabase": {
     "project_ref": "qxzeougbaarecaiiqsay",
@@ -15,8 +15,10 @@
   },
   "safety": {
     "production": false,
-    "allowlisted_refs": ["qxzeougbaarecaiiqsay"],
-    "hosted_sql_read_authorized": false,
+    "allowlisted_refs": [
+      "qxzeougbaarecaiiqsay"
+    ],
+    "hosted_sql_read_authorized": true,
     "bootstrap_authorized": false,
     "destructive_reset_authorized": false,
     "migration_metadata_write_authorized": false,
@@ -29,6 +31,7 @@
   "notes": [
     "allowlisted_refs is deliberately redundant with project_ref. The guard requires the target to be BOTH named and allowlisted, so a ref pasted into project_ref by accident does not become authorized.",
     "One flag per operation, never a shared 'mutation' flag: authorizing a bootstrap must not incidentally authorize a reset, a metadata write, or a deploy.",
-    "Registration is CONTROL-PLANE identity. It proves which Supabase project was created. It does NOT prove that a database session connects to that project under the expected execution identity — that is R02_2 and needs its own authorization."
+    "Registration is CONTROL-PLANE identity. It proves which Supabase project was created. It does NOT prove that a database session connects to that project under the expected execution identity \u2014 that is R02_2 and needs its own authorization.",
+    "hosted_sql_read_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, and ONLY for the SELECT-only capability pack. Every other flag stays false: authorizing a read must not drift into authorizing a write. See HOSTED_READ_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs for the reviewable grant."
   ]
 }

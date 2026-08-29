@@ -51,7 +51,16 @@ export const R02_REFUSAL = Object.freeze({
 });
 
 export const R02_DECISION = Object.freeze({
+  /** Local planning only. Touches no database. */
   READ_ONLY_AUTHORIZED: 'READ_ONLY_AUTHORIZED',
+  /**
+   * A hosted SELECT against the target.
+   * ★ DISTINCT FROM MUTATION_AUTHORIZED ON PURPOSE. Reporting an authorized read as
+   *   "MUTATION_AUTHORIZED" would tell anyone auditing the decision log that a write was permitted
+   *   when none was. The verdict vocabulary has to be able to say what actually happened.
+   */
+  HOSTED_READ_AUTHORIZED: 'HOSTED_READ_AUTHORIZED',
+  /** A hosted operation that changes state. */
   MUTATION_AUTHORIZED: 'MUTATION_AUTHORIZED',
   REFUSED: 'REFUSED',
 });
@@ -187,6 +196,33 @@ export const CANDIDATE_R02_TARGETS = Object.freeze([
   }),
 ]);
 
+/**
+ * ★ EXPLICIT, REF-SCOPED, ONE-OPERATION AUTHORIZATION GRANT.
+ *
+ * This is the reviewable record of what a human authorized, kept in source rather than left implicit
+ * in a local manifest — so the grant appears in a diff, in review, and in `git log`, and cannot be
+ * widened by editing an untracked file.
+ *
+ * It authorizes EXACTLY ONE operation (`hosted_sql_read`) against EXACTLY ONE ref. It confers
+ * nothing else: bootstrap, destructive reset, migration-metadata write and deploy all remain
+ * unauthorized, and no entry here can grant them.
+ *
+ * ★ IT CANNOT REACH A PROTECTED REF. The forbidden-target rule (R4) runs before authorization is
+ *   even consulted, so adding a protected ref to this list would change nothing — and a test proves
+ *   exactly that rather than trusting the ordering to stay as it is.
+ */
+export const HOSTED_READ_AUTHORIZATION = Object.freeze([
+  Object.freeze({
+    ref: 'qxzeougbaarecaiiqsay',
+    projectName: 'afterworth-nonprod',
+    operation: 'hosted_sql_read',
+    authorizedBy: 'operator, R-02 Phase 2B',
+    scope: 'SELECT-only capability pack (docs/r02/capability-check.sql) executed manually in the Supabase SQL Editor',
+    grants: Object.freeze(['hosted_sql_read']),
+    withholds: Object.freeze(['bootstrap_apply', 'destructive_reset', 'migration_metadata_write', 'deploy']),
+  }),
+]);
+
 /** A Supabase project ref: exactly 20 lowercase letters. */
 const REF = /^[a-z]{20}$/;
 
@@ -284,7 +320,9 @@ export function classifyR02Target(manifest, request = {}) {
 
   if (reasons.length) return { decision: R02_DECISION.REFUSED, reasons, guards };
   return {
-    decision: LOCAL_ONLY_OPERATIONS.includes(op) ? R02_DECISION.READ_ONLY_AUTHORIZED : R02_DECISION.MUTATION_AUTHORIZED,
+    decision: LOCAL_ONLY_OPERATIONS.includes(op) ? R02_DECISION.READ_ONLY_AUTHORIZED
+      : op === R02_OPERATIONS.HOSTED_SQL_READ ? R02_DECISION.HOSTED_READ_AUTHORIZED
+      : R02_DECISION.MUTATION_AUTHORIZED,
     reasons: [], guards,
   };
 }
