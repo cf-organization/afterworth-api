@@ -525,3 +525,81 @@ describe("1D · PHASE I — the query pack remains locked and unexecuted", () =>
     expect(stmts.filter((x: string) => !/^select/i.test(x))).toEqual([]);
   });
 });
+
+
+describe("2A · the read-only identity check pack", () => {
+  const pack = readFileSync(join(ROOT, "docs/r02/identity-check.sql"), "utf8");
+  const parse = async () => {
+    const { splitStatements, stripComments, maskLiterals } = await import("../scripts/lib/schemaInventory.mjs");
+    return splitStatements(pack).map((x: string) => maskLiterals(stripComments(x)).trim()).filter(Boolean);
+  };
+
+  test("★ it is SELECT-only, and the scan set is non-empty", async () => {
+    const stmts = await parse();
+    expect(stmts.length).toBeGreaterThan(0);
+    expect(stmts.filter((x: string) => !/^select/i.test(x))).toEqual([]);
+    expect(stmts.filter((x: string) => isRemoteMutationCommand(x))).toEqual([]);
+  });
+
+  test.each(["CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "MERGE", "CALL", "COPY", "GRANT", "REVOKE"])
+    ("★ no executable %s appears in the pack", async (verb) => {
+      const code = (await parse()).join("\n");
+      expect(new RegExp(`(^|\\n)\\s*${verb}\\b`, "i").test(code)).toBe(false);
+    });
+
+  test("★ every function called is a PostgreSQL built-in — no application function may run", async () => {
+    // A SECURITY DEFINER application function could have side effects; only built-ins are permitted
+    // in an identity check, and the allowlist is explicit rather than assumed.
+    const BUILTINS = new Set(["current_database", "current_user", "session_user", "version",
+      "current_setting", "pg_postmaster_start_time", "pg_backend_pid", "inet_server_addr",
+      "inet_server_port", "now"]);
+    const KEYWORDS = new Set(["select", "from", "where", "order", "and", "or", "not", "like", "as", "on", "in"]);
+    const called = new Set<string>();
+    for (const stmt of await parse()) {
+      for (const m of stmt.matchAll(/([a-z_][a-z_0-9]*)\s*\(/gi)) {
+        const fn = m[1].toLowerCase();
+        if (!KEYWORDS.has(fn)) called.add(fn);
+      }
+    }
+    expect(called.size).toBeGreaterThan(3);
+    expect([...called].filter((f) => !BUILTINS.has(f))).toEqual([]);
+  });
+
+  test("★ positive control: the built-in allowlist WOULD reject an application function", () => {
+    const BUILTINS = new Set(["current_database", "now"]);
+    const sample = "select public.is_estate_owner(null), now();";
+    const called = [...sample.matchAll(/([a-z_][a-z_0-9]*)\s*\(/gi)].map((m) => m[1].toLowerCase());
+    expect(called).toContain("is_estate_owner");
+    expect(called.filter((f) => !BUILTINS.has(f))).toEqual(["is_estate_owner"]);
+  });
+
+  test("★ it names the registered target and warns off both protected projects", () => {
+    expect(pack).toContain(TARGET.ref);
+    expect(pack).toMatch(/NEVER RUN THIS AGAINST yiaavvkulrpqkkbqhwit/i);
+    expect(pack).toContain("rpjjwkoezuihpobotbjh");
+  });
+
+  test("★ it states the limit of what it can prove — current_database cannot identify the project", () => {
+    // Asserted as independent claims: the text is wrapped across comment lines, and reflowing prose
+    // to satisfy a regex is the wrong direction — the assertion should match the meaning.
+    expect(pack).toMatch(/CANNOT/);
+    expect(pack).toMatch(/current_database\(\)/);
+    expect(pack).toMatch(/EVERY Supabase project/i);
+    expect(pack).toMatch(/distinguishes nothing/i);
+    expect(pack).toMatch(/SQL Editor of that\s*--\s*specific project|opened the SQL Editor/i);
+  });
+
+  test("no capability adjudication leaks into the identity check", () => {
+    const code = pack.replace(/--.*$/gm, "");
+    for (const capability of ["rolsuper", "rolbypassrls", "pg_event_trigger", "pg_available_extensions", "pg_extension"]) {
+      expect(code).not.toContain(capability);
+    }
+  });
+
+  test("hosted_sql_read remains unauthorized — preparing the pack does not authorize running it", () => {
+    const tpl = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
+    expect(tpl.safety.hosted_sql_read_authorized).toBe(false);
+    const r = classifyR02Target(candidateManifest(), { operation: R02_OPERATIONS.HOSTED_SQL_READ, bootstrapVersion: "0060" });
+    expect(r.decision).toBe(R02_DECISION.REFUSED);
+  });
+});
