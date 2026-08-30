@@ -99,9 +99,14 @@ describe("guard · the future probe authorization behaves correctly", () => {
       expect(classifyR02Target(m, probeReq()).decision, ref).toBe(R02_DECISION.REFUSED);
     }
   });
-  test("LIVE STATE: mutation_test_authorized is false in the committed manifest", () => {
+  test("★ an unauthorized manifest cannot run the probe — authorization is a separate explicit act", () => {
+    // R-02 Phase 3B subsequently granted the probe, so the committed manifest now carries true.
+    // The property was never "the manifest says false" — it is that a manifest WITHOUT the grant
+    // is refused. Re-anchored so the test keeps meaning something after a deliberate authorization.
+    const r = classifyR02Target(manifest({ mutation_test_authorized: false }), probeReq());
+    expect(r.decision).toBe(R02_DECISION.REFUSED);
+    expect(r.reasons).toContain(R02_REFUSAL.MUTATION_TEST_NOT_AUTHORIZED);
     const tpl = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
-    expect(tpl.safety.mutation_test_authorized).toBe(false);
     expect(tpl.expected_model.probe_version).toBe(PROBE_VERSION);
   });
 });
@@ -201,6 +206,55 @@ describe("probe policy · only the exact reviewed DDL is permitted", () => {
       .toMatchObject({ kind: "create_event_trigger", name: PROBE_TRIGGER });
     expect(classifyProbeStatement(`drop event trigger if exists ${PROBE_TRIGGER}`)).toMatchObject({ kind: "drop_event_trigger" });
     expect(classifyProbeStatement(`drop function if exists public.${PROBE_FUNCTION}()`)).toMatchObject({ kind: "drop_function" });
+  });
+});
+
+describe("3B · the granted authorization is exactly one probe", () => {
+  const grant = async () => (await import("../scripts/lib/r02TargetGuard.mjs")).MUTATION_TEST_AUTHORIZATION;
+
+  test("★ 27 · POSITIVE CONTROL — authorization can actually succeed for the reviewed probe", () => {
+    const live = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
+    const m = { environment: { name: TARGET.projectName, classification: "nonproduction" },
+                supabase: { project_ref: TARGET.ref },
+                safety: { ...live.safety, allowlisted_refs: [TARGET.ref] },
+                expected_model: live.expected_model };
+    const r = classifyR02Target(m, probeReq());
+    expect(r.reasons).toEqual([]);
+    expect(r.decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);
+  });
+  test("★ the grant is a single entry, one operation, one probe version", async () => {
+    const g = (await grant())[0];
+    expect((await grant())).toHaveLength(1);
+    expect(g.ref).toBe(TARGET.ref);
+    expect(g.grants).toEqual(["event_trigger_probe"]);
+    expect(g.probeVersion).toBe(PROBE_VERSION);
+    expect(g.probeFunction).toBe(PROBE_FUNCTION);
+    expect(g.probeTrigger).toBe(PROBE_TRIGGER);
+  });
+  test("★ it withholds every other operation, and names the canonical objects it forbids", async () => {
+    const g = (await grant())[0];
+    expect(g.withholds).toEqual(["bootstrap_apply", "destructive_reset", "migration_metadata_write", "deploy"]);
+    expect(g.forbidsCanonicalObjects).toEqual(["ensure_rls", "rls_auto_enable"]);
+  });
+  test("★ the pinned probe SHA-256 matches the committed probe — an edited probe cannot inherit this approval", async () => {
+    const { createHash } = await import("node:crypto");
+    const actual = createHash("sha256").update(readFileSync(join(ROOT, "docs/r02/event-trigger-probe.sql"))).digest("hex");
+    expect((await grant())[0].probeSqlSha256).toBe(actual);
+  });
+  test("★ the grant does not reach any protected ref", async () => {
+    for (const g of await grant()) expect(PROTECTED).not.toContain(g.ref);
+  });
+  test("★ execution is recorded as manual — automation is not authorized to run it", async () => {
+    expect((await grant())[0].executedBy).toMatch(/manually/i);
+    expect((await grant())[0].executedBy).toMatch(/never by automation/i);
+  });
+  test("live manifest: probe authorized, every mutation flag still false", () => {
+    const live = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
+    expect(live.safety.mutation_test_authorized).toBe(true);
+    for (const f of ["bootstrap_authorized", "destructive_reset_authorized",
+                     "migration_metadata_write_authorized", "deployment_authorized"]) {
+      expect(live.safety[f], f).toBe(false);
+    }
   });
 });
 
