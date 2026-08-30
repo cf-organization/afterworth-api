@@ -44,6 +44,8 @@ export const R02_REFUSAL = Object.freeze({
   MUTATION_NOT_AUTHORIZED: 'bootstrap_mutation_not_authorized',
   DESTRUCTIVE_NOT_AUTHORIZED: 'destructive_reset_not_authorized',
   HOSTED_SQL_READ_NOT_AUTHORIZED: 'hosted_sql_read_not_authorized',
+  MUTATION_TEST_NOT_AUTHORIZED: 'mutation_test_not_authorized',
+  PROBE_VERSION_MISMATCH: 'probe_version_mismatch',
   MIGRATION_METADATA_WRITE_NOT_AUTHORIZED: 'migration_metadata_write_not_authorized',
   DEPLOY_NOT_AUTHORIZED: 'deployment_not_authorized',
   BOOTSTRAP_VERSION_MISMATCH: 'bootstrap_version_mismatch',
@@ -72,6 +74,12 @@ export const R02_OPERATIONS = Object.freeze({
   READ_ONLY_PREFLIGHT: 'read_only_preflight',
   /** Executing the SELECT-only capability pack against the hosted target. */
   HOSTED_SQL_READ: 'hosted_sql_read',
+  /**
+   * The isolated event-trigger privilege probe.
+   * ★ ITS OWN OPERATION AND ITS OWN FLAG. It is narrower than a bootstrap and must not be reachable
+   *   through bootstrap_authorized — the two answer different questions and carry different risk.
+   */
+  EVENT_TRIGGER_PROBE: 'event_trigger_probe',
   BOOTSTRAP_APPLY: 'bootstrap_apply',
   DESTRUCTIVE_RESET: 'destructive_reset',
   MIGRATION_METADATA_WRITE: 'migration_metadata_write',
@@ -90,6 +98,7 @@ export const LOCAL_ONLY_OPERATIONS = Object.freeze([
 /** operation -> the manifest flag that must be exactly true. */
 export const OPERATION_AUTHORIZATION_FLAG = Object.freeze({
   hosted_sql_read: 'hosted_sql_read_authorized',
+  event_trigger_probe: 'mutation_test_authorized',
   bootstrap_apply: 'bootstrap_authorized',
   destructive_reset: 'destructive_reset_authorized',
   migration_metadata_write: 'migration_metadata_write_authorized',
@@ -298,6 +307,7 @@ export function classifyR02Target(manifest, request = {}) {
   const flagFor = { ...OPERATION_AUTHORIZATION_FLAG };
   const reasonFor = {
     hosted_sql_read: R02_REFUSAL.HOSTED_SQL_READ_NOT_AUTHORIZED,
+    event_trigger_probe: R02_REFUSAL.MUTATION_TEST_NOT_AUTHORIZED,
     bootstrap_apply: R02_REFUSAL.MUTATION_NOT_AUTHORIZED,
     destructive_reset: R02_REFUSAL.DESTRUCTIVE_NOT_AUTHORIZED,
     migration_metadata_write: R02_REFUSAL.MIGRATION_METADATA_WRITE_NOT_AUTHORIZED,
@@ -312,6 +322,17 @@ export function classifyR02Target(manifest, request = {}) {
     // Unrecognized operation already failed R7; refuse here too rather than fall through to a pass.
     fail('R8_operation_authorized', R02_REFUSAL.OPERATION_UNRECOGNIZED);
   }
+
+  /* ── R8b · THE PROBE VERSION IS PINNED ───────────────────────────────────────────────────────
+   * ★ An authorization is for ONE reviewed probe, not for "whatever the probe file says today".
+   *   Requiring the caller to name the version means a later edit to the probe cannot inherit an
+   *   approval granted to a different one. */
+  if (op === R02_OPERATIONS.EVENT_TRIGGER_PROBE) {
+    const want = str(request?.probeVersion);
+    if (want === '' || want !== str(manifest?.expected_model?.probe_version)) {
+      fail('R8b_probe_version', R02_REFUSAL.PROBE_VERSION_MISMATCH);
+    } else pass('R8b_probe_version');
+  } else pass('R8b_probe_version');
 
   /* ── R9 · THE MANIFEST MUST AGREE WITH THE REPOSITORY'S BOOTSTRAP VERSION ─────────────────── */
   const want = str(request?.bootstrapVersion);
