@@ -45,10 +45,16 @@ const manifest = (over: Record<string, unknown> = {}, model: Record<string, unkn
 const probeReq = (over = {}) => ({ operation: R02_OPERATIONS.EVENT_TRIGGER_PROBE, bootstrapVersion: "0060", probeVersion: PROBE_VERSION, ...over });
 
 describe("guard · the future probe authorization behaves correctly", () => {
-  test("★ 1 · exact ref + explicit grant authorizes ONLY the probe", () => {
+  test("★ 1 · a fully valid probe request is refused ONLY because the grant is consumed", () => {
+    // Probe v1 ran on 2026-08-30 and the grant is now marked consumed, so this can no longer be
+    // MUTATION_AUTHORIZED. The property re-anchored here is stronger than the original: the request
+    // is otherwise completely valid, so CONSUMPTION is the single reason for refusal. If any other
+    // gate had broken, a different reason would appear alongside it.
     const r = classifyR02Target(manifest({ mutation_test_authorized: true }), probeReq());
-    expect(r.reasons).toEqual([]);
-    expect(r.decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);
+    expect(r.reasons).toEqual([R02_REFUSAL.PROBE_ALREADY_CONSUMED]);
+    expect(r.decision).toBe(R02_DECISION.REFUSED);
+    // every other guard passed:
+    expect(r.guards.filter((g) => !g.pass).map((g) => g.id)).toEqual(["R8_operation_authorized"]);
   });
   test.each([
     ["2 bootstrap", "bootstrap_apply"], ["3 destructive reset", "destructive_reset"],
@@ -90,9 +96,11 @@ describe("guard · the future probe authorization behaves correctly", () => {
     const flags = Object.values(OPERATION_AUTHORIZATION_FLAG);
     expect(new Set(flags).size).toBe(flags.length);
   });
-  test("★ 26 · MUTATION KILL — substituting a protected ref into an otherwise valid probe request", () => {
+  test("★ 26 · MUTATION KILL — a protected ref fails EARLIER than the consumed check", () => {
+    // Control: for the registered ref, the only failing gate is the consumed-grant check.
     const valid = classifyR02Target(manifest({ mutation_test_authorized: true }), probeReq());
-    expect(valid.decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);       // control: it WOULD pass
+    expect(valid.guards.filter((g) => !g.pass).map((g) => g.id)).toEqual(["R8_operation_authorized"]);
+    // A protected ref additionally fails the forbidden-target rule — a different, earlier gate.
     for (const ref of PROTECTED) {
       const m = manifest({ mutation_test_authorized: true, allowlisted_refs: [ref] });
       (m.supabase as Record<string, unknown>).project_ref = ref;
@@ -212,15 +220,14 @@ describe("probe policy · only the exact reviewed DDL is permitted", () => {
 describe("3B · the granted authorization is exactly one probe", () => {
   const grant = async () => (await import("../scripts/lib/r02TargetGuard.mjs")).MUTATION_TEST_AUTHORIZATION;
 
-  test("★ 27 · POSITIVE CONTROL — authorization can actually succeed for the reviewed probe", () => {
+  test("★ 27 · the grant is now CONSUMED — recorded with its outcome, not silently dropped", async () => {
+    const g = (await grant())[0];
+    expect(g.consumed).toBe(true);
+    expect(g.consumedAt).toBe("2026-08-30");
+    expect(g.outcome).toBe("EVENT_TRIGGER_CREATION_SUCCEEDED_AND_CLEANED");
+    // A one-question authorization must not survive the answer as a standing mutation licence.
     const live = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
-    const m = { environment: { name: TARGET.projectName, classification: "nonproduction" },
-                supabase: { project_ref: TARGET.ref },
-                safety: { ...live.safety, allowlisted_refs: [TARGET.ref] },
-                expected_model: live.expected_model };
-    const r = classifyR02Target(m, probeReq());
-    expect(r.reasons).toEqual([]);
-    expect(r.decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);
+    expect(live.safety.mutation_test_authorized).toBe(false);
   });
   test("★ the grant is a single entry, one operation, one probe version", async () => {
     const g = (await grant())[0];
@@ -248,13 +255,17 @@ describe("3B · the granted authorization is exactly one probe", () => {
     expect((await grant())[0].executedBy).toMatch(/manually/i);
     expect((await grant())[0].executedBy).toMatch(/never by automation/i);
   });
-  test("live manifest: probe authorized, every mutation flag still false", () => {
+  test("live manifest: the probe flag returned to false after consumption, and nothing else moved", () => {
+    // Was true during Phase 3B while the probe was pending. Returned to false in Phase 4A once the
+    // probe had run and been cleaned. Every other mutation flag has never been true.
     const live = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
-    expect(live.safety.mutation_test_authorized).toBe(true);
-    for (const f of ["bootstrap_authorized", "destructive_reset_authorized",
-                     "migration_metadata_write_authorized", "deployment_authorized"]) {
+    expect(live.safety.mutation_test_authorized).toBe(false);
+    for (const f of ["bootstrap_authorized", "model_c_bootstrap_0060_authorized",
+                     "destructive_reset_authorized", "migration_metadata_write_authorized",
+                     "deployment_authorized"]) {
       expect(live.safety[f], f).toBe(false);
     }
+    expect(live.safety.hosted_sql_read_authorized).toBe(true);   // reads remain authorized
   });
 });
 

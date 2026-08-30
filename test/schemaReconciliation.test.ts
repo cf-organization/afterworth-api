@@ -230,11 +230,15 @@ describe("reconciliation detects mutation of the live side", () => {
 });
 
 describe("determinism — the guard against stateful matchers", () => {
+  // CPU-bound, not slow-by-defect: it parses all 215 db/ SQL files TWICE, which is the whole point.
+  // 0.4-1.1s alone, but up to ~8s when 35 suites run in parallel on a loaded machine. The default
+  // 5s timeout was measuring contention rather than the property. Raised deliberately, with the
+  // measurement recorded, rather than quietly retried until green.
   test("two runs in one process produce identical results", () => {
     const a = JSON.stringify(reconcile({ live: inventory(repoFiles[0].sql), repo: repositoryObjects(repoFiles) }));
     const b = JSON.stringify(reconcile({ live: inventory(repoFiles[0].sql), repo: repositoryObjects(repoFiles) }));
     expect(a).toBe(b);
-  });
+  }, 30_000);
   test("splitStatements is stable across repeated calls", () => {
     const sql = readFileSync(join(ROOT, "db/tables/estates.sql"), "utf8");
     expect(splitStatements(sql).length).toBe(splitStatements(sql).length);

@@ -45,6 +45,10 @@ export const R02_REFUSAL = Object.freeze({
   DESTRUCTIVE_NOT_AUTHORIZED: 'destructive_reset_not_authorized',
   HOSTED_SQL_READ_NOT_AUTHORIZED: 'hosted_sql_read_not_authorized',
   MUTATION_TEST_NOT_AUTHORIZED: 'mutation_test_not_authorized',
+  PROBE_ALREADY_CONSUMED: 'probe_authorization_already_consumed',
+  BOOTSTRAP_MANIFEST_MISMATCH: 'bootstrap_manifest_hash_mismatch',
+  MODEL_C_BOOTSTRAP_NOT_AUTHORIZED: 'model_c_bootstrap_0060_not_authorized',
+  TARGET_NOT_REGISTERED: 'target_not_a_registered_r02_candidate',
   PROBE_VERSION_MISMATCH: 'probe_version_mismatch',
   MIGRATION_METADATA_WRITE_NOT_AUTHORIZED: 'migration_metadata_write_not_authorized',
   DEPLOY_NOT_AUTHORIZED: 'deployment_not_authorized',
@@ -80,6 +84,8 @@ export const R02_OPERATIONS = Object.freeze({
    *   through bootstrap_authorized — the two answer different questions and carry different risk.
    */
   EVENT_TRIGGER_PROBE: 'event_trigger_probe',
+  /** The fixed Model C bootstrap at VERSION 0060. Its own operation and its own flag. */
+  MODEL_C_BOOTSTRAP_0060: 'model_c_bootstrap_0060',
   BOOTSTRAP_APPLY: 'bootstrap_apply',
   DESTRUCTIVE_RESET: 'destructive_reset',
   MIGRATION_METADATA_WRITE: 'migration_metadata_write',
@@ -99,6 +105,11 @@ export const LOCAL_ONLY_OPERATIONS = Object.freeze([
 export const OPERATION_AUTHORIZATION_FLAG = Object.freeze({
   hosted_sql_read: 'hosted_sql_read_authorized',
   event_trigger_probe: 'mutation_test_authorized',
+  // ★ ITS OWN FLAG, NOT bootstrap_authorized. Sharing the generic flag would mean a broad
+  //   "bootstrap" approval silently authorized this specific hash-pinned 921-statement run — the
+  //   exact flag-collapsing this model exists to prevent. It also violated the distinctness rule,
+  //   which a test caught immediately.
+  model_c_bootstrap_0060: 'model_c_bootstrap_0060_authorized',
   bootstrap_apply: 'bootstrap_authorized',
   destructive_reset: 'destructive_reset_authorized',
   migration_metadata_write: 'migration_metadata_write_authorized',
@@ -258,6 +269,15 @@ export const MUTATION_TEST_AUTHORIZATION = Object.freeze([
     probeTrigger: 'r02_probe_event_trigger_v1',
     probeSqlSha256: '38481de565e71df9cc5b1472cd80abfe2015b81a733379e2d39e4429b1c191dc',
     authorizedBy: 'operator, R-02 Phase 3B',
+    /**
+     * ★ CONSUMED. The probe ran on 2026-08-30 and was cleaned up
+     *   (EVENT_TRIGGER_CREATION_SUCCEEDED_AND_CLEANED). A one-question authorization that stays
+     *   live after the question is answered is a standing licence to mutate a hosted database for
+     *   no remaining reason. Re-running v1 requires a new grant.
+     */
+    consumed: true,
+    consumedAt: '2026-08-30',
+    outcome: 'EVENT_TRIGGER_CREATION_SUCCEEDED_AND_CLEANED',
     grants: Object.freeze(['event_trigger_probe']),
     withholds: Object.freeze(['bootstrap_apply', 'destructive_reset', 'migration_metadata_write', 'deploy']),
     forbidsCanonicalObjects: Object.freeze(['ensure_rls', 'rls_auto_enable']),
@@ -341,6 +361,7 @@ export function classifyR02Target(manifest, request = {}) {
   const reasonFor = {
     hosted_sql_read: R02_REFUSAL.HOSTED_SQL_READ_NOT_AUTHORIZED,
     event_trigger_probe: R02_REFUSAL.MUTATION_TEST_NOT_AUTHORIZED,
+    model_c_bootstrap_0060: R02_REFUSAL.MODEL_C_BOOTSTRAP_NOT_AUTHORIZED,
     bootstrap_apply: R02_REFUSAL.MUTATION_NOT_AUTHORIZED,
     destructive_reset: R02_REFUSAL.DESTRUCTIVE_NOT_AUTHORIZED,
     migration_metadata_write: R02_REFUSAL.MIGRATION_METADATA_WRITE_NOT_AUTHORIZED,
@@ -348,7 +369,12 @@ export function classifyR02Target(manifest, request = {}) {
   };
   if (Object.prototype.hasOwnProperty.call(flagFor, op)) {
     if (manifest?.safety?.[flagFor[op]] !== true) fail('R8_operation_authorized', reasonFor[op]);
-    else pass('R8_operation_authorized');
+    else if (op === R02_OPERATIONS.EVENT_TRIGGER_PROBE
+             && MUTATION_TEST_AUTHORIZATION.some((g) => g.ref === ref && g.consumed === true)) {
+      // ★ A CONSUMED GRANT CANNOT RE-AUTHORIZE. The manifest flag alone is not enough once the
+      //   question has been answered — otherwise the flag becomes a standing mutation licence.
+      fail('R8_operation_authorized', R02_REFUSAL.PROBE_ALREADY_CONSUMED);
+    } else pass('R8_operation_authorized');
   } else if (LOCAL_ONLY_OPERATIONS.includes(op)) {
     pass('R8_operation_authorized');
   } else {
@@ -366,6 +392,24 @@ export function classifyR02Target(manifest, request = {}) {
       fail('R8b_probe_version', R02_REFUSAL.PROBE_VERSION_MISMATCH);
     } else pass('R8b_probe_version');
   } else pass('R8b_probe_version');
+
+  /* ── R8c · THE BOOTSTRAP IS AUTHORIZED BY HASH, NOT BY INSPECTION ────────────────────────────
+   * ★ Verb-level inspection cannot make a 921-statement bootstrap safe — one substituted statement
+   *   in 921 would pass any plausible allowlist. The caller must name the cumulative manifest hash,
+   *   so an altered phase file cannot inherit an approval granted to a different bootstrap. */
+  if (op === R02_OPERATIONS.MODEL_C_BOOTSTRAP_0060) {
+    const want = str(request?.bootstrapManifestSha256);
+    if (want === '' || want !== str(manifest?.expected_model?.bootstrap_manifest_sha256)) {
+      fail('R8c_bootstrap_manifest', R02_REFUSAL.BOOTSTRAP_MANIFEST_MISMATCH);
+    } else if (!CANDIDATE_R02_TARGETS.some((t) => t.ref === ref)) {
+      // ★ THE BOOTSTRAP IS PINNED TO THE REGISTERED TARGET, NOT MERELY TO THE ALLOWLIST.
+      //   The allowlist is operator-declared and is the right mechanism for a read: it proves the
+      //   operator named the ref deliberately. It is NOT sufficient for a 921-statement mutation,
+      //   where a mistyped-but-allowlisted ref would be authorized. A test caught exactly that:
+      //   an unknown well-formed ref, self-allowlisted, was returned MUTATION_AUTHORIZED.
+      fail('R8c_bootstrap_manifest', R02_REFUSAL.TARGET_NOT_REGISTERED);
+    } else pass('R8c_bootstrap_manifest');
+  } else pass('R8c_bootstrap_manifest');
 
   /* ── R9 · THE MANIFEST MUST AGREE WITH THE REPOSITORY'S BOOTSTRAP VERSION ─────────────────── */
   const want = str(request?.bootstrapVersion);
