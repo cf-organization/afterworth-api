@@ -21,7 +21,7 @@ import {
 import {
   classifyR02Target, R02_OPERATIONS, R02_DECISION, R02_REFUSAL,
   CANDIDATE_R02_TARGETS, FORBIDDEN_TARGETS, OPERATION_AUTHORIZATION_FLAG,
-  MUTATION_TEST_AUTHORIZATION, LOCAL_ONLY_OPERATIONS,
+  MUTATION_TEST_AUTHORIZATION, LOCAL_ONLY_OPERATIONS, MODEL_C_BOOTSTRAP_AUTHORIZATION,
 } from "../scripts/lib/r02TargetGuard.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -125,10 +125,12 @@ describe("execution audit — hash-pinned", () => {
 });
 
 describe("bootstrap authorization guard", () => {
-  test("★ 2 · bootstrap authorization is FALSE by default", () => {
-    const live = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
-    expect(live.safety.model_c_bootstrap_0060_authorized).toBe(false);
-    expect(classifyR02Target(manifest(), req()).decision).toBe(R02_DECISION.REFUSED);
+  test("★ 2 · a manifest WITHOUT the grant is refused — authorization is a separate explicit act", () => {
+    // R-02 Phase 4B subsequently granted the bootstrap, so the committed manifest now carries true.
+    // The property was never "the file says false"; it is that absence of the grant refuses.
+    const r = classifyR02Target(manifest(), req());
+    expect(r.decision).toBe(R02_DECISION.REFUSED);
+    expect(r.reasons).toContain(R02_REFUSAL.MODEL_C_BOOTSTRAP_NOT_AUTHORIZED);
   });
   test("★ 21b · POSITIVE CONTROL: with the grant it WOULD authorize — the refusals are not vacuous", () => {
     const r = classifyR02Target(manifest({ model_c_bootstrap_0060_authorized: true }), req());
@@ -252,5 +254,114 @@ describe("design documents record what evidence supports", () => {
   test("equivalence reuses the canonical auditor rather than redefining it", () => {
     expect(plan).toMatch(/not a second, inconsistent definition of equivalence/i);
     expect(plan).toMatch(/bootstrapFreshRun/);
+  });
+});
+
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * 4B — the granted bootstrap authorization.
+ *
+ * ★ 921 STATEMENTS ON A REAL HOSTED DATABASE. The grant is pinned to one ref, one version and one
+ *   cumulative manifest hash, and it deliberately carries NO recovery authorization: if a phase
+ *   fails after mutation the environment is PARTIAL_BOOTSTRAP and the operator stops. Letting a
+ *   bootstrap approval imply "and undo it if it goes wrong" would turn one decision into two, and
+ *   the second one is destructive.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+describe("4B · bootstrap grant", () => {
+  const G = () => MODEL_C_BOOTSTRAP_AUTHORIZATION[0];
+  const live = () => JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
+  const liveManifest = (over: Record<string, unknown> = {}) => {
+    const l = live();
+    return { environment: { name: TARGET.projectName, classification: "nonproduction" },
+             supabase: { project_ref: TARGET.ref },
+             safety: { ...l.safety, allowlisted_refs: [TARGET.ref], ...over },
+             expected_model: l.expected_model };
+  };
+
+  test("★ 1/26 · POSITIVE CONTROL — exact target + version + manifest authorizes", () => {
+    const r = classifyR02Target(liveManifest(), req());
+    expect(r.reasons).toEqual([]);
+    expect(r.decision).toBe(R02_DECISION.MUTATION_AUTHORIZED);
+  });
+  test("★ the grant is one entry pinned to the merged-main manifest hash", () => {
+    expect(MODEL_C_BOOTSTRAP_AUTHORIZATION).toHaveLength(1);
+    expect(G().ref).toBe(TARGET.ref);
+    expect(G().bootstrapVersion).toBe("0060");
+    expect(G().manifestSha256).toBe(MAN.cumulative_bootstrap_sha256);
+    expect(G().executableStatements).toBe(921);
+    expect(G().phaseCount).toBe(13);
+    expect(G().grants).toEqual(["model_c_bootstrap_0060"]);
+  });
+  test("★ 21/22 · it authorizes NO recovery, reset, metadata write or deploy", () => {
+    expect(G().recoveryAuthorized).toBe(false);
+    expect(G().withholds).toContain("destructive_reset");
+    expect(G().withholds).toContain("migration_metadata_write");
+    expect(G().withholds).toContain("deploy");
+    expect(G().partialFailurePolicy).toMatch(/PARTIAL_BOOTSTRAP/);
+    const l = live();
+    for (const f of ["destructive_reset_authorized", "migration_metadata_write_authorized",
+                     "deployment_authorized", "bootstrap_authorized", "mutation_test_authorized"]) {
+      expect(l.safety[f], f).toBe(false);
+    }
+  });
+  test.each([
+    ["2  wrong target", "zzzzzzzzzzzzzzzzzzzz"],
+    ["5  malformed ref", "not-a-ref"],
+    ["6  unknown ref", "aaaaaaaaaaaaaaaaaaaa"],
+  ])("★ %s refuses even when self-allowlisted", (_l, ref) => {
+    const m = liveManifest({ allowlisted_refs: [ref] });
+    (m.supabase as Record<string, unknown>).project_ref = ref;
+    expect(classifyR02Target(m, req()).decision).toBe(R02_DECISION.REFUSED);
+  });
+  test.each(PROTECTED)("★ 3/4/27 · %s refuses with EVERY flag true", (ref) => {
+    const m = liveManifest({ allowlisted_refs: [ref] });
+    (m.supabase as Record<string, unknown>).project_ref = ref;
+    for (const f of Object.values(OPERATION_AUTHORIZATION_FLAG)) (m.safety as Record<string, unknown>)[f] = true;
+    expect(classifyR02Target(m, req()).decision).toBe(R02_DECISION.REFUSED);
+  });
+  test.each([[undefined], [false], ["true"], [1], [null]])("★ 7/8/9 · authorization flag %s refuses", (flag) => {
+    expect(classifyR02Target(liveManifest({ model_c_bootstrap_0060_authorized: flag as never }), req()).decision)
+      .toBe(R02_DECISION.REFUSED);
+  });
+  test("★ 10 · wrong VERSION refuses", () => {
+    expect(classifyR02Target(liveManifest(), req({ bootstrapVersion: "0061" })).reasons)
+      .toContain(R02_REFUSAL.BOOTSTRAP_VERSION_MISMATCH);
+  });
+  test.each([["11 missing", ""], ["12 wrong", "f".repeat(64)], ["13 stale branch value", "0".repeat(64)]])
+    ("★ %s manifest hash refuses", (_l, hash) => {
+      expect(classifyR02Target(liveManifest(), req({ bootstrapManifestSha256: hash })).reasons)
+        .toContain(R02_REFUSAL.BOOTSTRAP_MANIFEST_MISMATCH);
+    });
+  test.each([
+    ["23 consumed probe grant", { mutation_test_authorized: true }],
+    ["24 hosted-read grant", { hosted_sql_read_authorized: true }],
+    ["25 generic bootstrap_authorized", { bootstrap_authorized: true }],
+  ])("★ %s cannot authorize this operation", (_l, over) => {
+    const m = liveManifest({ model_c_bootstrap_0060_authorized: false, ...over });
+    expect(classifyR02Target(m, req()).decision).toBe(R02_DECISION.REFUSED);
+  });
+  test("★ 28/29/30 · MUTATION KILLS on the execution set, with the control alive", () => {
+    // Control: the real set is authorized, so the refusals below are the mutations biting.
+    expect(auditBootstrapExecution(MAN, exec(), sha).verdict).toBe(BOOTSTRAP_AUDIT.OK);
+    const f = realFiles();
+    const kills = [
+      ["hash mutation", exec({ files: f.map((x, i) => i === 6 ? { ...x, sha256: "9".repeat(64) } : x) })],
+      ["phase reorder", exec({ files: [...f.slice(0, 5), f[6], f[5], ...f.slice(7)] })],
+      ["appended SQL", exec({ files: [...f, { file: "db/bootstrap/130_extra.sql", sha256: "8".repeat(64) }] })],
+    ] as const;
+    for (const [label, e] of kills) {
+      expect(auditBootstrapExecution(MAN, e, sha).verdict, label).toBe(BOOTSTRAP_AUDIT.REFUSED);
+    }
+  });
+  test("execution is manual and phase-by-phase — automation is not authorized", () => {
+    expect(G().executedBy).toMatch(/manually/i);
+    expect(G().executedBy).toMatch(/phase-by-phase/i);
+    expect(G().executedBy).toMatch(/never by automation/i);
+  });
+  test("★ the grant's statement count matches the canonical files, not a remembered number", () => {
+    const onDisk = MAN.phases.reduce((a: number, p: { statements: number }) => a + p.statements, 0);
+    expect(G().executableStatements).toBe(onDisk);
+    expect(onDisk).toBe(921);
   });
 });

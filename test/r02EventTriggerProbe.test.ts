@@ -260,9 +260,10 @@ describe("3B · the granted authorization is exactly one probe", () => {
     // probe had run and been cleaned. Every other mutation flag has never been true.
     const live = JSON.parse(readFileSync(join(ROOT, "docs/r02/environment-manifest.example.json"), "utf8"));
     expect(live.safety.mutation_test_authorized).toBe(false);
-    for (const f of ["bootstrap_authorized", "model_c_bootstrap_0060_authorized",
-                     "destructive_reset_authorized", "migration_metadata_write_authorized",
-                     "deployment_authorized"]) {
+    // model_c_bootstrap_0060_authorized was deliberately granted in Phase 4B and is excluded here;
+    // this test is about the PROBE flag and the flags that have never been true.
+    for (const f of ["bootstrap_authorized", "destructive_reset_authorized",
+                     "migration_metadata_write_authorized", "deployment_authorized"]) {
       expect(live.safety[f], f).toBe(false);
     }
     expect(live.safety.hosted_sql_read_authorized).toBe(true);   // reads remain authorized

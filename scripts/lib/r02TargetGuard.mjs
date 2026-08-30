@@ -285,6 +285,41 @@ export const MUTATION_TEST_AUTHORIZATION = Object.freeze([
   }),
 ]);
 
+/**
+ * ★ THE BOOTSTRAP GRANT — 921 STATEMENTS, ONE PROJECT, ONE VERSION, ONE MANIFEST HASH.
+ *
+ * The largest authorization in this programme. Recorded in source so it appears in a diff, in
+ * review and in `git log`, and pinned to the CUMULATIVE MANIFEST HASH computed from merged main —
+ * so a bootstrap edited by even one byte cannot inherit this approval.
+ *
+ * ★ IT DOES NOT AUTHORIZE RECOVERY. There is deliberately no accompanying reset or cleanup grant.
+ *   If a phase fails after mutation the environment is PARTIAL_BOOTSTRAP and the operator stops —
+ *   because the alternative, letting a bootstrap approval imply "and undo it if it goes wrong",
+ *   turns one decision into two and the second one is destructive.
+ *
+ * ★ IT DOES NOT AUTHORIZE MIGRATION METADATA. Nothing may write supabase_migrations, and no history
+ *   for 0001-0060 may be fabricated. Those migrations are not replayed and must not be recorded as
+ *   though they were.
+ */
+export const MODEL_C_BOOTSTRAP_AUTHORIZATION = Object.freeze([
+  Object.freeze({
+    ref: 'qxzeougbaarecaiiqsay',
+    projectName: 'afterworth-nonprod',
+    operation: 'model_c_bootstrap_0060',
+    bootstrapVersion: '0060',
+    manifestSha256: '69ec3a15fa3ad9380fae401b46d715b4259a74a4517b79ac63ba12e58f16ad67',
+    phaseCount: 13,
+    executableStatements: 921,
+    setPreambleStatements: 28,
+    authorizedBy: 'operator, R-02 Phase 4B',
+    grants: Object.freeze(['model_c_bootstrap_0060']),
+    withholds: Object.freeze(['event_trigger_probe', 'destructive_reset', 'migration_metadata_write', 'deploy', 'bootstrap_apply']),
+    executedBy: 'operator, manually, phase-by-phase in the Supabase SQL Editor — never by automation',
+    recoveryAuthorized: false,
+    partialFailurePolicy: 'HALT and classify PARTIAL_BOOTSTRAP; destructive reset requires separate authorization',
+  }),
+]);
+
 /** A Supabase project ref: exactly 20 lowercase letters. */
 const REF = /^[a-z]{20}$/;
 

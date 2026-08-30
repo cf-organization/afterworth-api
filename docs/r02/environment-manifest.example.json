@@ -24,7 +24,7 @@
     "migration_metadata_write_authorized": false,
     "deployment_authorized": false,
     "mutation_test_authorized": false,
-    "model_c_bootstrap_0060_authorized": false
+    "model_c_bootstrap_0060_authorized": true
   },
   "expected_model": {
     "bootstrap_version": "0060",
@@ -41,6 +41,7 @@
     "mutation_test_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, for event_trigger_probe ONLY, at probe_version v1 ONLY. Every other flag stays false. See MUTATION_TEST_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs, which also pins the probe SQL SHA-256 so an edited probe cannot inherit this approval.",
     "mutation_test_authorized was returned to FALSE after probe v1 was executed and cleaned. The grant is marked consumed in MUTATION_TEST_AUTHORIZATION, and the guard refuses a consumed probe even if the flag were set true again - a one-question authorization must not become a standing mutation licence.",
     "bootstrap_manifest_sha256 pins the cumulative hash of all 13 bootstrap phase files. MODEL_C_BOOTSTRAP_0060 is authorized by HASH, not by verb inspection: one substituted statement in 921 would pass any plausible allowlist.",
-    "model_c_bootstrap_0060_authorized is DISTINCT from bootstrap_authorized. A broad bootstrap approval must not silently authorize this specific hash-pinned 921-statement run."
+    "model_c_bootstrap_0060_authorized is DISTINCT from bootstrap_authorized. A broad bootstrap approval must not silently authorize this specific hash-pinned 921-statement run.",
+    "model_c_bootstrap_0060_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, VERSION 0060 ONLY, manifest hash 69ec3a15...ad67 ONLY. It authorizes applying the bootstrap; it does NOT authorize recovery, reset, migration metadata writes, or deployment. A phase failing after mutation means PARTIAL_BOOTSTRAP and a stop, not an undo."
   ]
 }
