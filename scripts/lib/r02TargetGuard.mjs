@@ -232,6 +232,39 @@ export const HOSTED_READ_AUTHORIZATION = Object.freeze([
   }),
 ]);
 
+/**
+ * ★ EXPLICIT MUTATION AUTHORIZATION — ONE PROBE, ONE VERSION, ONE REF, ONE OPERATION.
+ *
+ * The first authorization in this programme that permits a hosted WRITE. It is deliberately the
+ * narrowest possible grant: a single disposable event trigger and its single disposable function,
+ * on one project, under one reviewed probe version.
+ *
+ * ★ IT AUTHORIZES A QUESTION, NOT AN OUTCOME. The probe is EXPECTED to be refused — the hosted
+ *   execution role has rolsuper = false, and local validation reproduced
+ *   "Must be superuser to create an event trigger" for exactly that shape of role. A refusal is the
+ *   measurement succeeding, not the probe failing, and no escalation is authorized in response.
+ *
+ * ★ IT CONFERS NOTHING ELSE. Not a bootstrap, not a reset, not a metadata write, not a deploy, not
+ *   the canonical ensure_rls / rls_auto_enable objects, not a second probe version. Widening it
+ *   requires a new reviewed entry, which shows up in a diff.
+ */
+export const MUTATION_TEST_AUTHORIZATION = Object.freeze([
+  Object.freeze({
+    ref: 'qxzeougbaarecaiiqsay',
+    projectName: 'afterworth-nonprod',
+    operation: 'event_trigger_probe',
+    probeVersion: 'v1',
+    probeFunction: 'r02_probe_event_fn_v1',
+    probeTrigger: 'r02_probe_event_trigger_v1',
+    probeSqlSha256: '38481de565e71df9cc5b1472cd80abfe2015b81a733379e2d39e4429b1c191dc',
+    authorizedBy: 'operator, R-02 Phase 3B',
+    grants: Object.freeze(['event_trigger_probe']),
+    withholds: Object.freeze(['bootstrap_apply', 'destructive_reset', 'migration_metadata_write', 'deploy']),
+    forbidsCanonicalObjects: Object.freeze(['ensure_rls', 'rls_auto_enable']),
+    executedBy: 'operator, manually, in the Supabase SQL Editor — never by automation',
+  }),
+]);
+
 /** A Supabase project ref: exactly 20 lowercase letters. */
 const REF = /^[a-z]{20}$/;
 

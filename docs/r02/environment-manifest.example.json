@@ -23,7 +23,7 @@
     "destructive_reset_authorized": false,
     "migration_metadata_write_authorized": false,
     "deployment_authorized": false,
-    "mutation_test_authorized": false
+    "mutation_test_authorized": true
   },
   "expected_model": {
     "bootstrap_version": "0060",
@@ -35,6 +35,7 @@
     "One flag per operation, never a shared 'mutation' flag: authorizing a bootstrap must not incidentally authorize a reset, a metadata write, or a deploy.",
     "Registration is CONTROL-PLANE identity. It proves which Supabase project was created. It does NOT prove that a database session connects to that project under the expected execution identity \u2014 that is R02_2 and needs its own authorization.",
     "hosted_sql_read_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, and ONLY for the SELECT-only capability pack. Every other flag stays false: authorizing a read must not drift into authorizing a write. See HOSTED_READ_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs for the reviewable grant.",
-    "mutation_test_authorized gates the isolated event-trigger probe and is FALSE. It is a separate flag from bootstrap_authorized on purpose: the probe answers one narrow privilege question and must not be reachable through a bootstrap approval. expected_model.probe_version pins WHICH reviewed probe an authorization covers, so editing the probe cannot inherit an old approval."
+    "mutation_test_authorized gates the isolated event-trigger probe and is FALSE. It is a separate flag from bootstrap_authorized on purpose: the probe answers one narrow privilege question and must not be reachable through a bootstrap approval. expected_model.probe_version pins WHICH reviewed probe an authorization covers, so editing the probe cannot inherit an old approval.",
+    "mutation_test_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, for event_trigger_probe ONLY, at probe_version v1 ONLY. Every other flag stays false. See MUTATION_TEST_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs, which also pins the probe SQL SHA-256 so an edited probe cannot inherit this approval."
   ]
 }
