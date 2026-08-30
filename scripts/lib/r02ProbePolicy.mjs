@@ -27,6 +27,22 @@
  * PURE. No filesystem, no network.
  */
 
+/** Replace string-literal CONTENTS with spaces so keyword matching cannot fire inside a literal. */
+export function maskProbeLiterals(sql) {
+  const s = String(sql ?? '');
+  let out = '', i = 0, inS = false, dollar = null;
+  while (i < s.length) {
+    const c = s[i];
+    if (dollar) { if (s.startsWith(dollar, i)) { out += dollar; i += dollar.length; dollar = null; continue; } out += ' '; i += 1; continue; }
+    if (inS) { if (c === "'" && s[i + 1] === "'") { out += '  '; i += 2; continue; } if (c === "'") { inS = false; out += c; i += 1; continue; } out += ' '; i += 1; continue; }
+    const dq = /^\$[A-Za-z_0-9]*\$/.exec(s.slice(i));
+    if (dq) { dollar = dq[0]; out += dollar; i += dollar.length; continue; }
+    if (c === "'") { inS = true; out += c; i += 1; continue; }
+    out += c; i += 1;
+  }
+  return out;
+}
+
 export const PROBE_VERSION = 'v1';
 export const PROBE_FUNCTION = `r02_probe_event_fn_${PROBE_VERSION}`;
 export const PROBE_TRIGGER = `r02_probe_event_trigger_${PROBE_VERSION}`;
@@ -49,8 +65,16 @@ export const PROBE_REFUSAL = Object.freeze({
 export function classifyProbeStatement(stmt) {
   const s = String(stmt ?? '').replace(/\s+/g, ' ').trim();
   if (s === '') return null;
-  if (/^select\b/i.test(s)) return { kind: 'select' };
+  if (/^select\b/i.test(s)) {
+    // ★ `SELECT ... INTO tbl` CREATES A TABLE. A statement beginning with SELECT is not
+    //   automatically read-only, and classifying on the leading verb alone let
+    //   `select * into public.newtbl from pg_class` through as harmless. Literals are masked first
+    //   so the word inside a string cannot trigger a false refusal, and `\binto\b` will not match
+    //   an identifier like `into_x`.
+    return /\binto\b/i.test(maskProbeLiterals(s)) ? null : { kind: 'select' };
+  }
   if (/^(begin|commit|rollback|start transaction)\b/i.test(s)) return { kind: 'transaction' };
+  // ALTER ROLE / SET ROLE and friends fall through to the final `return null` (refusal).
 
   let m;
   if ((m = /^create\s+(or\s+replace\s+)?function\s+(?:"?public"?\.)?"?([a-z_0-9]+)"?/i.exec(s))) {

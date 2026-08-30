@@ -131,6 +131,8 @@ describe("probe policy · only the exact reviewed DDL is permitted", () => {
     ["   CALL", "call public.p()"],
     ["   COPY", "copy public.x from stdin"],
     ["   ALTER ROLE", "alter role postgres superuser"],
+    ["★  SELECT INTO creating a table", "select * into public.newtbl from pg_class"],
+    ["★  SELECT INTO short form", "select 1 into probe_tbl"],
   ])("★ %s is refused", (_l, sql) => {
     expect(classifyProbeStatement(sql)).toBeNull();
     expect(auditProbe([sql]).ok).toBe(false);
@@ -175,6 +177,22 @@ describe("probe policy · only the exact reviewed DDL is permitted", () => {
     expect(auditProbe([]).problems).toEqual([PROBE_REFUSAL.EMPTY]);
     expect(auditProbe(undefined as never).ok).toBe(false);
   });
+  test("★ SELECT INTO is refused, but ordinary SELECTs are not — the rule is precise, not blunt", () => {
+    // A statement beginning with SELECT is not automatically read-only: `SELECT ... INTO tbl`
+    // creates a table. Classifying on the leading verb alone let that through.
+    expect(classifyProbeStatement("select * into public.newtbl from pg_class")).toBeNull();
+    expect(classifyProbeStatement("select 1 into probe_tbl")).toBeNull();
+    // ...and these must still be allowed, or the rule would be blunt rather than correct:
+    expect(classifyProbeStatement("select 1")).toMatchObject({ kind: "select" });
+    expect(classifyProbeStatement("select 'into' as literal_word")).toMatchObject({ kind: "select" });
+    expect(classifyProbeStatement("select 1 as into_x")).toMatchObject({ kind: "select" });
+  });
+  test("the committed probe's own PRE/POST selects survive the INTO rule", () => {
+    const selects = stmts.filter((s: string) => /^select/i.test(s));
+    expect(selects.length).toBe(3);
+    for (const s of selects) expect(classifyProbeStatement(s)).toMatchObject({ kind: "select" });
+  });
+
   test("★ POSITIVE CONTROL — the allowed forms ARE recognised, so the policy is not vacuous", () => {
     expect(classifyProbeStatement("select 1")).toMatchObject({ kind: "select" });
     expect(classifyProbeStatement(`create function public.${PROBE_FUNCTION}() returns event_trigger language plpgsql as $$ begin end $$`))
