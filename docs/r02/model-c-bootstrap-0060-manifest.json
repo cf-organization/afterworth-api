@@ -1,0 +1,153 @@
+{
+  "$comment": "Execution manifest for the fixed Model C bootstrap at VERSION 0060. Authorization is by HASH, not by inspecting verbs: a phase whose sha256 does not match is refused outright. DESIGN ONLY - bootstrap_authorized is false.",
+  "operation": "MODEL_C_BOOTSTRAP_0060",
+  "version": "0060",
+  "target_ref": "qxzeougbaarecaiiqsay",
+  "target_project": "afterworth-nonprod",
+  "phase_count": 13,
+  "executable_statements": 921,
+  "set_preamble_statements": 28,
+  "cumulative_bootstrap_sha256": "69ec3a15fa3ad9380fae401b46d715b4259a74a4517b79ac63ba12e58f16ad67",
+  "phase_order": [
+    "00",
+    "10",
+    "20",
+    "30",
+    "40",
+    "50",
+    "60",
+    "70",
+    "80",
+    "90",
+    "100",
+    "110",
+    "120"
+  ],
+  "phases": [
+    {
+      "phase": "00",
+      "file": "db/bootstrap/00_platform_contract.sql",
+      "sha256": "4eecd81d41a8ca00d6e1bf5c63ebc164ec92c879b201f336873e044a252c22ac",
+      "statements": 1,
+      "set_preamble": 0
+    },
+    {
+      "phase": "10",
+      "file": "db/bootstrap/10_extensions.sql",
+      "sha256": "a7d49a6a34d94f6a8c8a86a5fa382f9ae2fc00ec94b4687861c2e3eee1a71ed3",
+      "statements": 2,
+      "set_preamble": 2
+    },
+    {
+      "phase": "20",
+      "file": "db/bootstrap/20_types.sql",
+      "sha256": "a56bcb8a7034fd70ce1fda8dd8be3fda7317dfe8050a8a38c04ecbcab273a369",
+      "statements": 1,
+      "set_preamble": 2
+    },
+    {
+      "phase": "30",
+      "file": "db/bootstrap/30_tables.sql",
+      "sha256": "f1594a1fe4e6f566151e34161ff47fa703aacf76601e594d17ec47aae0b30dfe",
+      "statements": 42,
+      "set_preamble": 2
+    },
+    {
+      "phase": "40",
+      "file": "db/bootstrap/40_constraints.sql",
+      "sha256": "a33eab50736ff3be7e08f75686b9c18a273e6d80a58ac0469986b64bf85b4143",
+      "statements": 128,
+      "set_preamble": 2
+    },
+    {
+      "phase": "50",
+      "file": "db/bootstrap/50_indexes.sql",
+      "sha256": "c56fa294d928fde73c74fec70354ec82912e076094db23cdc9d1e7308fb4b111",
+      "statements": 59,
+      "set_preamble": 2
+    },
+    {
+      "phase": "60",
+      "file": "db/bootstrap/60_functions.sql",
+      "sha256": "55754110afcdeee169b9534cb01ddf0c8db7adf9084adc4ea80c8a4de4478e8c",
+      "statements": 147,
+      "set_preamble": 3
+    },
+    {
+      "phase": "70",
+      "file": "db/bootstrap/70_triggers.sql",
+      "sha256": "c93f6f547e1c52b78dfcfd29772b5c14260458c74082489735f4e8ccc279f7a1",
+      "statements": 9,
+      "set_preamble": 3
+    },
+    {
+      "phase": "80",
+      "file": "db/bootstrap/80_rls_enable.sql",
+      "sha256": "9aa8ac2e2d8904c295d3b8e2bee0683cd4cc07b0cd8282405f06342ee9b9640f",
+      "statements": 41,
+      "set_preamble": 2
+    },
+    {
+      "phase": "90",
+      "file": "db/bootstrap/90_policies.sql",
+      "sha256": "6eedc3f7151295f6eb79155989697dd60d93328f920075a35f06771663a87815",
+      "statements": 36,
+      "set_preamble": 3
+    },
+    {
+      "phase": "100",
+      "file": "db/bootstrap/100_grants.sql",
+      "sha256": "57fa9904ccb4942e59888233e8f72d24a7b771a4833acb93ad899dac27221511",
+      "statements": 452,
+      "set_preamble": 2
+    },
+    {
+      "phase": "110",
+      "file": "db/bootstrap/110_storage_policies.sql",
+      "sha256": "d6209bb6a442256d039821cf8b7c337a98224464689a5090fa3e61e35795fb84",
+      "statements": 2,
+      "set_preamble": 3
+    },
+    {
+      "phase": "120",
+      "file": "db/bootstrap/120_event_triggers.sql",
+      "sha256": "7856bd8a78f25c9d8e3288dfe26ce917ad00e3c9187dd20e319db1f223135b74",
+      "statements": 1,
+      "set_preamble": 2
+    }
+  ],
+  "assertions": {
+    "replays_migrations_0001_0060": false,
+    "writes_migration_metadata": false,
+    "creates_platform_extensions": false,
+    "creates_auth_or_storage_tables": false,
+    "touches_protected_refs": false,
+    "bootstrap_rolls_forward": false
+  },
+  "expected_objects": {
+    "tables": 41,
+    "columns": 415,
+    "functions": 147,
+    "public_policies": 36,
+    "storage_policies": 2,
+    "indexes": 59,
+    "table_triggers": 9,
+    "constraints": 176,
+    "enum_types": 1,
+    "sequences": 1,
+    "views": 0,
+    "extensions_created": 2,
+    "extensions_platform_supplied": 2,
+    "grants": 101,
+    "revokes": 104,
+    "default_privileges": 3,
+    "rls_enabled": 41,
+    "rls_forced": 0,
+    "event_triggers": 1
+  },
+  "count_notes": {
+    "policies": "36 public (phase 90) + 2 storage (phase 110) = 38 policy statements. The historical figure 36 counts PUBLIC policies only; both are correct for different questions.",
+    "extensions": "2 CREATED by phase 10 (pgcrypto, uuid-ossp). pg_stat_statements and supabase_vault are PLATFORM-SUPPLIED and recorded as prerequisites in phase 00, never created - 4 live in total.",
+    "statements": "921 executable. db/bootstrap/manifest.json reports 922 because it counts the phase-00 recorded platform-extension note as an entry; that note is a comment, not an executable statement."
+  }
+}

@@ -26,6 +26,12 @@ const arg = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : nu
 const JSON_OUT = argv.includes('--json');
 const KEEP = argv.includes('--keep');
 const MUTATE = arg('--mutate');
+/**
+ * ★ THE POSTGRES MAJOR VERSION IS SELECTABLE, AND THAT MATTERS. The hosted target reports
+ *   PostgreSQL 17.6; rehearsing on 16 would leave a version gap between the local proof and the
+ *   thing it is meant to inform. Default stays 16 so existing evidence remains reproducible.
+ */
+const PG_IMAGE = arg('--pg-image') ?? 'postgres:16';
 const RUN = arg('--run') ?? '1';
 
 for (const f of ['--database-url', '--db-url', '--project-ref', '--linked', '--remote', '--production', '--host', '--dsn']) {
@@ -44,7 +50,7 @@ if (phaseFiles.length === 0) die('COULD NOT VERIFY — no bootstrap phase files.
 
 const rm = () => { if (!KEEP) spawnSync('docker', ['rm', '-f', CONTAINER], { stdio: 'ignore' }); };
 rm();
-if (spawnSync('docker', ['run', '-d', '--name', CONTAINER, '-e', 'POSTGRES_PASSWORD=bootstrap', 'postgres:16'], { encoding: 'utf8' }).status !== 0) {
+if (spawnSync('docker', ['run', '-d', '--name', CONTAINER, '-e', 'POSTGRES_PASSWORD=bootstrap', PG_IMAGE], { encoding: 'utf8' }).status !== 0) {
   die('COULD NOT VERIFY — failed to start the container.');
 }
 
@@ -67,6 +73,7 @@ try {
   say(`MODEL C FRESH BOOTSTRAP RUN #${RUN}`);
   say('='.repeat(92));
   say(`  container   ${CONTAINER} (created by this run, destroyed in finally)`);
+  say(`  image       ${PG_IMAGE}`);
 
   // ★ PROVE THE DATABASE IS ACTUALLY EMPTY. A "fresh" run against a dirty container proves nothing.
   const pre = Number(q("select count(*) from information_schema.tables where table_schema='public'") ?? -1);

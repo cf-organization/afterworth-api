@@ -23,12 +23,14 @@
     "destructive_reset_authorized": false,
     "migration_metadata_write_authorized": false,
     "deployment_authorized": false,
-    "mutation_test_authorized": true
+    "mutation_test_authorized": false,
+    "model_c_bootstrap_0060_authorized": false
   },
   "expected_model": {
     "bootstrap_version": "0060",
     "future_migration_start": "0061",
-    "probe_version": "v1"
+    "probe_version": "v1",
+    "bootstrap_manifest_sha256": "69ec3a15fa3ad9380fae401b46d715b4259a74a4517b79ac63ba12e58f16ad67"
   },
   "notes": [
     "allowlisted_refs is deliberately redundant with project_ref. The guard requires the target to be BOTH named and allowlisted, so a ref pasted into project_ref by accident does not become authorized.",
@@ -36,6 +38,9 @@
     "Registration is CONTROL-PLANE identity. It proves which Supabase project was created. It does NOT prove that a database session connects to that project under the expected execution identity \u2014 that is R02_2 and needs its own authorization.",
     "hosted_sql_read_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, and ONLY for the SELECT-only capability pack. Every other flag stays false: authorizing a read must not drift into authorizing a write. See HOSTED_READ_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs for the reviewable grant.",
     "mutation_test_authorized gates the isolated event-trigger probe and is FALSE. It is a separate flag from bootstrap_authorized on purpose: the probe answers one narrow privilege question and must not be reachable through a bootstrap approval. expected_model.probe_version pins WHICH reviewed probe an authorization covers, so editing the probe cannot inherit an old approval.",
-    "mutation_test_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, for event_trigger_probe ONLY, at probe_version v1 ONLY. Every other flag stays false. See MUTATION_TEST_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs, which also pins the probe SQL SHA-256 so an edited probe cannot inherit this approval."
+    "mutation_test_authorized was raised to true for qxzeougbaarecaiiqsay ONLY, for event_trigger_probe ONLY, at probe_version v1 ONLY. Every other flag stays false. See MUTATION_TEST_AUTHORIZATION in scripts/lib/r02TargetGuard.mjs, which also pins the probe SQL SHA-256 so an edited probe cannot inherit this approval.",
+    "mutation_test_authorized was returned to FALSE after probe v1 was executed and cleaned. The grant is marked consumed in MUTATION_TEST_AUTHORIZATION, and the guard refuses a consumed probe even if the flag were set true again - a one-question authorization must not become a standing mutation licence.",
+    "bootstrap_manifest_sha256 pins the cumulative hash of all 13 bootstrap phase files. MODEL_C_BOOTSTRAP_0060 is authorized by HASH, not by verb inspection: one substituted statement in 921 would pass any plausible allowlist.",
+    "model_c_bootstrap_0060_authorized is DISTINCT from bootstrap_authorized. A broad bootstrap approval must not silently authorize this specific hash-pinned 921-statement run."
   ]
 }
