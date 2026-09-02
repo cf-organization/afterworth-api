@@ -261,13 +261,44 @@ describe("PHASE G — VERSION semantics are machine-enforced", () => {
     expect(FIXTURE_MARKERS.some((m) => fx.includes(m))).toBe(true);
   });
 
-  test("no COMMITTED future migration exists today", () => {
+  test("the COMMITTED migration set satisfies the authority contract", () => {
     // * COMMITTED state, not the working tree. A temporary probe 0061 on disk is exactly what the
-    //   positive control needs to create; forbidding it on disk would forbid testing the contract.
+    //   positive controls need to create; forbidding it on disk would forbid testing the contract.
+    //
+    // ★ THIS REPLACED "no COMMITTED future migration exists today", which asserted
+    //   `tracked.filter(seq > CUTOFF) === []` and `tracked.toHaveLength(60)`. That was a ONE-SHOT
+    //   ratchet: correct while no future migration was committed, and structurally unable to
+    //   survive the very event it existed to announce — the first legitimate 0061 being committed.
+    //   It was replaced, not deleted, and not loosened to "any number above the cutoff is fine".
+    //
+    //   What it protected is preserved in a form that holds for 0061, 0062 and beyond:
+    //     - THE HISTORICAL RANGE STAYS FROZEN AT EXACTLY 60. A 61st file at or below the cutoff is
+    //       a renumbering or a rewrite of immutable history.
+    //     - THIS IS ALSO THE VERSION-DRIFT GUARD, and the reason the 60 is a literal. Bumping
+    //       db/bootstrap/VERSION to 0061 "because 0061 exists" moves CUTOFF, which reclassifies
+    //       0061 as HISTORICAL and makes this count 61 — so the bump fails here. That matters
+    //       because validateVersion() alone accepts 0061 against 0001-0060: it only refuses a
+    //       version BELOW the highest historical migration. A rolling bootstrap is refused by the
+    //       census, not by the version validator.
+    //     - EVERY COMMITTED FUTURE MIGRATION must clear the declared start and satisfy the shared
+    //       validator: strictly increasing, no duplicates, well-formed name. Gaps are permitted
+    //       (see the 0062-without-0061 positive control above); contiguity is not the contract.
     const tracked = execSync("git ls-files db/migrations/", { cwd: ROOT, encoding: "utf8" })
       .trim().split("\n").map((n) => n.replace(/^.*\//, "")).filter((n) => n.endsWith(".sql"));
-    expect(tracked.filter((n) => Number(n.slice(0, 4)) > CUTOFF)).toEqual([]);
-    expect(tracked).toHaveLength(60);
+
+    const committedHistorical = tracked.filter((n) => Number(n.slice(0, 4)) <= CUTOFF);
+    const committedFuture = tracked.filter((n) => Number(n.slice(0, 4)) > CUTOFF);
+
+    expect(committedHistorical).toHaveLength(60);
+    expect(VERSION).toBe(A.bootstrap_authority.through_version);
+    for (const n of committedFuture) {
+      expect(Number(n.slice(0, 4))).toBeGreaterThanOrEqual(FUTURE_START);
+    }
+
+    const r = classifyMigrations(tracked, CUTOFF, FUTURE_START);
+    expect(r.problems).toEqual([]);
+    expect(r.verdict).toBe(VERDICT.OK);
+    expect(r.historical).toHaveLength(60);
   });
 
   test("★ CONTRADICTION GUARD: the contract's declared future start must be accepted by the validator", () => {
