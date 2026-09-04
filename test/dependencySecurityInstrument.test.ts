@@ -92,6 +92,20 @@ function dependencyScanJob(): string {
   const end = after.search(/^ {2}[A-Za-z_][\w-]*:/m);
   return end === -1 ? after : after.slice(0, end);
 }
+/**
+ * The Node major the dependency-scan job requests, or null if it declares none.
+ *
+ * Structural, not a spelling match: it reads the value `actions/setup-node` is actually given,
+ * so a rule about the endpoint npm will reach cannot be satisfied by a comment that mentions 24.
+ */
+function nodeMajorIn(job: string): number | null {
+  const m = job.match(/node-version:\s*'?"?(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Node 24 bundles npm 11, whose arborist calls only the bulk advisory endpoint. */
+const BULK_ADVISORY_MIN_NODE_MAJOR = 24;
+
 const instrumentCode = () => `${stripJsComments(read(POLICY_FILE))}\n${stripJsComments(read(RUNNER_FILE))}`;
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -239,6 +253,34 @@ describe('★ 2 · the dependency-scan job cannot be silently disabled', () => {
     expect('      contents: write').toContain('contents: write');
     expect(/curl[^\n]*\|\s*(ba)?sh/.test('run: curl https://x/y.sh | sh')).toBe(true);
     expect(/set\s+\+e/.test('run: set +e')).toBe(true);
+    expect(nodeMajorIn('        with:\n          node-version: 20\n')).toBe(20);
+  });
+
+  /**
+   * ★ THE JOB MUST RUN ON A NODE WHOSE BUNDLED npm USES THE BULK ADVISORY ENDPOINT.
+   *
+   * Nothing in this repository chooses an advisory endpoint — `dependencyAudit.mjs` shells out to
+   * `npm audit` and npm decides. On 2026-09-04 that turned into a CI failure: Node 20's npm still
+   * POSTs to `/-/npm/v1/security/audits/quick`, npm retired that endpoint, the POST returned 400,
+   * and the scan reported SCANNER_UNAVAILABLE. The gate behaved correctly — it refused to call an
+   * unfinished scan clean — but the job could not complete at all.
+   *
+   * The fix was a one-line Node bump, and a one-line fix is exactly the kind that gets reverted by
+   * someone tidying versions who has no idea it is load-bearing. So the minimum is pinned here,
+   * with the reason attached. Node 24 bundles npm 11, whose arborist has no quick-endpoint path.
+   */
+  it('★ the dependency-scan job pins a Node major whose npm uses the bulk advisory endpoint', () => {
+    const major = nodeMajorIn(dependencyScanJob());
+    expect(major).not.toBeNull();
+    expect(major).toBeGreaterThanOrEqual(BULK_ADVISORY_MIN_NODE_MAJOR);
+  });
+
+  it('★ that rule would catch a revert to the endpoint-retired Node', () => {
+    // The exact text this job carried when the scan could not complete.
+    const broken = '      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n';
+    expect(nodeMajorIn(broken)).toBeLessThan(BULK_ADVISORY_MIN_NODE_MAJOR);
+    // …and the rule is not vacuous: the current job really does declare a version.
+    expect(nodeMajorIn(dependencyScanJob())).not.toBeNull();
   });
 });
 

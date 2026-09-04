@@ -114,9 +114,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ★ NODE 24, NOT 20, AND THE REASON IS A RETIRED REGISTRY ENDPOINT — NOT A PREFERENCE.
+      #
+      # npm reaches the advisory database itself; nothing in this repository chooses an endpoint.
+      # Node 20 bundles an npm whose arborist still POSTs to `/-/npm/v1/security/audits/quick`, and
+      # on 2026-09-04 that endpoint began returning 400 with the notice that it is being retired.
+      # The scan then reported SCANNER_UNAVAILABLE and failed — correctly, because it genuinely
+      # could not look. Node 24 bundles npm 11, whose arborist calls only
+      # `/-/npm/v1/security/advisories/bulk`; verified by reading
+      # node_modules/@npmcli/arborist/lib/audit-report.js, which has no quick-endpoint path at all.
+      #
+      # This is the ONLY step that changes. The scanner, the policy module and the threshold are
+      # untouched — the failure was never in them. `dependencySecurityInstrument.test.ts` pins the
+      # minimum major so a future edit cannot quietly restore the broken endpoint.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       # `npm ci` is the FROZEN install: it installs exactly what package-lock.json pins and fails if
