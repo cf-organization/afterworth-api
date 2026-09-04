@@ -1,0 +1,8 @@
+evtname,evtevent,evtenabled,enabled_state,evttags,event_trigger_owner,evtfoid,function_regprocedure,function_schema,function_name,function_identity_arguments,function_language,security_definer,proconfig,function_owner
+ensure_rls,ddl_command_end,O,enabled (origin),"[""CREATE TABLE"",""CREATE TABLE AS"",""SELECT INTO""]",postgres,17170,rls_auto_enable(),public,rls_auto_enable,,plpgsql,true,"[""search_path=pg_catalog""]",postgres
+issue_graphql_placeholder,sql_drop,O,enabled (origin),"[""DROP EXTENSION""]",supabase_admin,16574,set_graphql_placeholder(),extensions,set_graphql_placeholder,,plpgsql,false,"[""search_path=\""\""""]",supabase_admin
+issue_pg_cron_access,ddl_command_end,O,enabled (origin),"[""CREATE EXTENSION""]",supabase_admin,16551,grant_pg_cron_access(),extensions,grant_pg_cron_access,,plpgsql,false,"[""search_path=\""\""""]",supabase_admin
+issue_pg_graphql_access,ddl_command_end,O,enabled (origin),"[""CREATE EXTENSION""]",supabase_admin,16572,grant_pg_graphql_access(),extensions,grant_pg_graphql_access,,plpgsql,false,"[""search_path=\""\""""]",supabase_admin
+issue_pg_net_access,ddl_command_end,O,enabled (origin),"[""CREATE EXTENSION""]",supabase_admin,16553,grant_pg_net_access(),extensions,grant_pg_net_access,,plpgsql,false,"[""search_path=\""\""""]",supabase_admin
+pgrst_ddl_watch,ddl_command_end,O,enabled (origin),null,supabase_admin,16563,pgrst_ddl_watch(),extensions,pgrst_ddl_watch,,plpgsql,false,"[""search_path=\""\""""]",supabase_admin
+pgrst_drop_watch,sql_drop,O,enabled (origin),null,supabase_admin,16564,pgrst_drop_watch(),extensions,pgrst_drop_watch,,plpgsql,false,"[""search_path=\""\""""]",supabase_admin

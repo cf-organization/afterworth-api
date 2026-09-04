@@ -1,0 +1,2 @@
+schema_name,table_name,rls_enabled,rls_forced,policy_count_on_objects,policy_count_whole_storage_schema
+storage,objects,true,false,2,2
