@@ -30,6 +30,30 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * ★ WHY @supabase/supabase-js IS STUBBED HERE, AND WHAT THAT CANNOT HIDE.
+ *
+ * The reachability tests import the REAL dispatcher, which statically imports the whole invitation
+ * handler graph. `lib/invitations/preview.ts` builds a Supabase client AT MODULE SCOPE, and
+ * supabase-js builds a RealtimeClient inside that constructor, which needs a native WebSocket.
+ * CI's `verify` job runs Node 20, which has none — so importing the dispatcher throws there while
+ * passing on this machine (Node 26) and in production (Vercel `nodeVersion: 24.x`).
+ *
+ * ★ THAT IS A PRE-EXISTING MISALIGNMENT THIS FILE MERELY SURFACED, NOT A DEFECT IT INTRODUCED. No
+ *   test in this repository had ever imported an api/ route before, so nothing had occasion to
+ *   discover that the verification runtime is two majors behind the deployed one. It is written up
+ *   as a finding rather than silently absorbed here; production is unaffected.
+ *
+ * ★ THE STUB CANNOT MASK A FINGERPRINT DEFECT. `lib/environmentFingerprint.ts` imports NOTHING — it
+ *   reads four process variables and returns an object. The stub stands in only for an SDK that
+ *   UNRELATED SIBLING HANDLERS construct at import time, and the property under test is which action
+ *   the router selects. Mocking the module under test would recreate the blind spot; mocking a
+ *   third-party boundary that the subject never touches does not.
+ */
+vi.mock("@supabase/supabase-js", () => ({
+  createClient: () => ({}),
+}));
+
 /** The two real project refs. Identifiers, not secrets — both are already committed in this repo. */
 const NONPROD_REF = "qxzeougbaarecaiiqsay";
 const APPLICATION_FACING_REF = "yiaavvkulrpqkkbqhwit";
