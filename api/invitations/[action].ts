@@ -2,7 +2,7 @@
  * /api/invitations/[action]
  *
  *   POST  action ∈ {accept, bind, decline, preview, resolve, create_owner}
- *   GET   action ∈ {drain_email_outbox}
+ *   GET   action ∈ {drain_email_outbox, environment}
  *
  * ONE serverless function serving every invitation route — consolidated to reclaim Vercel Hobby
  * 12-function-per-deployment headroom (the grants/[action].ts + access-requests/[action].ts
@@ -14,6 +14,24 @@
  * the deployment is at 12/12 — api/claims/[action].ts calls itself "the LAST Vercel Hobby function
  * slot". create_owner and drain_email_outbox therefore ride this dispatcher rather than taking
  * slots that do not exist. The count is 12 before this change and 12 after; a test asserts it.
+ *
+ * ★ WHY A DEPLOYMENT-IDENTITY ENDPOINT LIVES IN A FILE NAMED `invitations`, WHICH IS NOT WHERE IT
+ * BELONGS. `environment` is not an invitation action and nobody looking for it would open this file.
+ * It is here because api/ is at 12/12 and a thirteenth file would exceed the Hobby ceiling and break
+ * the deployment — so the choice was never "own file vs. dispatcher", it was "dispatcher vs. no
+ * endpoint at all". The public path is `/api/environment` (rewritten in vercel.json) so that at
+ * least the CONTRACT is honest even though the implementation rides a neighbour.
+ *
+ *   The dispatcher keys on the LAST path segment, which is `environment` whether Vercel hands the
+ *   function the original `/api/environment` or the rewritten `/api/invitations/environment`. That
+ *   is deliberate: it means the route does not depend on which of the two a rewrite delivers, a
+ *   platform detail this branch is not permitted to deploy and therefore may not assume.
+ *
+ *   The cost is real and is recorded rather than hidden: an import failure anywhere in this
+ *   dispatcher's graph takes the fingerprint down with it. Every route in this repository already
+ *   dies without SUPABASE_URL (lib/auth.ts throws at module load), so the fingerprint is no more
+ *   fragile than the thing it describes — but it is coupled to invitation code for no reason of its
+ *   own, and the honest fix is a function slot, not a better comment.
  *
  * ★ WHY THE CRON LIVES HERE AND NOT IN api/claims. The claims dispatcher already owns an unrelated
  * cron (drain_purge_outbox). Putting invitation delivery there would make one function the drain
@@ -32,6 +50,7 @@ import { handle as bind } from "../../lib/invitations/bind.js";
 import { handle as createOwner } from "../../lib/invitations/createOwner.js";
 import { handle as decline } from "../../lib/invitations/decline.js";
 import { handle as drainEmailOutbox } from "../../lib/invitations/drainEmailOutbox.js";
+import { handle as environment } from "../../lib/environmentFingerprint.js";
 import { handle as preview } from "../../lib/invitations/preview.js";
 import { handle as resolve } from "../../lib/invitations/resolve.js";
 
@@ -46,6 +65,7 @@ const POST_HANDLERS: Record<string, (req: Request) => Promise<Response>> = {
 
 const GET_HANDLERS: Record<string, (req: Request) => Promise<Response>> = {
   drain_email_outbox: drainEmailOutbox,
+  environment,
 };
 
 // Resolve the {action} segment from the request URL (robust to absolute URL or bare path, query

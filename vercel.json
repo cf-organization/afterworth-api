@@ -40,6 +40,7 @@
     }
   ],
   "rewrites": [
-    { "source": "/invitations", "destination": "/invitations/index.html" }
+    { "source": "/invitations", "destination": "/invitations/index.html" },
+    { "source": "/api/environment", "destination": "/api/invitations/environment" }
   ]
 }
