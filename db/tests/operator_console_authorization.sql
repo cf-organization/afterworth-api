@@ -47,10 +47,15 @@ begin
   end;
 end $$;
 
-/** A fresh AAL2 admin session: the only claim set the admin gate accepts. */
-create or replace function harness_op.aal2(p_uid uuid) returns jsonb language sql as $$
-  select jsonb_build_object('sub', p_uid, 'aal', 'aal2',
-                            'iat', extract(epoch from now())::bigint);
+/**
+ * A fresh AAL2 admin session: the only claim set the admin gate accepts.
+ *
+ * ★ DELEGATES TO `harness_auth.aal2` SINCE 0064. "A fresh AAL2 session" is now three facts, not one
+ *   claim — the token says aal2, the session row is live, a verified factor exists — and the shared
+ *   builder is where that definition lives. A local copy would have gone on asserting the old one.
+ */
+create or replace function harness_op.aal2(p_uid uuid) returns jsonb language sql stable as $$
+  select harness_auth.aal2(p_uid);
 $$;
 
 create or replace function harness_op.as_admin_json(p_uid uuid, p_sql text)
@@ -232,14 +237,17 @@ begin
   -- ★ A STALE TOKEN IS REFUSED even though it is an AAL2 admin token. The 15-minute freshness
   -- bound is what keeps a captured access token from being a durable operator credential.
   perform harness_op.expect_err('admin-stale/get', ADMIN_A,
-    jsonb_build_object('sub', ADMIN_A, 'aal', 'aal2',
-                       'iat', extract(epoch from now())::bigint - 1000),
+    harness_auth.aal2(ADMIN_A, jsonb_build_object('iat', extract(epoch from now())::bigint - 1000)),
     format('select public.admin_get_death_verification_case(%L)', CASE_K),
     'stale_token_reauth_required');
 
   -- ★ A MISSING iat FAILS CLOSED. coalesce -> 0 -> ancient -> stale, never "no claim, no problem".
+  -- ★ BUILT EXPLICITLY, NOT VIA `harness_auth.aal2(…, {'iat': null})`. The claim under test is an
+  --   ABSENT one, and a null-valued `iat` is a different input that happens to coalesce the same way
+  --   today. Session currency is supplied so the gate reaches the freshness leg at all.
   perform harness_op.expect_err('admin-no-iat/get', ADMIN_A,
-    jsonb_build_object('sub', ADMIN_A, 'aal', 'aal2'),
+    jsonb_build_object('sub', ADMIN_A, 'aal', 'aal2',
+                       'session_id', harness_auth.session_id(ADMIN_A)),
     format('select public.admin_get_death_verification_case(%L)', CASE_K),
     'stale_token_reauth_required');
 

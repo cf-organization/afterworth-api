@@ -65,6 +65,86 @@ create or replace function auth.jwt() returns jsonb
  language sql stable
 as $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
 
+-- ★ `auth.sessions` AND `auth.mfa_factors` — ADDED FOR 0064, AND THE REASON IS A MEASURED DEFECT.
+--
+-- `require_aal2()` no longer trusts the `aal` claim alone. It asks `public.aal2_is_current()`, which
+-- also requires the token's SESSION and a VERIFIED FACTOR to still exist — because on nonprod an
+-- access token retained from before MFA recovery was still granted an aal2-gated read for the rest of
+-- its 60-minute life. Without these two tables the predicate cannot answer at all, and every aal2
+-- assertion in this suite would fail for a reason that has nothing to do with authorization.
+--
+-- ★ THE SHAPES ARE THE SUBSET THE PREDICATE READS, AND NO MORE. Modelling columns the gate does not
+-- read would invite an assertion to depend on a shape this harness invented. `status` is `text` here
+-- where hosted uses the `auth.factor_status` enum; the predicate compares `status::text`, so both
+-- answer identically — and text lets a scenario write an arbitrary non-verified status without this
+-- file having to guess the enum's membership.
+create table if not exists auth.sessions (
+  id        uuid primary key,
+  user_id   uuid not null references auth.users(id) on delete cascade,
+  not_after timestamptz
+);
+create table if not exists auth.mfa_factors (
+  id         uuid primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  status     text not null,
+  created_at timestamptz not null default now()
+);
+
+create schema if not exists harness_auth;
+
+-- ★ THE SESSION ID IS DERIVED FROM THE UID RATHER THAN RANDOM, AND THAT IS WHAT LETS THE CLAIM
+--   BUILDER STAY PURE. `harness_auth.aal2()` must produce the same `session_id` that `grant_aal2()`
+--   registered, without a lookup — because one scenario renders a claim set to text and hands it to a
+--   SEPARATE dblink connection (release_safety, the concurrency section), where a row this
+--   transaction has not yet committed is invisible. A random id would work everywhere except there.
+create or replace function harness_auth.session_id(p_uid uuid) returns uuid
+ language sql immutable
+as $$ select md5('harness-aal2-session:' || p_uid::text)::uuid $$;
+
+/**
+ * Give a user the SERVER-SIDE STATE that a real aal2 caller has: one live session, one verified
+ * factor. Call it where a fixture is CREATED, never from inside a claim builder — see the dblink note
+ * above. Idempotent.
+ */
+create or replace function harness_auth.grant_aal2(p_uid uuid) returns uuid
+ language plpgsql
+as $$
+begin
+  insert into auth.users (id) values (p_uid) on conflict do nothing;
+  insert into auth.sessions (id, user_id)
+    values (harness_auth.session_id(p_uid), p_uid) on conflict do nothing;
+  insert into auth.mfa_factors (id, user_id, status)
+    values (harness_auth.session_id(p_uid), p_uid, 'verified') on conflict do nothing;
+  return harness_auth.session_id(p_uid);
+end $$;
+
+/** Revoke the session the way GoTrue's global logout does — the row goes away. */
+create or replace function harness_auth.revoke_session(p_uid uuid) returns void
+ language sql
+as $$ delete from auth.sessions where user_id = p_uid $$;
+
+/** Remove every factor the way MFA recovery's admin deleteFactor does. */
+create or replace function harness_auth.remove_factors(p_uid uuid) returns void
+ language sql
+as $$ delete from auth.mfa_factors where user_id = p_uid $$;
+
+/**
+ * A COMPLETE aal2 claim set — PURE, no writes. `p_extra` merges LAST so a scenario can override any
+ * claim: an ancient `iat` for the admin freshness leg, a foreign or malformed `session_id`, an `aal`
+ * of aal1. What it cannot do is DELETE a claim; a scenario testing an absent claim builds the object
+ * explicitly, and `operator_console`'s missing-iat control does exactly that.
+ */
+create or replace function harness_auth.aal2(p_uid uuid, p_extra jsonb default '{}'::jsonb)
+ returns jsonb language sql stable
+as $$
+  select jsonb_build_object(
+           'sub', p_uid,
+           'aal', 'aal2',
+           'iat', extract(epoch from now())::bigint,
+           'session_id', harness_auth.session_id(p_uid)
+         ) || coalesce(p_extra, '{}'::jsonb)
+$$;
+
 create table if not exists public.estates (
   id       uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id),
@@ -185,6 +265,29 @@ create table if not exists public.admins (
   note       text
 );
 alter table public.admins enable row level security;
+
+-- ★ EVERY HARNESS ADMIN GETS AAL2 CURRENCY, BY TRIGGER, AND THAT IS A DELIBERATE CHOICE.
+--
+-- `admin_require_gate` calls `require_aal2()` BEFORE its 15-minute freshness leg. After 0064 that gate
+-- reads server state, so an admin scenario without a live session and a verified factor now fails at
+-- the MFA leg — and the stale-token controls in three suites, which assert
+-- `stale_token_reauth_required`, would instead see `mfa_required` and read as passes of a different
+-- assertion entirely. That is the failure mode this models away.
+--
+-- Sixteen fixture sites insert admins. A trigger states the real-world fact ONCE: an operator who
+-- reached aal2 got there by verifying a factor on a live session. A scenario that needs the opposite
+-- calls `harness_auth.revoke_session()` / `harness_auth.remove_factors()` explicitly, which is exactly
+-- what `aal2_session_currency_authorization.sql` does — so this convenience cannot make the currency
+-- legs vacuous in the suite that exists to test them.
+create or replace function harness_auth.admin_gets_aal2() returns trigger
+ language plpgsql as $$
+begin
+  perform harness_auth.grant_aal2(new.user_id);
+  return new;
+end $$;
+drop trigger if exists harness_admin_aal2 on public.admins;
+create trigger harness_admin_aal2 after insert on public.admins
+  for each row execute function harness_auth.admin_gets_aal2();
 
 -- ★ THE VERIFICATION-POLICY SCHEMA, VERBATIM SHAPES FROM MIGRATION 0026. The enum's DECLARATION
 -- ORDER IS ITS RANK (attestation < kyc < enhanced_kyc) — `required_verification_level` leans on
@@ -348,6 +451,20 @@ create table if not exists public.normalized_assets (
   created_at          timestamptz not null default now()
 );
 alter table public.normalized_assets enable row level security;
+
+-- ★ THE DEPLOYED GRANT, ADDED FOR 0064 — AND ITS ABSENCE HAD HIDDEN A WHOLE ROUTE.
+--
+-- `100_grants.sql:907` grants SELECT, INSERT, DELETE on this table to `authenticated`; this harness
+-- granted nothing. So every direct query as `authenticated` raised "permission denied for table" long
+-- before any policy was consulted — which means the RESTRICTIVE aal2 policy on this table
+-- (`normalized_assets_require_aal2`, migration 0010) had NEVER been exercised by this suite. It was
+-- not a weak assertion about the direct-query path; there was no assertion, and the table privilege is
+-- what made that invisible. A permission error and a policy denial are both "no rows reached me" from
+-- the outside, and only one of them is authorization.
+--
+-- Mirrors the deployed privilege exactly — not `ALL`, which would also hand `authenticated` an UPDATE
+-- the deployed schema withholds and let a future assertion pass on a privilege production does not give.
+grant select, insert, delete on public.normalized_assets to authenticated;
 -- Owner-only at the RLS layer, mirroring 0010. Both RPCs above are SECURITY DEFINER and bypass this;
 -- it is here so a DIRECT select under `authenticated` is refused, which is what makes "the RPC is
 -- the boundary" a testable claim rather than an assumption.

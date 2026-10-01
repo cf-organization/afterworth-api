@@ -55,9 +55,9 @@ returns text language plpgsql as $$
 declare v_msg text;
 begin
   perform set_config('request.jwt.claim.sub', p_uid::text, true);
-  perform set_config('request.jwt.claims',
-    jsonb_build_object('sub', p_uid, 'aal', 'aal2',
-                       'iat', extract(epoch from now())::bigint)::text, true);
+  -- ★ `harness_auth.aal2` SINCE 0064 — see the preamble: an aal2 caller now also needs a live session
+  --   row and a verified factor, and the shared builder emits the registered `session_id`.
+  perform set_config('request.jwt.claims', harness_auth.aal2(p_uid)::text, true);
   begin
     set local role authenticated;
     execute p_sql;
@@ -76,9 +76,9 @@ returns jsonb language plpgsql as $$
 declare v jsonb;
 begin
   perform set_config('request.jwt.claim.sub', p_uid::text, true);
-  perform set_config('request.jwt.claims',
-    jsonb_build_object('sub', p_uid, 'aal', 'aal2',
-                       'iat', extract(epoch from now())::bigint)::text, true);
+  -- ★ `harness_auth.aal2` SINCE 0064 — see the preamble: an aal2 caller now also needs a live session
+  --   row and a verified factor, and the shared builder emits the registered `session_id`.
+  perform set_config('request.jwt.claims', harness_auth.aal2(p_uid)::text, true);
   execute p_sql into v;
   return v;
 end $$;
@@ -2938,10 +2938,16 @@ begin
   end;
 end $$;
 
-/** A fresh AAL2 admin session: the only claim set the admin gate accepts. */
-create or replace function harness_rs.aal2(p_uid uuid) returns jsonb language sql as $$
-  select jsonb_build_object('sub', p_uid, 'aal', 'aal2',
-                            'iat', extract(epoch from now())::bigint);
+/**
+ * A fresh AAL2 admin session: the only claim set the admin gate accepts.
+ *
+ * ★ DELEGATES TO `harness_auth.aal2` SINCE 0064, and the dblink section below is why the shared
+ *   builder has to be PURE: this value is rendered to text and replayed in two SEPARATE connections,
+ *   which cannot see rows an uncommitted transaction has written. The `session_id` is derived from the
+ *   uid, so it is valid there without any write happening here.
+ */
+create or replace function harness_rs.aal2(p_uid uuid) returns jsonb language sql stable as $$
+  select harness_auth.aal2(p_uid);
 $$;
 
 /**
@@ -3797,8 +3803,7 @@ begin
     -- A REAL ADMIN at AAL2 with a STALE token: authorized, stepped up, and last authenticated an
     -- hour ago. The freshness bound is what stops a forgotten open tab from writing to a safety queue.
     v_res := harness_rs.with_claims(ADMIN_C,
-      jsonb_build_object('sub', ADMIN_C, 'aal', 'aal2',
-                         'iat', extract(epoch from now())::bigint - 3600),
+      harness_auth.aal2(ADMIN_C, jsonb_build_object('iat', extract(epoch from now())::bigint - 3600)),
       format('select public.reissue_owner_safety_notice(%L, %L)', CASE_L, 'stale attempt'));
     if v_res = 'OK' or position('stale_token_reauth_required' in v_res) = 0 then
       raise exception 'FAIL[C/stale]: expected stale_token_reauth_required, got %', v_res;
