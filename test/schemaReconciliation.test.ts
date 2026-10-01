@@ -416,3 +416,83 @@ describe("A6 · a degraded parse can never report clean", () => {
     expect(parseHealth({ live: okLive, repo }).ok).toBe(false);
   });
 });
+
+/**
+ * ★ `ALTER POLICY` — ADDED IN 0064, AND ITS ABSENCE HAD BEEN INVISIBLE FOR A TELLING REASON.
+ *
+ * The parser had no top-level `ALTER POLICY` rule. Migration 0062 also alters a policy, but inside a
+ * `DO` block via EXECUTE, so it was absorbed as a doBlock and the gap never surfaced. 0064 alters two
+ * policies at the top level — re-pointing the AAL2 RESTRICTIVE policies at a shared predicate — and the
+ * parser-honesty test fired at once, reporting two unclassified statements.
+ *
+ * That test doing its job is the point: "unclassified" must mean NOT UNDERSTOOD. The fix is to
+ * understand the statement, never to bury it in a DO block where the parser stops looking — which
+ * would have made the suite green by making the security statement invisible.
+ */
+describe("★ ALTER POLICY is understood, and is NOT mistaken for a definition", () => {
+  const ALTERED = `alter policy connections_require_aal2 on public.connections
+  using ((select public.aal2_is_current()))
+  with check ((select public.aal2_is_current()));`;
+
+  test("it parses, with both expressions captured", () => {
+    const inv = inventory(ALTERED);
+    expect(inv.unclassified).toEqual([]);
+    expect(inv.alterPolicies).toHaveLength(1);
+    const [p] = inv.alterPolicies;
+    expect(p.name).toBe("connections_require_aal2");
+    expect(p.schema).toBe("public");
+    expect(p.table).toBe("connections");
+    expect(p.using).toContain("aal2_is_current");
+    expect(p.withCheck).toContain("aal2_is_current");
+  });
+
+  test("★ it does NOT land in policies[] — an ALTER is not a CREATE", () => {
+    // schemaReconcile turns every policies[] entry into a `creates` row. If an ALTER counted, a
+    // migration that re-points a policy would make a MISSING bootstrap policy look COVERED.
+    expect(inventory(ALTERED).policies).toEqual([]);
+  });
+
+  test("★ and reconciliation therefore still reports the live policy as NOT covered", () => {
+    const live = inventory(
+      'CREATE POLICY "ghost_pol" ON "public"."connections" AS RESTRICTIVE FOR ALL USING ((true));',
+    );
+    const repo = repositoryObjects([{
+      path: "db/migrations/0099_20261001_probe.sql",
+      sql: 'alter policy ghost_pol on public.connections using ((select public.aal2_is_current()));',
+    }]);
+    const rows = reconcile({ live, repo });
+    expect(rows[0].disposition).not.toBe("COVERED");
+  });
+
+  test("★ FAIL-CLOSED: a form without ON <table> stays unclassified rather than half-parsed", () => {
+    // A security statement recorded with a null table is worse than one admitted as unparsed.
+    const inv = inventory("alter policy orphan using (true);");
+    expect(inv.alterPolicies).toEqual([]);
+    expect(inv.unclassified).toHaveLength(1);
+  });
+
+  test("a RENAME is captured as a rename, not as a predicate rewrite", () => {
+    const inv = inventory("alter policy old_name on public.connections rename to new_name;");
+    expect(inv.alterPolicies).toHaveLength(1);
+    expect(inv.alterPolicies[0].renameTo).toBe("new_name");
+    expect(inv.alterPolicies[0].using).toBeNull();
+  });
+
+  test("★ POSITIVE CONTROL: CREATE POLICY still lands in policies[] — the new branch stole nothing", () => {
+    const inv = inventory(
+      'CREATE POLICY "p" ON "public"."connections" AS RESTRICTIVE FOR ALL USING ((true)) WITH CHECK ((true));',
+    );
+    expect(inv.policies).toHaveLength(1);
+    expect(inv.policies[0].restrictive).toBe(true);
+    expect(inv.alterPolicies).toEqual([]);
+  });
+
+  test("★ the real migration parses with zero unclassified statements", () => {
+    const sql = readFileSync(join(ROOT, "db/migrations/0064_20261001_aal2_session_currency.sql"), "utf8");
+    const inv = inventory(sql);
+    expect(inv.unclassified).toEqual([]);
+    expect(inv.alterPolicies.map((p) => p.name).sort())
+      .toEqual(["connections_require_aal2", "normalized_assets_require_aal2"]);
+    expect(inv.policies).toEqual([]);            // it defines no policy, by design
+  });
+});
