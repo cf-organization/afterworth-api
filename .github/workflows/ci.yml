@@ -42,6 +42,19 @@ jobs:
       - name: SQL authorization suite
         run: npm run test:sql-auth
 
+      # ★ A PROVISIONING GATE, NOT A UNIT TEST. It builds a database from db/bootstrap in a throwaway
+      # container and proves that `get_upload_policy()` — the routine the mobile client calls — returns
+      # a usable row once migration 0065 is applied, and ZERO rows before it. That second half is a
+      # positive control for the defect: on nonprod the routine was deployed, owned, granted and
+      # callable for weeks while returning nothing, and document upload plus claims evidence were dead
+      # on both platforms the whole time.
+      #
+      # It also mutation-proves itself — the singleton is deleted and 0065's own postcondition must
+      # raise — and it exits 2 when it cannot reach Docker, so a runner without it FAILS rather than
+      # reporting a green provisioning check that built nothing.
+      - name: Upload-policy seed (routine-level, container)
+        run: npm run verify:upload-policy
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:
