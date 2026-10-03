@@ -114,6 +114,11 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // the paste.
   'db/bundles/owner_notice_release_authority_bundle.sql',
   // Production source, loaded for coverage rather than offered for deployment — see the note above.
+  // ★ `aal2_is_current` FIRST — `require_aal2` and the restrictive aal2 policy both call it. plpgsql
+  //   resolves at runtime so this is not a load-time dependency, but the policy created by
+  //   `aal2_session_currency_authorization.sql` IS: a policy cannot reference a function that does
+  //   not yet exist, which is why that suite creates its policy rather than the preamble.
+  'db/functions/aal2_is_current.sql',
   'db/functions/require_aal2.sql',
   'db/functions/get_estate_net_worth.sql',
   // ★ ADDED IN PHASE 11-C, SAME POSTURE. The death-verification routines call all three at
@@ -156,6 +161,12 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // through the real doors) and BEFORE the exit matrix. It proves the operator READ doors refuse
   // every wrong actor and disclose the workflow without the estate.
   'db/tests/operator_console_authorization.sql',
+  // ★ PHASE 0064, AFTER every disclosure suite and BEFORE the exit matrix. It proves that an aal2
+  // claim minted before an MFA reset no longer satisfies the gate — measured on nonprod, where a
+  // token retained across recovery was still granted the gated read for the rest of its hour. It
+  // owns its fixture, and it DROPS the restrictive policy it creates, so the suites after it read
+  // the same table they always did.
+  'db/tests/aal2_session_currency_authorization.sql',
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.

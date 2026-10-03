@@ -18,7 +18,8 @@
     "rule": "No future migration may be numbered at or below the bootstrap cutoff. Legitimate future migrations begin at 0061. VERSION is a statement about what the bootstrap PRODUCES, never a ceiling on migration numbers in the repository.",
     "adding_a_future_migration": {
       "changes": [
-        "db/migrations/"
+        "db/migrations/",
+        "db/functions/ \u2014 ONLY when the migration introduces a NEW function body, and only as a mirror for the consumers that cannot read a migration: the 15 bundle builders and the SQL-authorization harness. The migration remains the authority; test/aal2SessionCurrency.test.ts holds the two copies byte-identical so the mirror cannot drift from it."
       ],
       "does_not_change": [
         "db/bootstrap/",
@@ -107,7 +108,7 @@
       ],
       "drift_tolerated": true,
       "exact_equivalence_required": false,
-      "drift_rationale": "These bodies are deployed via bundles to an already-live database; db/bootstrap builds a virgin one. Both derive from the same live state today. Enforced instead: db/functions can never SUPPLY a function missing from db/bootstrap, so it cannot make reconciliation appear complete.",
+      "drift_rationale": "These bodies are deployed via bundles to an already-live database; db/bootstrap builds a virgin one. Both derive from the same live state today. Enforced instead: db/functions can never SUPPLY a function that NO authoritative source creates \u2014 db/bootstrap for anything at the cutoff, a future migration (0061+) for anything introduced after it. The accepted set is DERIVED by inventorying the future migrations, never hand-listed, so it cannot rot into a stale allowlist; a function no source creates is still refused, and an empty derived set narrows the rule rather than widening it. Extended in 0064, which introduced the first post-cutoff function (aal2_is_current).",
       "removal_prerequisite": "Re-source the bundle builders and the SQL-auth harness from db/bootstrap/60_functions.sql. Substantial, and out of scope here."
     },
     {

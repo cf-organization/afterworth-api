@@ -137,11 +137,74 @@ describe("PHASE E — legacy artifacts cannot supply what the bootstrap lacks", 
     const bootTables = new Set(bootInv.tables.map((t) => t.name));
     expect(legacy.filter((t) => !bootTables.has(t))).toEqual([]);
   });
-  test("every function db/functions defines is also in the canonical bootstrap", () => {
+  /**
+   * ★ THE ONE-WAY RULE FOR FUNCTIONS, AND WHY IT GREW A SECOND AUTHORITATIVE SOURCE IN 0064.
+   *
+   * The property this protects is stated in AUTHORITY.json: `db/functions` may never SUPPLY a
+   * function that no authoritative source defines, because then reconciliation would look complete
+   * when the schema could not be built. For every function that existed at the cutoff, "authoritative
+   * source" means db/bootstrap, and that was the whole universe — so the rule was written as
+   * "is it in the bootstrap?".
+   *
+   * 0064 introduced the FIRST function created after the cutoff (`aal2_is_current`). Its authority is
+   * `db/migrations/0064`, exactly as the contract's LEVEL_2_FUTURE_DELTA says, and the bootstrap
+   * deliberately does not learn about it — a rolling bootstrap is the one thing this model forbids.
+   * The rule therefore asks the question it always meant: does SOME authoritative source define this?
+   *
+   * ★ IT IS DERIVED, NEVER LISTED. The accepted set comes from inventorying the future migrations
+   *   themselves, so it cannot rot into a stale allowlist, and a function in `db/functions` that no
+   *   bootstrap phase and no migration creates is still a failure. The synthetic controls below prove
+   *   both directions, because a widened rule that accepts everything is the standard way an audit
+   *   stops being one.
+   */
+  const futureMigrationFiles = () =>
+    readdirSync(join(ROOT, "db/migrations"))
+      .filter((f) => f.endsWith(".sql") && Number(f.slice(0, 4)) > 60);
+
+  /** PURE. The names `db/functions` defines that NO authoritative source creates. */
+  const unauthorisedFunctions = (legacy: string[], boot: Set<string>, future: Set<string>) =>
+    legacy.filter((f) => !boot.has(f) && !future.has(f));
+
+  test("every function db/functions defines is created by SOME authoritative source", () => {
     const legacy = sqlFiles("db/functions").flatMap((f) => inventory(readFileSync(join(ROOT, "db/functions", f), "utf8")).functions.map((x) => x.name));
-    expect(legacy.length).toBeGreaterThan(50);
+    expect(legacy.length).toBeGreaterThan(50);                         // the scan set is real
     const bootFns = new Set(bootInv.functions.map((f) => f.name));
-    expect(legacy.filter((f) => !bootFns.has(f))).toEqual([]);
+
+    const future = futureMigrationFiles();
+    expect(future.length, "no future migrations found — the derived set would be vacuous").toBeGreaterThan(0);
+    const futureFns = new Set(
+      future.flatMap((f) => inventory(readFileSync(join(ROOT, "db/migrations", f), "utf8")).functions.map((x) => x.name)),
+    );
+
+    expect(unauthorisedFunctions(legacy, bootFns, futureFns)).toEqual([]);
+  });
+
+  test("★ POSITIVE CONTROL: the post-cutoff case is accepted BECAUSE a migration creates it", () => {
+    // `aal2_is_current` is absent from the bootstrap by design and present in 0064. Both halves are
+    // asserted, so this control cannot pass by the function having quietly reached the bootstrap.
+    const bootFns = new Set(bootInv.functions.map((f) => f.name));
+    expect(bootFns.has("aal2_is_current")).toBe(false);
+    const futureFns = new Set(
+      futureMigrationFiles().flatMap((f) => inventory(readFileSync(join(ROOT, "db/migrations", f), "utf8")).functions.map((x) => x.name)),
+    );
+    expect(futureFns.has("aal2_is_current")).toBe(true);
+    expect(unauthorisedFunctions(["aal2_is_current"], bootFns, futureFns)).toEqual([]);
+  });
+
+  test("★ MUTATION: a function in db/functions that NO source creates is still refused", () => {
+    // The rule was widened; this is the proof it was not widened into nothing.
+    const bootFns = new Set(bootInv.functions.map((f) => f.name));
+    const futureFns = new Set(
+      futureMigrationFiles().flatMap((f) => inventory(readFileSync(join(ROOT, "db/migrations", f), "utf8")).functions.map((x) => x.name)),
+    );
+    expect(unauthorisedFunctions(["ghost_fn"], bootFns, futureFns)).toEqual(["ghost_fn"]);
+  });
+
+  test("★ MUTATION: an EMPTY future set collapses the rule back to bootstrap-only", () => {
+    // If the derivation ever found no migrations, the post-cutoff function must fail rather than pass
+    // — a vacuous accepted-set must narrow the rule, never widen it.
+    const bootFns = new Set(bootInv.functions.map((f) => f.name));
+    expect(unauthorisedFunctions(["aal2_is_current"], bootFns, new Set())).toEqual(["aal2_is_current"]);
   });
   test("drift IS tolerated in the other direction, and that is recorded, not assumed", () => {
     for (const p of ["db/tables", "db/functions"]) {

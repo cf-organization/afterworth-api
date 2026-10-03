@@ -81,9 +81,11 @@ returns text language plpgsql as $$
 declare v_msg text;
 begin
   perform set_config('request.jwt.claim.sub', p_uid::text, true);
-  perform set_config('request.jwt.claims',
-    jsonb_build_object('sub', p_uid, 'aal', 'aal2',
-                       'iat', extract(epoch from now())::bigint)::text, true);
+  -- ★ `harness_auth.aal2` RATHER THAN A LOCAL OBJECT (0064). A real aal2 caller is not just a claim:
+  --   the gate now also requires the token's SESSION and a VERIFIED FACTOR to still exist. The shared
+  --   builder emits the `session_id` the fixture registered, so this models an operator who stepped up
+  --   instead of one who merely says so.
+  perform set_config('request.jwt.claims', harness_auth.aal2(p_uid)::text, true);
   begin
     set local role authenticated;
     execute p_sql;
@@ -326,8 +328,12 @@ begin
     raise exception 'FAIL: an aal1 admin was not stopped by the gate (got %) — the AAL2 leg is not '
       'loaded in this harness and every admin assertion below is weaker than it claims', v_res;
   end if;
+  -- ★ CURRENT aal2, ANCIENT iat — so the MFA leg PASSES and the freshness leg is the one under test.
+  --   Before 0064 any aal2 object reached the freshness check; now a claim set without session currency
+  --   would be stopped one leg earlier and this control would pass on the wrong refusal.
   v_res := harness_dv.as_admin_claims('eeeeeeee-0000-4000-8000-00000000eeee',
-    jsonb_build_object('aal', 'aal2', 'iat', extract(epoch from now())::bigint - 2000),
+    harness_auth.aal2('eeeeeeee-0000-4000-8000-00000000eeee',
+                      jsonb_build_object('iat', extract(epoch from now())::bigint - 2000)),
     'select public.admin_decide_death_verification_case(gen_random_uuid(), ''verify'')');
   if position('stale_token_reauth_required' in v_res) = 0 then
     raise exception 'FAIL: a stale admin token was not refused (got %)', v_res;

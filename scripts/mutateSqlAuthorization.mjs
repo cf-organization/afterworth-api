@@ -2700,6 +2700,74 @@ const MUTATIONS = Object.freeze([
     to: '  sql;',
   },
 
+  /**
+   * ═══ 0064 · AAL2 SESSION CURRENCY ═══════════════════════════════════════════════════════════
+   *
+   * Each of these restores one piece of the DEFECT THAT WAS MEASURED ON NONPROD: an access token
+   * minted before MFA recovery still satisfied the aal2 gate for the rest of its hour. The first is
+   * the pre-0064 gate, character for character — if it survives, the suite is not testing the fix.
+   */
+  {
+    id: 'aal2-gate-reads-the-stateless-claim-again',
+    why: 'THE ORIGINAL DEFECT, RESTORED VERBATIM. require_aal2 goes back to reading auth.jwt() and '
+      + 'nothing else, which is exactly the code that let a retained post-recovery token read an '
+      + 'estate total on nonprod. Sections 2a/2b/2d must fail. A survival here would mean the suite '
+      + 'proves nothing about the fix it is named for.',
+    file: 'db/functions/require_aal2.sql',
+    from: '  if not public.aal2_is_current() then',
+    to: "  if coalesce(auth.jwt() ->> 'aal', 'aal1') <> 'aal2' then",
+  },
+  {
+    id: 'aal2-session-leg-disabled',
+    why: 'The session-currency leg stops firing, so a REVOKED session (what global logout and MFA '
+      + 'recovery both do) is accepted again. Section 2a must fail.',
+    file: 'db/functions/aal2_is_current.sql',
+    from: '  if not exists (\n    select 1 from auth.sessions s',
+    to: '  if false and not exists (\n    select 1 from auth.sessions s',
+  },
+  {
+    id: 'aal2-factor-leg-disabled',
+    why: 'The verified-factor leg stops firing, so a user whose factor was DELETED is accepted again. '
+      + 'Section 2b must fail. Kept separate from the session leg precisely because either one alone '
+      + 'closes the window — a suite that only covered their combination could not tell which works.',
+    file: 'db/functions/aal2_is_current.sql',
+    from: '  if not exists (\n    select 1 from auth.mfa_factors f',
+    to: '  if false and not exists (\n    select 1 from auth.mfa_factors f',
+  },
+  {
+    id: 'aal2-unverified-factor-accepted',
+    why: 'An ABANDONED ENROLMENT becomes sufficient. This is not a hypothetical state: the mobile '
+      + 'client accumulated stale unverified factors for weeks (afterworth-mobile#148), so "a factor '
+      + 'row exists" and "the user completed MFA" are genuinely different facts. Section 2c must fail.',
+    file: 'db/functions/aal2_is_current.sql',
+    from: "       and f.status::text = 'verified'",
+    to: '       and f.status::text is not null',
+  },
+  {
+    id: 'aal2-foreign-session-accepted',
+    why: 'The session no longer has to BELONG to the caller, so any live session id in the token is '
+      + 'enough. Section 3d must fail.',
+    file: 'db/functions/aal2_is_current.sql',
+    from: '       and s.user_id = v_uid',
+    to: '       and s.user_id is not null',
+  },
+  {
+    id: 'aal2-expired-session-accepted',
+    why: 'A session past its `not_after` is treated as live. Section 3e must fail.',
+    file: 'db/functions/aal2_is_current.sql',
+    from: '       and (s.not_after is null or s.not_after > now())',
+    to: '       and true',
+  },
+  {
+    id: 'aal2-policy-keeps-the-inlined-claim',
+    why: 'THE OTHER HALF OF THE GATE, AND THE ONE A FUNCTION-ONLY FIX WOULD HAVE MISSED. This mutates '
+      + 'the harness policy back to migration 0010\'s inlined `auth.jwt() ->> \'aal\'` — i.e. the world '
+      + 'where 0064 hardened require_aal2 and left the two RESTRICTIVE policies alone. Section 4 must '
+      + 'fail; if it does not, that section is measuring RLS in general rather than the predicate.',
+    file: 'db/tests/aal2_session_currency_authorization.sql',
+    from: '    using ((select public.aal2_is_current()))\n    with check ((select public.aal2_is_current()));',
+    to: "    using (coalesce(auth.jwt() ->> 'aal','aal1') = 'aal2')\n    with check (coalesce(auth.jwt() ->> 'aal','aal1') = 'aal2');",
+  },
 ]);
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;

@@ -224,7 +224,7 @@ export function inventory(sql) {
     tables: [], columns: [], functions: [], policies: [], indexes: [], triggers: [],
     types: [], sequences: [], extensions: [], schemas: [], views: [],
     rlsEnabled: [], rlsForced: [], grants: [], revokes: [], defaultPrivileges: [],
-    constraints: [], comments: [], alterTables: [], sets: [], publications: [], drops: [], doBlocks: [], transactionControl: [], psqlMeta: [], dml: [], eventTriggers: [], unclassified: [],
+    constraints: [], comments: [], alterTables: [], alterPolicies: [], sets: [], publications: [], drops: [], doBlocks: [], transactionControl: [], psqlMeta: [], dml: [], eventTriggers: [], unclassified: [],
   };
 
   for (const raw of statements) {
@@ -371,6 +371,43 @@ export function inventory(sql) {
       inv.schemas.push({ name: parseQualified(m[1]).name, sql: stmt }); continue;
     }
 
+    /**
+     * ★ `ALTER POLICY` IS ITS OWN CATEGORY, AND IT IS DELIBERATELY NOT `policies`.
+     *
+     * `inv.policies` means "this file DEFINES this policy" — schemaReconcile turns every entry into a
+     * `creates` row. An ALTER re-points an existing one, so filing it there would let a migration's
+     * ALTER make a MISSING bootstrap policy look COVERED, which is precisely the one-way hazard this
+     * module exists to prevent.
+     *
+     * ★ IT WAS UNCLASSIFIED UNTIL 0064, AND THAT WENT UNNOTICED FOR A TELLING REASON. Migration 0062
+     *   also alters a policy, but inside a `DO` block via EXECUTE, so it was absorbed as a doBlock and
+     *   the gap never showed. 0064 alters two policies at the top level and the parser-honesty test
+     *   fired immediately — which is the test doing its job: "unclassified" has to mean NOT UNDERSTOOD,
+     *   and the answer to that is to understand it, never to hide the statement in a DO block.
+     *
+     * ★ IT FAILS CLOSED. A form without `ON <table>` is left UNCLASSIFIED rather than recorded with a
+     *   null table — a half-parsed security statement is worse than an admittedly unparsed one.
+     */
+    if (/^ALTER\s+POLICY\b/i.test(stmt)) {
+      const pm = new RegExp(`^ALTER\\s+POLICY\\s+(${QN})\\s+ON\\s+(${QUAL})([\\s\\S]*)$`, 'i').exec(stmt);
+      if (pm) {
+        const t = parseQualified(pm[2]);
+        const rest = pm[3];
+        inv.alterPolicies.push({
+          name: parseQualified(pm[1]).name, schema: t.schema, table: t.name,
+          // RENAME TO and the predicate rewrite are different operations and must not be conflated.
+          renameTo: (new RegExp(`\\bRENAME\\s+TO\\s+(${QN})`, 'i').exec(rest) || [])[1]
+            ? parseQualified((new RegExp(`\\bRENAME\\s+TO\\s+(${QN})`, 'i').exec(rest) || [])[1]).name
+            : null,
+          roles: /\bTO\s+/i.test(rest) ? parseRoles(rest) : null,
+          using: (/\bUSING\s*\(([\s\S]*?)\)\s*(?:WITH\s+CHECK|$)/i.exec(rest) || [])[1]?.trim() ?? null,
+          withCheck: (/\bWITH\s+CHECK\s*\(([\s\S]*)\)\s*$/i.exec(rest) || [])[1]?.trim() ?? null,
+          sql: stmt,
+        });
+        continue;
+      }
+      // No ON clause: not understood. Falls through to unclassified on purpose.
+    }
     if (/^ALTER\s+TABLE/i.test(stmt)) {
       const tm = new RegExp(`^ALTER\\s+TABLE\\s+(?:ONLY\\s+)?(${QUAL})([\\s\\S]*)$`, 'i').exec(stmt);
       if (tm) {
