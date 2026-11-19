@@ -1,3 +1,8 @@
+-- ★ 0066 (2026-11-19): BODY MIRRORED FROM db/migrations/0066_20261119_beneficiary_connector_disclosure.sql.
+-- Non-owner rows exist only when something row-level is disclosed on THIS estate; per-account brackets
+-- are no longer emitted to any non-owner (category brackets live in get_estate_discovery). The helpers
+-- above (asset_grant_tier, asset_bracket_low/high) are unchanged. Header comments below predate 0066
+-- where they describe range_only/category_summary rows — the body is the authority.
 -- public.list_estate_assets(p_estate_id uuid) -> SETOF (redacted asset rows)
 --
 -- B2a — the SERVER-SIDE asset redaction (the security core). Owner -> full rows; non-owner ->
@@ -85,17 +90,14 @@ create or replace function public.list_estate_assets(p_estate_id uuid)
 as $function$
 declare
   v_uid   uuid := auth.uid();
-  v_role  text;
-  v_bal   text;   -- account_balances tier
-  v_inst  text;   -- institution_names tier
-  v_det   text;   -- linked_account_details tier
+  v_bal   text;   -- account_balances, effective for THIS estate
+  v_inst  text;   -- institution_names
+  v_det   text;   -- linked_account_details
 begin
   if v_uid is null then return; end if;
 
-  -- OWNER: inherent full value, no redaction.
+  -- OWNER: inherent full value, no redaction. aal2 UNCONDITIONALLY (exact figures + holdings).
   if public.is_estate_owner(p_estate_id) then
-    -- aal2 GATE (option b): the owner branch emits EXACT balance_cents + holdings -> require MFA,
-    -- UNCONDITIONALLY. (DEFINER bypasses RLS; the gate must be inline.)
     perform public.require_aal2();
     return query
       select a.id, a.estate_id, a.connection_id, a.institution_name, a.provider_name,
@@ -110,51 +112,19 @@ begin
     return;
   end if;
 
-  -- NON-OWNER: GRANT-BASED, like can_access_document — NOT membership-gated. A grantee reads via
-  -- their grant even without an estate_memberships row (the documents precedent; a beneficiary can
-  -- hold grants before/without a membership). grantee_role comes from the GRANT (explicit, singular),
-  -- not the membership — so no multi-membership role-derivation ambiguity. The account_balances
-  -- grant is the primary gate + the role source.
-  select g.visibility_tier, g.grantee_role into v_bal, v_role
-  from public.access_grants g
-  where g.estate_id = p_estate_id
-    and g.grantee_user_id = v_uid
-    and g.category = 'account_balances'
-    and g.status = 'active'
-    -- ★ PHASE 11-B — canonical predicate, `legacy_immediate_only` (see asset_grant_tier above).
-    -- 11-D: lifecycle wired through; inert under this policy, by decision (R12).
-    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
-                                           public.estate_lifecycle_state(p_estate_id))
-  limit 1;
+  -- NON-OWNER: grant-based, scoped to p_estate_id, never membership-derived, never cross-estate.
+  v_bal  := public.connector_disclosure_tier(p_estate_id, v_uid, 'account_balances');
+  v_inst := public.connector_disclosure_tier(p_estate_id, v_uid, 'institution_names');
+  v_det  := public.connector_disclosure_tier(p_estate_id, v_uid, 'linked_account_details');
 
-  -- No account_balances grant -> the non-owner sees NO asset rows (default-deny, safe).
-  if v_bal is null then return; end if;
-
-  v_inst := public.asset_grant_tier(p_estate_id, v_uid, 'institution_names');
-  v_det  := public.asset_grant_tier(p_estate_id, v_uid, 'linked_account_details');
-
-  -- Read-time ceiling re-check (authoritative), applied to EVERY resolved tier uniformly: an
-  -- over-ceiling grant collapses to hidden, even if the grant predates a ceiling tightening. This
-  -- is what makes exact value UNREACHABLE for a beneficiary — asset_category_grantable caps
-  -- 'account_balances' at category_summary for role 'beneficiary', so v_bal can never become
-  -- limited_detail/full_detail for them (the balance_cents AND holdings gates both key off v_bal).
-  if not public.asset_category_grantable(v_role, 'account_balances', v_bal) then
-    v_bal := 'hidden';
-  end if;
-  if v_inst is not null and not public.asset_category_grantable(v_role, 'institution_names', v_inst) then
-    v_inst := 'hidden';
-  end if;
-  if v_det is not null and not public.asset_category_grantable(v_role, 'linked_account_details', v_det) then
-    v_det := 'hidden';
+  -- ★ ROWS EXIST ONLY WHEN SOMETHING ROW-LEVEL IS DISCLOSED. A balances grant at a bracket tier
+  --   discloses categories (elsewhere), not accounts; it does not produce rows here.
+  if v_bal not in ('limited_detail', 'full_detail') and v_inst = 'hidden' and v_det = 'hidden' then
+    return;
   end if;
 
-  -- aal2 GATE (option b) — TIER-AWARE, THE CORRECTNESS-CRITICAL PLACEMENT. Placed AFTER the ceiling
-  -- re-check so it keys off the FINAL resolved tier. A non-owner sees EXACT balance_cents only at
-  -- limited_detail/full_detail (and holdings only at full_detail, which implies v_bal='full_detail'),
-  -- so this single check covers every exact-value field. Beneficiary tiers (range_only/category_summary)
-  -- and hidden emit brackets/NULL -> NO exact value -> stay aal1 (the payoff of option b). Because
-  -- asset_category_grantable caps 'account_balances' at category_summary for role 'beneficiary',
-  -- v_bal can never reach limited/full for them, so this can only fire for a professional.
+  -- aal2 GATE — TIER-AWARE. Only an exact balances tier emits an exact figure, and only a professional
+  -- can hold one (the ceiling). Descriptive rows stay aal1.
   if v_bal in ('limited_detail', 'full_detail') then
     perform public.require_aal2();
   end if;
@@ -162,32 +132,18 @@ begin
   return query
     select
       a.id, a.estate_id, a.connection_id,
-      -- institution name gated by institution_names (hidden/none -> masked)
-      case when coalesce(v_inst, 'hidden') = 'hidden' then 'Protected Institution' else a.institution_name end,
+      case when v_inst = 'hidden' then 'Protected Institution' else a.institution_name end,
       a.provider_name, a.asset_group, a.asset_category, a.asset_subtype, a.source_type,
-      -- masked account identifier gated by linked_account_details
-      case when coalesce(v_det, 'hidden') in ('limited_detail', 'full_detail') then a.masked_identifier else '••••' end,
-      -- ★ THE VALUE: exact ONLY at limited/full; otherwise NULL (raw never leaves)
+      case when v_det = 'hidden' then '••••' else a.masked_identifier end,
+      -- Exact ONLY at an exact tier; otherwise NULL. Never a bracket per account.
       case when v_bal in ('limited_detail', 'full_detail') then a.balance_cents else null end,
       a.currency,
-      -- holdings only when BOTH balances=full_detail AND linked_account_details=full_detail
-      case when v_bal = 'full_detail' and coalesce(v_det, 'hidden') = 'full_detail' then a.holdings else '[]'::jsonb end,
+      -- Holdings: unchanged — full balances AND full account details, professional only.
+      case when v_bal = 'full_detail' and v_det = 'full_detail' then a.holdings else '[]'::jsonb end,
       a.refresh_timestamp, a.last_sync_status, a.confidence_level, a.verification_status, a.created_at,
       v_bal,
-      -- The value bracket — ALWAYS coarse, never exact. range_only brackets the per-asset value;
-      -- category_summary brackets the per-GROUP total (sum over asset_group, then bracketed) so a
-      -- single-asset group can't leak its lone balance. Nothing exact leaves for a non-owner.
-      case
-        when v_bal = 'range_only'       then public.asset_bracket_low(a.balance_cents)
-        -- sum(bigint) returns numeric -> cast back to bigint (asset_bracket_low takes bigint)
-        when v_bal = 'category_summary' then public.asset_bracket_low((sum(a.balance_cents) over (partition by a.asset_group))::bigint)
-        else null
-      end,
-      case
-        when v_bal = 'range_only'       then public.asset_bracket_high(a.balance_cents)
-        when v_bal = 'category_summary' then public.asset_bracket_high((sum(a.balance_cents) over (partition by a.asset_group))::bigint)
-        else null
-      end
+      null::bigint,   -- ★ per-account brackets are no longer a non-owner field on this surface
+      null::bigint
     from public.normalized_assets a
     where a.estate_id = p_estate_id
     order by a.created_at desc;

@@ -125,7 +125,7 @@ describe("2 · death- and claim-conditioned grants are dormant at EVERY evaluati
     for (const f of [
       "estate_discovery_rpcs.sql",
       "list_estate_assets.sql",
-      "get_estate_net_worth.sql",
+      "connector_disclosure_tier.sql",   // ★ 0066 — the connector readers' one evaluator
       "lifecycle_notification_rpcs.sql",
     ]) {
       expect(files).toContain(f);
@@ -330,7 +330,7 @@ describe("4 · a fiduciary designation confers capacity, never disclosure", () =
   });
 
   it("no disclosure projection consults a designation", () => {
-    for (const f of ["estate_discovery_rpcs.sql", "list_estate_assets.sql", "get_estate_net_worth.sql"]) {
+    for (const f of ["estate_discovery_rpcs.sql", "list_estate_assets.sql", "get_estate_net_worth.sql", "connector_disclosure_tier.sql"]) {
       const src = sources.find((s) => s.file === f)!;
       expect(src.code, `${f} consults is_estate_executor`).not.toMatch(/\bpublic\.is_estate_executor\s*\(/);
     }

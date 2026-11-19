@@ -1,3 +1,6 @@
+-- ★ 0066 (2026-11-19): BODY MIRRORED FROM db/migrations/0066_20261119_beneficiary_connector_disclosure.sql.
+-- Suppression is now the PRECISION test (withheld only beside a category-bracket breakdown), not the
+-- existence of a balances grant; an account_balances grant at `hidden` neither grants nor suppresses.
 -- public.get_estate_net_worth(p_estate_id uuid) -> ONE row: the estate net-worth aggregate, redacted.
 --
 -- Slice B — the total_asset_value disclosure surface. A DEDICATED aggregate (Option B), decoupled from
@@ -54,80 +57,47 @@ declare
   v_uid uuid := auth.uid();
   v_sum bigint;
   v_cur text;
-  v_tot text;        -- total_asset_value tier
-  v_tot_role text;   -- grantee_role from the total grant (for the ceiling re-check)
+  v_tot text;   -- total_asset_value, effective for THIS estate
+  v_bal text;   -- account_balances, effective for THIS estate (the breakdown that may conflict)
 begin
   if v_uid is null then return; end if;
 
-  -- The exact estate total (SECURITY DEFINER reads owner-only normalized_assets). Empty estate -> 0.
+  -- The exact estate total (DEFINER reads owner-only normalized_assets). Empty estate -> 0.
   select coalesce(sum(a.balance_cents), 0)::bigint, coalesce(max(a.currency), 'USD')
     into v_sum, v_cur
   from public.normalized_assets a
   where a.estate_id = p_estate_id;
 
-  -- OWNER FIRST: inherent exact total, never suppressed.
+  -- OWNER FIRST: inherent exact total, aal2 unconditionally, never suppressed.
   if public.is_estate_owner(p_estate_id) then
-    -- aal2 GATE (option b): the owner sees the EXACT total -> require MFA, UNCONDITIONALLY.
     perform public.require_aal2();
     return query select v_sum, null::bigint, null::bigint, 'full_detail'::text, v_cur, false;
     return;
   end if;
 
-  -- NON-OWNER: grant-based. Resolve the total_asset_value grant (tier + role).
-  select g.visibility_tier, g.grantee_role into v_tot, v_tot_role
-  from public.access_grants g
-  where g.estate_id = p_estate_id
-    and g.grantee_user_id = v_uid
-    and g.category = 'total_asset_value'
-    and g.status = 'active'
-    -- ★ PHASE 11-B — the canonical predicate replaces a local copy of the release rule.
-    -- `legacy_immediate_only` is this surface's existing answer, named rather than re-typed:
-    -- signal-based conditions (identity, death, incapacity, claim) and 'never' stay dormant-deny
-    -- (A.4), and an unknown condition or lifecycle refuses. 11-D wires the authoritative lifecycle
-    -- through as an argument; inert under this policy, by decision (R12).
-    and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
-                                           public.estate_lifecycle_state(p_estate_id))
-  limit 1;
-
-  -- No total_asset_value grant -> nothing disclosed.
-  if v_tot is null then
-    return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, false;
-    return;
-  end if;
-
-  -- Read-time ceiling re-check (authoritative). asset_category_grantable already caps total_asset_value
-  -- like account_balances (beneficiary summary/range; professional full_detail). Over-ceiling -> hidden.
-  if not public.asset_category_grantable(v_tot_role, 'total_asset_value', v_tot) then
-    v_tot := 'hidden';
-  end if;
+  -- NON-OWNER: the total is ITS OWN grant on THIS estate. Nothing else grants it — not balances, not
+  -- membership, not ownership elsewhere, not aal2.
+  v_tot := public.connector_disclosure_tier(p_estate_id, v_uid, 'total_asset_value');
   if v_tot = 'hidden' then
     return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, false;
     return;
   end if;
 
-  -- ★ THE EXCLUSION — account_balances breakdown PRECEDENCE. If the caller has an active,
-  --   immediately-released account_balances grant, list_estate_assets is disclosing the per-group
-  --   breakdown; suppress the grand total here so the leaky pair never co-appears across surfaces.
-  if exists (
-    select 1 from public.access_grants g
-    where g.estate_id = p_estate_id
-      and g.grantee_user_id = v_uid
-      and g.category = 'account_balances'
-      and g.status = 'active'
-      -- ★ THE EXCLUSION MUST ASK THE SAME QUESTION `list_estate_assets` ASKS, or the suppression
-      -- fires on a different set of grants than the disclosure it exists to suppress. Same
-      -- canonical predicate, same policy, same lifecycle seam, one function.
-      and public.release_condition_satisfied(g.release_condition, g.approved_at, 'legacy_immediate_only',
-                                             public.estate_lifecycle_state(p_estate_id))
-  ) then
+  -- ★ THE PRECISION TEST, not the existence test. The total is withheld only when the breakdown this
+  --   viewer actually RECEIVES could be combined with it to pin a disclosed figure inside a narrower
+  --   range than its tier allows. That is the per-category BRACKET breakdown (category_summary):
+  --   total_low − Σ(other categories' highs) can exceed a category's own low bound.
+  --     hidden      → no breakdown; nothing to combine.                       total shows
+  --     range_only  → categories only, no amounts; nothing to combine.        total shows
+  --     exact tiers → every figure already disclosed; a sum adds nothing.     total shows
+  --     category_summary → brackets that a total can narrow.                  total withheld
+  v_bal := public.connector_disclosure_tier(p_estate_id, v_uid, 'account_balances');
+  if v_bal = 'category_summary' then
     return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, true;  -- suppressed
     return;
   end if;
 
-  -- Emit the total per its tier. Beneficiary (range_only/category_summary) -> BRACKETED (never exact);
-  -- professional (limited_detail/full_detail) -> exact, authorized by the ceiling.
-  -- aal2 GATE (option b) — TIER-AWARE: the EXACT total emits ONLY in this branch (professional
-  -- full/limited), so the gate goes HERE, not before. The bracketed else-branch stays aal1.
+  -- Emit per the TOTAL grant's own tier: bracketed below limited_detail; exact (aal2) at or above.
   if v_tot in ('limited_detail', 'full_detail') then
     perform public.require_aal2();
     return query select v_sum, null::bigint, null::bigint, v_tot, v_cur, false;

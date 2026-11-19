@@ -1,3 +1,6 @@
+-- ★ 0066 (2026-11-19): get_estate_discovery BODY MIRRORED FROM
+-- db/migrations/0066_20261119_beneficiary_connector_disclosure.sql — connector keys added
+-- (connected_categories / connected_institutions / connected_total), inventory semantics unchanged.
 -- Estate-discovery RPCs — migration 0049 (Phase 10). Source of truth; re-apply on reset.
 --
 -- ★ THE WHOLE POINT: the client is never sent the estate and asked to hide things. These functions
@@ -183,70 +186,131 @@ create or replace function public.get_estate_discovery(p_estate uuid)
  set search_path to 'public'
 as $function$
 declare
-  v_uid       uuid := auth.uid();
-  v_tier      text;
-  v_is_owner  boolean;
-  v_member    boolean;
+  v_uid        uuid := auth.uid();
+  v_tier       text;
+  v_is_owner   boolean;
+  v_member     boolean;
   v_categories jsonb;
   v_items      jsonb;
   v_docs       int;
+  v_bal        text;
+  v_inst       text;
+  v_det        text;
+  v_tot_gate   text;
+  v_aal2       boolean;
+  v_exact      boolean;
+  v_groups     jsonb := null;
+  v_conn       jsonb := null;
+  v_total      jsonb := null;
 begin
-  -- ★ UNAUTHENTICATED GETS NOTHING, AND NOT AN ERROR EITHER. An error distinguishes "this estate
-  -- exists" from "it does not"; an empty projection does not.
   if v_uid is null then
     return jsonb_build_object('authorized', false);
   end if;
 
   v_is_owner := public.is_estate_owner(p_estate);
   v_member   := public.is_estate_member(p_estate);
+  v_tier     := public.inventory_disclosure_tier(p_estate, v_uid);
 
-  -- ★ A GRANT ALONE IS ENOUGH — membership is not required. This mirrors the documents precedent: a
-  -- grantee may hold a grant before or without an estate_memberships row, and refusing them here
-  -- would make the grant unusable. Someone with neither gets the same empty answer as a stranger.
-  v_tier := public.inventory_disclosure_tier(p_estate, v_uid);
-  if not v_is_owner and not v_member and v_tier = 'hidden' then
+  -- ── connector tiers, resolved for THIS estate only ─────────────────────────────────────────────
+  if v_is_owner then
+    v_bal := 'full_detail'; v_inst := 'full_detail'; v_det := 'full_detail'; v_tot_gate := 'full_detail';
+  else
+    v_bal      := public.connector_disclosure_tier(p_estate, v_uid, 'account_balances');
+    v_inst     := public.connector_disclosure_tier(p_estate, v_uid, 'institution_names');
+    v_det      := public.connector_disclosure_tier(p_estate, v_uid, 'linked_account_details');
+    v_tot_gate := public.connector_disclosure_tier(p_estate, v_uid, 'total_asset_value');  -- gate only
+  end if;
+
+  -- ★ aal2 satisfies an authentication requirement; it never creates a grant. An exact tier without
+  --   a current aal2 session DEGRADES to the category bracket — it never raises.
+  v_aal2  := public.aal2_is_current();
+  v_exact := v_bal in ('limited_detail', 'full_detail') and v_aal2;
+  if v_bal in ('limited_detail', 'full_detail') and not v_aal2 then
+    v_bal := 'category_summary';
+  end if;
+
+  -- ★ THE GATE: a grant on THIS estate alone is sufficient; nothing elsewhere is.
+  if not v_is_owner and not v_member and v_tier = 'hidden'
+     and v_bal = 'hidden' and v_inst = 'hidden' and v_det = 'hidden' and v_tot_gate = 'hidden' then
     return jsonb_build_object('authorized', false);
   end if;
 
-  -- Documents the viewer can actually reach, counted through the EXISTING document gate rather than
-  -- a second rule invented here.
+  -- ── connected categories (the ONLY place a non-owner sees a connector amount) ───────────────────
+  if v_bal <> 'hidden' then
+    select coalesce(jsonb_agg(jsonb_build_object(
+             'asset_group',      g.asset_group,
+             'total_cents',      case when v_exact then g.sum_cents end,
+             'range_low_cents',  case when v_bal = 'category_summary'
+                                      then public.asset_bracket_low(g.sum_cents) end,
+             'range_high_cents', case when v_bal = 'category_summary'
+                                      then public.asset_bracket_high(g.sum_cents) end
+           ) order by g.asset_group), '[]'::jsonb) into v_groups
+      from (select n.asset_group, coalesce(sum(n.balance_cents), 0)::bigint as sum_cents
+              from public.normalized_assets n
+             where n.estate_id = p_estate
+             group by n.asset_group) g;
+  end if;
+
+  -- ── connected institutions (rows exist only because a descriptive grant or an exact tier says so)
+  if v_exact or v_inst <> 'hidden' or v_det <> 'hidden' then
+    select coalesce(jsonb_agg(jsonb_build_object(
+             'id',                n.id,
+             'asset_group',       n.asset_group,
+             'currency',          n.currency,
+             'last_sync_status',  n.last_sync_status,
+             'institution',       case when v_inst <> 'hidden' then n.institution_name end,
+             'masked_identifier', case when v_det  <> 'hidden' then n.masked_identifier end,
+             'balance_cents',     case when v_exact then n.balance_cents end
+           ) order by n.institution_name nulls last, n.id), '[]'::jsonb) into v_conn
+      from public.normalized_assets n
+     where n.estate_id = p_estate;
+  end if;
+
+  -- ── estate total — the reader's row, verbatim; its suppression rule is its own ─────────────────
+  begin
+    select jsonb_build_object(
+             'total_cents',             w.total_cents,
+             'range_low_cents',         w.range_low_cents,
+             'range_high_cents',        w.range_high_cents,
+             'resolved_tier',           w.resolved_tier,
+             'currency',                w.currency,
+             'suppressed_by_breakdown', w.suppressed_by_breakdown
+           ) into v_total
+      from public.get_estate_net_worth(p_estate) w
+     limit 1;
+  exception
+    when insufficient_privilege then   -- the reader's aal2 refusal, and ONLY that
+      v_total := null;
+  end;
+
   select count(*) into v_docs
     from public.documents d
    where d.estate_id = p_estate
      and (v_is_owner or public.can_access_document(d.id));
 
   if v_tier = 'hidden' then
-    -- Authorized to be here, but not to discover the inventory. Documents and release state are
-    -- still honest answers, and the ABSENCE of a categories key says "not disclosed" without
-    -- enumerating what is being withheld.
+    -- ★ ABSENT, NOT NULL, for an undisclosed connector key — appended conditionally, never by
+    --   stripping nulls globally, which would also erase the nested nulls the client relies on.
     return jsonb_build_object(
       'authorized', true,
       'is_owner', v_is_owner,
       'inventory_tier', 'hidden',
       'release_state', public.estate_release_state(p_estate),
-      'document_count', v_docs
-    );
+      'document_count', v_docs,
+      'connected_total', v_total
+    )
+    || case when v_groups is null then '{}'::jsonb else jsonb_build_object('connected_categories', v_groups) end
+    || case when v_conn   is null then '{}'::jsonb else jsonb_build_object('connected_institutions', v_conn) end;
   end if;
 
-  -- ── categories ───────────────────────────────────────────────────────────────────────────────
+  -- ── inventory categories (UNCHANGED from 0049) ─────────────────────────────────────────────────
   select coalesce(jsonb_agg(x order by x->>'sort_order'), '[]'::jsonb) into v_categories
   from (
     select jsonb_build_object(
              'category',     a.category,
              'display_name', c.display_name,
              'sort_order',   lpad(c.sort_order::text, 4, '0'),
-             -- Counts begin at category_summary. At range_only the fact a category EXISTS is the
-             -- entire disclosure.
              'item_count',   case when v_tier = 'range_only' then null else count(*) end,
-             -- ★ EXACT TOTALS ONLY AT full_detail — AND THIS WAS A REAL LEAK.
-             -- This read `v_tier in ('limited_detail','full_detail')`, so `limited_detail` withheld
-             -- every per-item `value_cents` and then disclosed the exact CATEGORY TOTAL. For a
-             -- category holding one asset the total IS that asset's withheld value, so the tier
-             -- leaked precisely what it was suppressing one field away. Found by decoding a captured
-             -- payload rather than by reading the code.
-             --
-             -- limited_detail now brackets, exactly as category_summary does: it adds labels and
-             -- institutions over the tier below, and adds NO value precision.
              'total_cents',  case when v_tier = 'full_detail'
                                   then coalesce(sum(a.approximate_value_cents), 0) else null end,
              'range_low_cents',  case when v_tier in ('category_summary','limited_detail')
@@ -261,8 +325,7 @@ begin
      group by a.category, c.display_name, c.sort_order
   ) s;
 
-  -- ── items ────────────────────────────────────────────────────────────────────────────────────
-  -- Nothing per-item below limited_detail.
+  -- ── inventory items (UNCHANGED from 0049) ──────────────────────────────────────────────────────
   if v_tier in ('limited_detail','full_detail') then
     select coalesce(jsonb_agg(jsonb_build_object(
              'id',            a.id,
@@ -272,8 +335,6 @@ begin
              'institution',   a.institution_name,
              'jurisdiction',  case when v_tier = 'full_detail' then a.jurisdiction end,
              'country_code',  case when v_tier = 'full_detail' then a.country_code end,
-             -- ★ THE REFERENCE HINT IS full_detail ONLY. It is a fragment of an account identifier;
-             -- a survivor who only needs to know an account EXISTS does not need its last four digits.
              'reference_hint', case when v_tier = 'full_detail' then a.reference_hint end,
              'value_cents',   case when v_tier = 'full_detail' then a.approximate_value_cents end,
              'currency',      a.currency,
@@ -287,6 +348,8 @@ begin
     v_items := '[]'::jsonb;
   end if;
 
+  -- ★ ABSENT, NOT NULL, for an undisclosed connector key — appended conditionally, never by
+  --   stripping nulls globally, which would also erase the nested nulls the client relies on.
   return jsonb_build_object(
     'authorized', true,
     'is_owner', v_is_owner,
@@ -294,8 +357,11 @@ begin
     'release_state', public.estate_release_state(p_estate),
     'document_count', v_docs,
     'categories', v_categories,
-    'items', v_items
-  );
+    'items', v_items,
+    'connected_total', v_total
+  )
+  || case when v_groups is null then '{}'::jsonb else jsonb_build_object('connected_categories', v_groups) end
+  || case when v_conn   is null then '{}'::jsonb else jsonb_build_object('connected_institutions', v_conn) end;
 end;
 $function$;
 revoke execute on function public.get_estate_discovery(uuid) from public, anon;

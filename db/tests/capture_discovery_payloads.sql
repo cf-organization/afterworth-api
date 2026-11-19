@@ -41,6 +41,49 @@ begin
   return p_uid;
 end $$;
 
+/**
+ * ★ 0066 — rebuild the two-estate beneficiary fixture for ONE scenario and return the beneficiary's
+ * uid. The authorization suite that proves these payloads removes its rows afterwards, so the capture
+ * re-creates exactly the state each scenario needs (idempotent inserts, grants through the real door,
+ * prior grants replaced). The ids and amounts are the suite's own: A = two cash accounts whose sum
+ * crosses a bracket boundary plus one investment; B = one cash account; P = the precision-test pair.
+ */
+create or replace function harness_cd.capture_setup(p_scenario text)
+returns uuid language plpgsql as $$
+declare
+  BEN uuid := 'cdcdcdcd-0001-4001-8001-cdcdcdcdcd01';
+  A uuid := 'cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa'; B uuid := 'cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb';
+  P uuid := 'cdcdcdcd-9999-4999-8999-cdcdcdcdcd99'; U uuid := 'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee';
+  O uuid := 'cdcdcdcd-0000-4000-8000-cdcdcdcdcd00';
+begin
+  insert into auth.users (id) values (BEN), ('cdcdcdcd-0002-4002-8002-cdcdcdcdcd02'), ('cdcdcdcd-0003-4003-8003-cdcdcdcdcd03') on conflict do nothing;
+  insert into public.estates (id, owner_id) values
+    (A, 'cdcdcdcd-0002-4002-8002-cdcdcdcdcd02'), (P, 'cdcdcdcd-0002-4002-8002-cdcdcdcdcd02'),
+    (B, 'cdcdcdcd-0003-4003-8003-cdcdcdcdcd03'), (U, 'cdcdcdcd-0003-4003-8003-cdcdcdcdcd03'), (O, BEN)
+  on conflict do nothing;
+  if not exists (select 1 from public.normalized_assets where estate_id = A) then
+    insert into public.normalized_assets (estate_id, connection_id, institution_name, asset_group, balance_cents, currency) values
+      (A, gen_random_uuid(), 'A Cash One', 'cashBank', 2800000, 'USD'), (A, gen_random_uuid(), 'A Cash Two', 'cashBank', 2900000, 'USD'),
+      (A, gen_random_uuid(), 'A Broker', 'investmentBrokerage', 400000, 'USD'),
+      (P, gen_random_uuid(), 'P Cash', 'cashBank', 4800000, 'USD'), (P, gen_random_uuid(), 'P Broker', 'investmentBrokerage', 400000, 'USD'),
+      (B, gen_random_uuid(), 'B Cash', 'cashBank', 1500000, 'USD'), (U, gen_random_uuid(), 'U Cash', 'cashBank', 7700000, 'USD'),
+      (O, gen_random_uuid(), 'O Cash', 'cashBank', 900000, 'USD');
+  end if;
+  -- a clean slate for the beneficiary on every scenario, then exactly the grants the scenario names
+  delete from public.access_grants where grantee_user_id = BEN and estate_id in (A, B, P, U, O);
+  case p_scenario
+    when 'A' then       perform harness_cd.grant(A, BEN, 'beneficiary', 'account_balances', 'category_summary');
+    when 'A_NAMES' then perform harness_cd.grant(A, BEN, 'beneficiary', 'account_balances', 'category_summary');
+                        perform harness_cd.grant(A, BEN, 'beneficiary', 'institution_names', 'full_detail');
+    when 'B' then       perform harness_cd.grant(B, BEN, 'beneficiary', 'account_balances', 'range_only');
+                        perform harness_cd.grant(B, BEN, 'beneficiary', 'total_asset_value', 'range_only');
+    when 'P' then       perform harness_cd.grant(P, BEN, 'beneficiary', 'account_balances', 'category_summary');
+                        perform harness_cd.grant(P, BEN, 'beneficiary', 'total_asset_value', 'range_only');
+    else null;  -- 'U' (ungranted) and 'O' (owned) need no grant
+  end case;
+  return BEN;
+end $$;
+
 create or replace function harness.capture(p_label text, p_uid uuid, p_estate uuid)
 returns table (label text, payload jsonb) language plpgsql as $$
 declare v jsonb;
@@ -142,6 +185,28 @@ from (
   -- An estate with NO assets at all — the genuinely empty projection.
   select * from harness.capture('owner_empty_estate',
     '22222222-2222-4222-8222-222222222222', 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb')
+  union all
+  -- ★ 0066 — ONE beneficiary identity across estates the suite re-creates for the capture (the
+  --   authorization suite removes its own fixture in §9, so the state is rebuilt here, idempotently,
+  --   through the same helpers). Every scenario below is the same person asking about a different
+  --   estate; the payloads differ ONLY because the estate differs.
+  select * from harness.capture('beneficiary_connector_category_totals',
+    (select harness_cd.capture_setup('A')), 'cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa')
+  union all
+  select * from harness.capture('beneficiary_connector_categories_only',
+    (select harness_cd.capture_setup('B')), 'cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb')
+  union all
+  select * from harness.capture('beneficiary_connector_suppressed_total',
+    (select harness_cd.capture_setup('P')), 'cdcdcdcd-9999-4999-8999-cdcdcdcdcd99')
+  union all
+  select * from harness.capture('beneficiary_connector_with_names',
+    (select harness_cd.capture_setup('A_NAMES')), 'cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa')
+  union all
+  select * from harness.capture('beneficiary_connector_ungranted',
+    (select harness_cd.capture_setup('U')), 'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee')
+  union all
+  select * from harness.capture('beneficiary_connector_owns_other_estate',
+    (select harness_cd.capture_setup('O')), 'cdcdcdcd-0000-4000-8000-cdcdcdcdcd00')
   union all
   -- ── Phase 10-C readiness, same discipline: the decoder is written against real payloads ────────
   select * from harness.capture_readiness('readiness_owner',
