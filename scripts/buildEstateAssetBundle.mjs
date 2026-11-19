@@ -70,6 +70,7 @@ buildBundle(
       // what surfaced it; a mutation runner that had silently defaulted to NOT_DETECTED would have
       // sent someone looking for a missing assertion instead.
       'db/functions/connector_disclosure_tier.sql',
+      'db/functions/effective_balance_tier.sql',
       'db/functions/list_estate_assets.sql',
       'db/migrations/0049_20260811_estate_discovery.sql',
       'db/functions/estate_discovery_rpcs.sql',

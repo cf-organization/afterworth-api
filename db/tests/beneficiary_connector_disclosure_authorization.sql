@@ -30,17 +30,22 @@ insert into public.estates (id, owner_id) values
   ('cdcdcdcd-9999-4999-8999-cdcdcdcdcd99', 'cdcdcdcd-0002-4002-8002-cdcdcdcdcd02'),  -- P (precision demo)
   ('cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb', 'cdcdcdcd-0003-4003-8003-cdcdcdcdcd03'),  -- B
   ('cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee', 'cdcdcdcd-0003-4003-8003-cdcdcdcdcd03'),  -- U (ungranted)
-  ('cdcdcdcd-0000-4000-8000-cdcdcdcdcd00', 'cdcdcdcd-0001-4001-8001-cdcdcdcdcd01')   -- O (BEN's own)
+  ('cdcdcdcd-0000-4000-8000-cdcdcdcdcd00', 'cdcdcdcd-0001-4001-8001-cdcdcdcdcd01'),  -- O (BEN's own)
+  ('cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcde2', 'cdcdcdcd-0003-4003-8003-cdcdcdcdcd03')   -- E (non-USD; BEN ungranted)
 on conflict do nothing;
-insert into public.normalized_assets (estate_id, connection_id, institution_name, asset_group, balance_cents, currency) values
-  ('cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa', gen_random_uuid(), 'A Cash One',  'cashBank',            2800000, 'USD'),
-  ('cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa', gen_random_uuid(), 'A Cash Two',  'cashBank',            2900000, 'USD'),
-  ('cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa', gen_random_uuid(), 'A Broker',    'investmentBrokerage',  400000, 'USD'),
-  ('cdcdcdcd-9999-4999-8999-cdcdcdcdcd99', gen_random_uuid(), 'P Cash',      'cashBank',            4800000, 'USD'),
-  ('cdcdcdcd-9999-4999-8999-cdcdcdcdcd99', gen_random_uuid(), 'P Broker',    'investmentBrokerage',  400000, 'USD'),
-  ('cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb', gen_random_uuid(), 'B Cash',      'cashBank',            1500000, 'USD'),
-  ('cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee', gen_random_uuid(), 'U Cash',      'cashBank',            7700000, 'USD'),
-  ('cdcdcdcd-0000-4000-8000-cdcdcdcdcd00', gen_random_uuid(), 'O Cash',      'cashBank',             900000, 'USD')
+-- ★ EVERY ROW CARRIES A NONEMPTY MASKED IDENTIFIER, ONE CARRIES A NONEMPTY HOLDING, ONE ESTATE IS
+--   NOT IN USD. "The ending was not revealed" / "no holdings leaked" / "no currency leaked" are
+--   assertions only when there is an ending, a holding and a currency to leak.
+insert into public.normalized_assets (estate_id, connection_id, institution_name, asset_group, balance_cents, currency, masked_identifier, holdings) values
+  ('cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa', gen_random_uuid(), 'A Cash One',  'cashBank',            2800000, 'USD', '****4321', '[]'),
+  ('cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa', gen_random_uuid(), 'A Cash Two',  'cashBank',            2900000, 'USD', '****8765', '[]'),
+  ('cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa', gen_random_uuid(), 'A Broker',    'investmentBrokerage',  400000, 'USD', '****2468', '[{"ticker":"SYNTH","quantity":12,"value_cents":400000}]'),
+  ('cdcdcdcd-9999-4999-8999-cdcdcdcdcd99', gen_random_uuid(), 'P Cash',      'cashBank',            4800000, 'USD', '****1111', '[]'),
+  ('cdcdcdcd-9999-4999-8999-cdcdcdcdcd99', gen_random_uuid(), 'P Broker',    'investmentBrokerage',  400000, 'USD', '****2222', '[]'),
+  ('cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb', gen_random_uuid(), 'B Cash',      'cashBank',            1500000, 'USD', '****3333', '[]'),
+  ('cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee', gen_random_uuid(), 'U Cash',      'cashBank',            7700000, 'USD', '****4444', '[]'),
+  ('cdcdcdcd-0000-4000-8000-cdcdcdcdcd00', gen_random_uuid(), 'O Cash',      'cashBank',             900000, 'USD', '****5555', '[]'),
+  ('cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcde2', gen_random_uuid(), 'E Bank',      'cashBank',            1234567, 'EUR', '****9999', '[]')
 on conflict do nothing;
 
 -- ── readers, run as the viewer under the authenticated role ────────────────────────────────────
@@ -139,6 +144,10 @@ begin
   d := harness_cd.disco(BEN, '{}', A);
   perform harness_cd.expect('the discovery reader answers for A and carries connected_categories',
     d ? 'connected_categories' and (d->>'authorized')::boolean, d::text);
+  perform harness_cd.expect('the fixture carries a NONEMPTY masked identifier, a NONEMPTY holding and a non-USD estate',
+    (select count(*) from public.normalized_assets where estate_id = A and masked_identifier like '****%') = 3
+    and (select jsonb_array_length(holdings) from public.normalized_assets where estate_id = A and institution_name = 'A Broker') = 1
+    and (select currency from public.normalized_assets where estate_id = 'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcde2') = 'EUR');
   perform harness_cd.expect('the owner of A sees exact per-account rows (aal2) — the surface can speak',
     jsonb_array_length(harness_cd.rows('cdcdcdcd-0002-4002-8002-cdcdcdcdcd02', harness_cd.aal2_claims('cdcdcdcd-0002-4002-8002-cdcdcdcdcd02'), A)) = 3);
 end $$;
@@ -241,6 +250,39 @@ begin
 end $$;
 
 -- =================================================================================================
+-- 3b · NO ESTATE METADATA BEFORE THE GRANT — an ungranted caller learns neither currency nor amount
+-- =================================================================================================
+do $$
+declare
+  BEN uuid := 'cdcdcdcd-0001-4001-8001-cdcdcdcdcd01';
+  E   uuid := 'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcde2';   -- EUR, BEN holds nothing
+  NX  uuid := '00000000-0000-4000-8000-00000000dead';   -- does not exist
+  t jsonb; tn jsonb; d jsonb; v text;
+begin
+  raise notice '3b · metadata is not emitted before the total grant is checked';
+  t  := harness_cd.total(BEN, '{}', E);
+  tn := harness_cd.total(BEN, '{}', NX);
+  perform harness_cd.expect('★ ungranted caller on a EUR estate: hidden row, NO currency, NO amount',
+    t->>'resolved_tier' = 'hidden' and t->'currency' = 'null'::jsonb and t->'total_cents' = 'null'::jsonb
+    and t->'range_low_cents' = 'null'::jsonb and t::text not like '%EUR%', t::text);
+  perform harness_cd.expect('★ CONTROL: a NONEXISTENT estate answers with the IDENTICAL row',
+    t - 'currency' = tn - 'currency' and tn->'currency' = 'null'::jsonb, tn::text);
+  perform harness_cd.expect('discovery on E refuses outright; on the nonexistent id likewise',
+    (harness_cd.disco(BEN, '{}', E)->>'authorized')::boolean = false and (harness_cd.disco(BEN, '{}', NX)->>'authorized')::boolean = false);
+  -- separately authorized DESCRIPTIVE information is preserved, and still no currency on the total
+  v := harness_cd.grant(E, BEN, 'beneficiary', 'institution_names', 'full_detail');
+  perform harness_cd.expect('the real door grants institution names on E', v = 'OK', v);
+  d := harness_cd.disco(BEN, '{}', E);
+  perform harness_cd.expect('★ with ONLY a names grant: the named row appears, the total row stays hidden with NULL currency, no amount anywhere',
+    jsonb_array_length(d->'connected_institutions') = 1 and d->'connected_institutions'->0->>'institution' = 'E Bank'
+    and d->'connected_total'->>'resolved_tier' = 'hidden' and d->'connected_total'->'currency' = 'null'::jsonb
+    and d::text not like '%1234567%' and not (d ? 'connected_categories'), d::text);
+  perform harness_cd.expect('(the row itself may carry the account''s currency — that is the names grant''s own disclosure, not the total''s)',
+    d->'connected_institutions'->0->>'currency' = 'EUR');
+  perform harness_cd.revoke(E, BEN, 'institution_names');
+end $$;
+
+-- =================================================================================================
 -- 4 · the estate TOTAL is its own grant, and the PRECISION test decides co-appearance
 -- =================================================================================================
 do $$
@@ -287,8 +329,9 @@ begin
   perform harness_cd.grant(P, BEN, 'beneficiary', 'account_balances', 'category_summary');
   perform harness_cd.grant(P, BEN, 'beneficiary', 'total_asset_value', 'range_only');
   t := harness_cd.total(BEN, '{}', P);
-  perform harness_cd.expect('★ so beside Category totals the total is WITHHELD, flagged as suppressed',
-    t->>'resolved_tier' = 'hidden' and (t->>'suppressed_by_breakdown')::boolean = true and t->'range_low_cents' = 'null'::jsonb, t::text);
+  perform harness_cd.expect('★ so beside Category totals the total is WITHHELD, flagged as suppressed — and carries no currency either',
+    t->>'resolved_tier' = 'hidden' and (t->>'suppressed_by_breakdown')::boolean = true and t->'range_low_cents' = 'null'::jsonb
+    and t->'currency' = 'null'::jsonb, t::text);
   perform harness_cd.expect('…and the discovery payload carries the same answer, with the category brackets still shown',
     (harness_cd.disco(BEN, '{}', P)->'connected_total'->>'suppressed_by_breakdown')::boolean = true
     and jsonb_array_length(harness_cd.disco(BEN, '{}', P)->'connected_categories') = 2);
@@ -313,11 +356,14 @@ begin
   d := harness_cd.disco(BEN, '{}', A);
   perform harness_cd.expect('with institution_names granted, rows appear — three accounts, named',
     jsonb_array_length(d->'connected_institutions') = 3 and d::text like '%A Cash One%', d::text);
-  perform harness_cd.expect('★ rows carry NO amount and NO per-account bracket (the keys do not even exist)',
-    d->'connected_institutions'->0->'balance_cents' = 'null'::jsonb
-    and not (d->'connected_institutions'->0 ? 'range_low_cents'), (d->'connected_institutions'->0)::text);
-  perform harness_cd.expect('masked identifiers stay withheld without their own grant',
-    d->'connected_institutions'->0->'masked_identifier' = 'null'::jsonb);
+  perform harness_cd.expect('★ rows carry NO amount and NO per-account bracket (the two compatibility range keys exist and are ALWAYS null)',
+    (select count(*) from jsonb_array_elements(d->'connected_institutions') x
+      where x->'balance_cents' = 'null'::jsonb and x->'range_low_cents' = 'null'::jsonb and x->'range_high_cents' = 'null'::jsonb) = 3,
+    (d->'connected_institutions'->0)::text);
+  perform harness_cd.expect('★ masked identifiers stay withheld without their own grant — the ENDING is nowhere in the payload',
+    d->'connected_institutions'->0->'masked_identifier' = 'null'::jsonb and d::text not like '%4321%' and d::text not like '%8765%');
+  perform harness_cd.expect('…and list_estate_assets masks it too',
+    (harness_cd.rows(BEN, '{}', A)->0->>'masked_identifier') = '••••' and harness_cd.rows(BEN, '{}', A)::text not like '%4321%');
   perform harness_cd.expect('the category brackets are unchanged by the descriptive grant',
     (d->'connected_categories'->0->>'range_low_cents')::bigint in (0, 5000000));
   r := harness_cd.rows(BEN, '{}', A);
@@ -326,6 +372,46 @@ begin
     and r->0->>'institution_name' <> 'Protected Institution', r::text);
   perform harness_cd.revoke(A, BEN, 'institution_names');
   perform harness_cd.expect('revoking the descriptive grant removes the rows again',
+    not (harness_cd.disco(BEN, '{}', A) ? 'connected_institutions') and jsonb_array_length(harness_cd.rows(BEN, '{}', A)) = 0);
+end $$;
+
+-- =================================================================================================
+-- 5b · ACCOUNT DETAILS — the ending discloses at limited_detail / full_detail ONLY, on both readers
+-- =================================================================================================
+do $$
+declare
+  BEN uuid := 'cdcdcdcd-0001-4001-8001-cdcdcdcdcd01';
+  A uuid := 'cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa';
+  d jsonb; r jsonb; v text; tier text;
+begin
+  raise notice '5b · account details, tier by tier (names granted throughout, so rows exist)';
+  perform harness_cd.grant(A, BEN, 'beneficiary', 'institution_names', 'full_detail');
+  foreach tier in array array['range_only', 'category_summary'] loop
+    v := harness_cd.grant(A, BEN, 'beneficiary', 'linked_account_details', tier);
+    perform harness_cd.expect(format('the real door stores account details at %s', tier), v = 'OK', v);
+    d := harness_cd.disco(BEN, '{}', A); r := harness_cd.rows(BEN, '{}', A);
+    perform harness_cd.expect(format('★ %s: rows exist (names), the ending is withheld on BOTH readers', tier),
+      jsonb_array_length(d->'connected_institutions') = 3 and d::text not like '%4321%'
+      and d->'connected_institutions'->0->'masked_identifier' = 'null'::jsonb
+      and r::text not like '%4321%' and (r->0->>'masked_identifier') = '••••', d::text);
+  end loop;
+  foreach tier in array array['limited_detail', 'full_detail'] loop
+    v := harness_cd.grant(A, BEN, 'beneficiary', 'linked_account_details', tier);
+    perform harness_cd.expect(format('the real door stores account details at %s', tier), v = 'OK', v);
+    d := harness_cd.disco(BEN, '{}', A); r := harness_cd.rows(BEN, '{}', A);
+    perform harness_cd.expect(format('★ %s: the masked ending IS disclosed on both readers — and still no amount', tier),
+      (select count(*) from jsonb_array_elements(d->'connected_institutions') x where x->>'masked_identifier' like '****%') = 3
+      and (select count(*) from jsonb_array_elements(r) x where x->>'masked_identifier' like '****%') = 3
+      and d->'connected_institutions'->0->'balance_cents' = 'null'::jsonb and r->0->'balance_cents' = 'null'::jsonb, d::text);
+  end loop;
+  -- a details grant WITHOUT a names grant: rows carry the ending but no name
+  perform harness_cd.revoke(A, BEN, 'institution_names');
+  d := harness_cd.disco(BEN, '{}', A);
+  perform harness_cd.expect('details without names: rows with endings and NO institution name',
+    jsonb_array_length(d->'connected_institutions') = 3 and d->'connected_institutions'->0->'institution' = 'null'::jsonb
+    and d::text not like '%A Cash One%' and d::text like '%****%', d::text);
+  perform harness_cd.revoke(A, BEN, 'linked_account_details');
+  perform harness_cd.expect('and with both revoked, no rows at all',
     not (harness_cd.disco(BEN, '{}', A) ? 'connected_institutions') and jsonb_array_length(harness_cd.rows(BEN, '{}', A)) = 0);
 end $$;
 
@@ -341,10 +427,18 @@ begin
   raise notice '6 · professional delegate at limited_detail';
   v := harness_cd.grant(A, PRO, 'professional_delegate', 'account_balances', 'limited_detail');
   perform harness_cd.expect('the real door grants limited_detail to the delegate', v = 'OK', v);
+  v := harness_cd.grant(A, PRO, 'professional_delegate', 'total_asset_value', 'range_only');
+  perform harness_cd.expect('…and a separately granted BRACKETED total', v = 'OK', v);
   d := harness_cd.disco(PRO, '{}', A);
   perform harness_cd.expect('★ at aal1 the exact tier DEGRADES to the category bracket — never raises, never exact',
     (d->>'authorized')::boolean and d->'connected_categories'->0->'total_cents' = 'null'::jsonb
     and d->'connected_categories'->0->'range_low_cents' <> 'null'::jsonb, d::text);
+  -- ★ ONE EFFECTIVE TIER PER SESSION: what this session SEES is a category-bracket breakdown, so the
+  --   anti-inference rule withholds the total — in the discovery payload AND on the direct read.
+  perform harness_cd.expect('★ at aal1 the total is SUPPRESSED beside the degraded breakdown (discovery)',
+    (d->'connected_total'->>'suppressed_by_breakdown')::boolean = true and d->'connected_total'->'currency' = 'null'::jsonb, (d->'connected_total')::text);
+  perform harness_cd.expect('★ …and on the DIRECT read of get_estate_net_worth at aal1',
+    (harness_cd.total(PRO, '{}', A)->>'suppressed_by_breakdown')::boolean = true, harness_cd.total(PRO, '{}', A)::text);
   perform harness_cd.as_viewer(PRO, '{}');
   v := harness.attempt(PRO, format('select * from public.list_estate_assets(%L)', A));
   perform harness_cd.expect('list_estate_assets at aal1 refuses with mfa_required', position('mfa_required' in v) > 0, v);
@@ -354,9 +448,23 @@ begin
     (select (x->>'total_cents')::bigint from jsonb_array_elements(d->'connected_categories') x where x->>'asset_group'='cashBank') = 5700000, d::text);
   perform harness_cd.expect('at aal2: per-account rows with exact balances, no holdings key',
     jsonb_array_length(d->'connected_institutions') = 3 and d::text not like '%holdings%');
+  perform harness_cd.expect('★ at aal2 the exact figures are disclosed, so the bracketed total CO-APPEARS (discovery and direct read)',
+    d->'connected_total'->>'resolved_tier' = 'range_only' and (d->'connected_total'->>'range_low_cents')::bigint = 5000000
+    and (harness_cd.total(PRO, claims, A)->>'resolved_tier') = 'range_only', (d->'connected_total')::text);
   r := harness_cd.rows(PRO, claims, A);
-  perform harness_cd.expect('list_estate_assets at aal2: exact balances, empty holdings (no linked_account_details full grant)',
+  perform harness_cd.expect('list_estate_assets at aal2: exact balances, empty holdings',
     jsonb_array_length(r) = 3 and (r->0->>'balance_cents')::bigint > 0 and r->0->'holdings' = '[]'::jsonb, r::text);
+  -- ★ HOLDINGS ARE OWNER-ONLY FOR THIS PILOT — even at full balances + full account details, the
+  --   combination that used to unlock them.
+  perform harness_cd.grant(A, PRO, 'professional_delegate', 'account_balances', 'full_detail');
+  perform harness_cd.grant(A, PRO, 'professional_delegate', 'linked_account_details', 'full_detail');
+  r := harness_cd.rows(PRO, claims, A); d := harness_cd.disco(PRO, claims, A);
+  perform harness_cd.expect('★ full + full, aal2: exact balances and masked endings, and STILL no holdings on either reader',
+    (select count(*) from jsonb_array_elements(r) x where x->'holdings' = '[]'::jsonb) = 3
+    and (select count(*) from jsonb_array_elements(r) x where x->>'masked_identifier' like '****%') = 3
+    and r::text not like '%SYNTH%' and d::text not like '%SYNTH%' and d::text not like '%holdings%', r::text);
+  perform harness_cd.revoke(A, PRO, 'linked_account_details');
+  perform harness_cd.grant(A, PRO, 'professional_delegate', 'account_balances', 'limited_detail');
   perform harness_cd.expect('and the delegate holds nothing on B', (harness_cd.disco(PRO, claims, 'cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb')->>'authorized')::boolean = false);
 end $$;
 
@@ -393,6 +501,9 @@ begin
   perform harness_cd.expect('owner at aal2: exact total $61,000', (t->>'total_cents')::bigint = 6100000 and t->>'resolved_tier' = 'full_detail', t::text);
   r := harness_cd.rows(OA, claims, A);
   perform harness_cd.expect('owner at aal2: three exact rows', jsonb_array_length(r) = 3 and (r->0->>'balance_cents')::bigint > 0);
+  perform harness_cd.expect('★ owner at aal2: the NONEMPTY holding is disclosed (the positive control for every "no holdings" above)',
+    (select count(*) from jsonb_array_elements(r) x where x->>'institution_name' = 'A Broker' and jsonb_array_length(x->'holdings') = 1) = 1
+    and r::text like '%SYNTH%', r::text);
   -- ★ claims are transaction-local: clear the aal2 posture set above before asking about aal1.
   perform harness_cd.as_viewer(OA, '{}');
   perform harness_cd.expect('owner at aal1 is refused the exact rows (mfa_required)',
@@ -408,10 +519,10 @@ begin
   raise notice '9 · fixture integrity';
   delete from public.access_grants where estate_id in (
     'cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa','cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb','cdcdcdcd-9999-4999-8999-cdcdcdcdcd99',
-    'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee','cdcdcdcd-0000-4000-8000-cdcdcdcdcd00');
+    'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee','cdcdcdcd-0000-4000-8000-cdcdcdcdcd00','cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcde2');
   delete from public.normalized_assets where estate_id in (
     'cdcdcdcd-aaaa-4aaa-8aaa-cdcdcdcdcdaa','cdcdcdcd-bbbb-4bbb-8bbb-cdcdcdcdcdbb','cdcdcdcd-9999-4999-8999-cdcdcdcdcd99',
-    'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee','cdcdcdcd-0000-4000-8000-cdcdcdcdcd00');
+    'cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcdee','cdcdcdcd-0000-4000-8000-cdcdcdcdcd00','cdcdcdcd-eeee-4eee-8eee-cdcdcdcdcde2');
   -- the real grant door writes attributed audit rows; they reference these actors and estates
   delete from public.audit_logs where actor_id::text like 'cdcdcdcd-%' or estate_id::text like 'cdcdcdcd-%';
   delete from auth.sessions where user_id::text like 'cdcdcdcd-%';

@@ -199,6 +199,7 @@ declare
   v_tot_gate   text;
   v_aal2       boolean;
   v_exact      boolean;
+  v_det_shows  boolean;
   v_groups     jsonb := null;
   v_conn       jsonb := null;
   v_total      jsonb := null;
@@ -215,23 +216,26 @@ begin
   if v_is_owner then
     v_bal := 'full_detail'; v_inst := 'full_detail'; v_det := 'full_detail'; v_tot_gate := 'full_detail';
   else
-    v_bal      := public.connector_disclosure_tier(p_estate, v_uid, 'account_balances');
+    -- ★ THE SAME EFFECTIVE TIER THE TOTAL READER USES (exact degrades to the bracket without aal2).
+    v_bal      := public.effective_balance_tier(p_estate, v_uid);
     v_inst     := public.connector_disclosure_tier(p_estate, v_uid, 'institution_names');
     v_det      := public.connector_disclosure_tier(p_estate, v_uid, 'linked_account_details');
     v_tot_gate := public.connector_disclosure_tier(p_estate, v_uid, 'total_asset_value');  -- gate only
   end if;
+  -- ★ ACCOUNT DETAILS DISCLOSE AT limited_detail / full_detail ONLY — the threshold list_estate_assets uses.
+  v_det_shows := v_det in ('limited_detail', 'full_detail');
 
-  -- ★ aal2 satisfies an authentication requirement; it never creates a grant. An exact tier without
-  --   a current aal2 session DEGRADES to the category bracket — it never raises.
-  v_aal2  := public.aal2_is_current();
-  v_exact := v_bal in ('limited_detail', 'full_detail') and v_aal2;
-  if v_bal in ('limited_detail', 'full_detail') and not v_aal2 then
+  -- ★ aal2 satisfies an authentication requirement; it never creates a grant. The owner's exact view
+  --   degrades to the category bracket without a current aal2 session — it never raises.
+  v_aal2 := public.aal2_is_current();
+  if v_is_owner and not v_aal2 then
     v_bal := 'category_summary';
   end if;
+  v_exact := v_bal in ('limited_detail', 'full_detail');
 
   -- ★ THE GATE: a grant on THIS estate alone is sufficient; nothing elsewhere is.
   if not v_is_owner and not v_member and v_tier = 'hidden'
-     and v_bal = 'hidden' and v_inst = 'hidden' and v_det = 'hidden' and v_tot_gate = 'hidden' then
+     and v_bal = 'hidden' and v_inst = 'hidden' and not v_det_shows and v_tot_gate = 'hidden' then
     return jsonb_build_object('authorized', false);
   end if;
 
@@ -252,15 +256,21 @@ begin
   end if;
 
   -- ── connected institutions (rows exist only because a descriptive grant or an exact tier says so)
-  if v_exact or v_inst <> 'hidden' or v_det <> 'hidden' then
+  if v_exact or v_inst <> 'hidden' or v_det_shows then
     select coalesce(jsonb_agg(jsonb_build_object(
              'id',                n.id,
              'asset_group',       n.asset_group,
              'currency',          n.currency,
              'last_sync_status',  n.last_sync_status,
              'institution',       case when v_inst <> 'hidden' then n.institution_name end,
-             'masked_identifier', case when v_det  <> 'hidden' then n.masked_identifier end,
-             'balance_cents',     case when v_exact then n.balance_cents end
+             'masked_identifier', case when v_det_shows then n.masked_identifier end,
+             'balance_cents',     case when v_exact then n.balance_cents end,
+             -- ★ COMPATIBILITY KEYS, ALWAYS NULL. The pilot client installed before this migration
+             --   REQUIRES these two keys on a row (its decoder refuses the whole payload without them)
+             --   and renders nothing for a null. They carry no figure and will be dropped once that
+             --   client is retired.
+             'range_low_cents',   null,
+             'range_high_cents',  null
            ) order by n.institution_name nulls last, n.id), '[]'::jsonb) into v_conn
       from public.normalized_assets n
      where n.estate_id = p_estate;

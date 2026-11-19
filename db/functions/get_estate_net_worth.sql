@@ -58,28 +58,29 @@ declare
   v_sum bigint;
   v_cur text;
   v_tot text;   -- total_asset_value, effective for THIS estate
-  v_bal text;   -- account_balances, effective for THIS estate (the breakdown that may conflict)
+  v_bal text;   -- account_balances, EFFECTIVE for this session (the breakdown that may conflict)
 begin
   if v_uid is null then return; end if;
-
-  -- The exact estate total (DEFINER reads owner-only normalized_assets). Empty estate -> 0.
-  select coalesce(sum(a.balance_cents), 0)::bigint, coalesce(max(a.currency), 'USD')
-    into v_sum, v_cur
-  from public.normalized_assets a
-  where a.estate_id = p_estate_id;
 
   -- OWNER FIRST: inherent exact total, aal2 unconditionally, never suppressed.
   if public.is_estate_owner(p_estate_id) then
     perform public.require_aal2();
+    select coalesce(sum(a.balance_cents), 0)::bigint, coalesce(max(a.currency), 'USD')
+      into v_sum, v_cur
+    from public.normalized_assets a
+    where a.estate_id = p_estate_id;
     return query select v_sum, null::bigint, null::bigint, 'full_detail'::text, v_cur, false;
     return;
   end if;
 
   -- NON-OWNER: the total is ITS OWN grant on THIS estate. Nothing else grants it — not balances, not
   -- membership, not ownership elsewhere, not aal2.
+  -- ★ THE GRANT IS CHECKED BEFORE ONE ROW OF THE ESTATE IS READ. An ungranted caller — or a caller
+  --   naming an estate that does not exist — receives no currency and no amount: the row is identical
+  --   either way. Currency is estate-derived metadata and is emitted only beside a disclosed figure.
   v_tot := public.connector_disclosure_tier(p_estate_id, v_uid, 'total_asset_value');
   if v_tot = 'hidden' then
-    return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, false;
+    return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, null::text, false;
     return;
   end if;
 
@@ -91,11 +92,19 @@ begin
   --     range_only  → categories only, no amounts; nothing to combine.        total shows
   --     exact tiers → every figure already disclosed; a sum adds nothing.     total shows
   --     category_summary → brackets that a total can narrow.                  total withheld
-  v_bal := public.connector_disclosure_tier(p_estate_id, v_uid, 'account_balances');
+  --   ★ THE SAME EFFECTIVE TIER DISCOVERY USES — an exact tier without a current aal2 session IS a
+  --     category-bracket breakdown to this session, and is treated as one here too.
+  v_bal := public.effective_balance_tier(p_estate_id, v_uid);
   if v_bal = 'category_summary' then
-    return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, v_cur, true;  -- suppressed
+    return query select null::bigint, null::bigint, null::bigint, 'hidden'::text, null::text, true;  -- suppressed
     return;
   end if;
+
+  -- Only now — a figure WILL be disclosed — is the estate read.
+  select coalesce(sum(a.balance_cents), 0)::bigint, coalesce(max(a.currency), 'USD')
+    into v_sum, v_cur
+  from public.normalized_assets a
+  where a.estate_id = p_estate_id;
 
   -- Emit per the TOTAL grant's own tier: bracketed below limited_detail; exact (aal2) at or above.
   if v_tot in ('limited_detail', 'full_detail') then

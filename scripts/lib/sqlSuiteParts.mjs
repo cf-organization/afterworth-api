@@ -124,6 +124,7 @@ export const SQL_SUITE_PARTS = Object.freeze([
   //   runtime, so it must exist before any suite CALLS list_estate_assets / get_estate_net_worth /
   //   get_estate_discovery. Loaded as source for the same reason as its neighbours.
   'db/functions/connector_disclosure_tier.sql',
+  'db/functions/effective_balance_tier.sql',
   'db/functions/get_estate_net_worth.sql',
   // ★ ADDED IN PHASE 11-C, SAME POSTURE. The death-verification routines call all three at
   // execution time; production has carried them since 0014/0015 (admin gate, verified live

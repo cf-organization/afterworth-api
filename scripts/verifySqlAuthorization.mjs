@@ -49,8 +49,8 @@ const CAPTURES = Object.freeze([
     flag: '--capture',
     part: 'db/tests/capture_discovery_payloads.sql',
     out: 'db/tests/captured_discovery_payloads.json',
-    // 13 Phase 10 scenarios + 6 beneficiary-connector scenarios (0066).
-    minScenarios: 19,
+    // 13 Phase 10 scenarios + 8 beneficiary-connector scenarios (0066).
+    minScenarios: 21,
   },
   {
     // Phase 11-I. The fiduciary workflow projection, per workflow state.

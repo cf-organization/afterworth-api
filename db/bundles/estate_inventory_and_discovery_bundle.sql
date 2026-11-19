@@ -10,6 +10,7 @@
 --   db/functions/estate_asset_rpcs.sql
 --   db/functions/create_asset_grant.sql
 --   db/functions/connector_disclosure_tier.sql
+--   db/functions/effective_balance_tier.sql
 --   db/functions/list_estate_assets.sql
 --   db/migrations/0049_20260811_estate_discovery.sql
 --   db/functions/estate_discovery_rpcs.sql
@@ -2102,6 +2103,35 @@ $function$;
 revoke execute on function public.connector_disclosure_tier(uuid, uuid, text) from public, anon, authenticated;
 
 
+-- ==== db/functions/effective_balance_tier.sql =====================================================
+-- public.effective_balance_tier(p_estate, p_uid) -> text
+--
+-- ★ MIRROR of migration 0066. The migration is the authority; this copy exists for the bundle builders
+-- and the SQL authorization harness, and test/beneficiaryConnectorDisclosure.test.ts holds the two
+-- byte-identical (whitespace-normalised).
+--
+-- THE ONE ANSWER PER SESSION for the balances tier, used by discovery and the total reader alike: an
+-- exact tier without a CURRENT aal2 session degrades to the category bracket, so the anti-inference rule
+-- is evaluated against the breakdown the viewer can actually see, through either reader.
+
+create or replace function public.effective_balance_tier(p_estate uuid, p_uid uuid)
+ returns text
+ language plpgsql
+ stable
+ security definer
+ set search_path to 'public'
+as $function$
+declare v_bal text := public.connector_disclosure_tier(p_estate, p_uid, 'account_balances');
+begin
+  if v_bal in ('limited_detail', 'full_detail') and not public.aal2_is_current() then
+    return 'category_summary';
+  end if;
+  return v_bal;
+end;
+$function$;
+revoke execute on function public.effective_balance_tier(uuid, uuid) from public, anon, authenticated;
+
+
 -- ==== db/functions/list_estate_assets.sql =========================================================
 -- ★ 0066 (2026-11-19): BODY MIRRORED FROM db/migrations/0066_20261119_beneficiary_connector_disclosure.sql.
 -- Non-owner rows exist only when something row-level is disclosed on THIS estate; per-account brackets
@@ -2118,7 +2148,7 @@ revoke execute on function public.connector_disclosure_tier(uuid, uuid, text) fr
 -- are nulled/bucketed/summarized IN this function before any bytes leave the backend.
 --
 -- Tiers (per the account_balances grant, the primary value gate):
---   full_detail    -> exact balance + holdings (holdings also need linked_account_details=full_detail)
+--   full_detail    -> exact balance (★ 0066 pilot: holdings are OWNER-ONLY on every connector reader)
 --   limited_detail -> exact balance, NO holdings
 --   category_summary -> per-asset balance NULL; range_low/high_cents = BRACKETED group total
 --                       (sum over asset_group, THEN bracketed — never an exact figure, so a
@@ -2128,8 +2158,8 @@ revoke execute on function public.connector_disclosure_tier(uuid, uuid, text) fr
 --   (no grant)     -> the beneficiary sees NO asset rows (default-deny, safe)
 -- INVARIANT: for a non-owner, NO returned field ever holds an exact value below limited_detail —
 -- balance_cents is NULL, and the only value signal (range_low/high) is always a coarse bracket.
--- institution_names grant gates institution_name; linked_account_details gates masked_identifier +
--- holdings. Read-time ceiling re-check (asset_category_grantable) clamps an over-ceiling grant to
+-- institution_names grant gates institution_name; linked_account_details gates masked_identifier at
+-- limited_detail / full_detail (★ 0066). Holdings never leave the owner's branch. Read-time ceiling re-check (asset_category_grantable) clamps an over-ceiling grant to
 -- hidden (authoritative even if a grant predates a ceiling tightening).
 --
 -- Error model: unauthenticated / non-member -> empty set (never an error, never data).
@@ -2198,6 +2228,7 @@ declare
   v_bal   text;   -- account_balances, effective for THIS estate
   v_inst  text;   -- institution_names
   v_det   text;   -- linked_account_details
+  v_det_shows boolean;
 begin
   if v_uid is null then return; end if;
 
@@ -2221,10 +2252,13 @@ begin
   v_bal  := public.connector_disclosure_tier(p_estate_id, v_uid, 'account_balances');
   v_inst := public.connector_disclosure_tier(p_estate_id, v_uid, 'institution_names');
   v_det  := public.connector_disclosure_tier(p_estate_id, v_uid, 'linked_account_details');
+  -- ★ ACCOUNT DETAILS DISCLOSE AT limited_detail / full_detail ONLY — the same threshold discovery uses.
+  v_det_shows := v_det in ('limited_detail', 'full_detail');
 
   -- ★ ROWS EXIST ONLY WHEN SOMETHING ROW-LEVEL IS DISCLOSED. A balances grant at a bracket tier
-  --   discloses categories (elsewhere), not accounts; it does not produce rows here.
-  if v_bal not in ('limited_detail', 'full_detail') and v_inst = 'hidden' and v_det = 'hidden' then
+  --   discloses categories (elsewhere), not accounts; a details grant below its threshold discloses
+  --   nothing; neither produces rows here.
+  if v_bal not in ('limited_detail', 'full_detail') and v_inst = 'hidden' and not v_det_shows then
     return;
   end if;
 
@@ -2239,12 +2273,13 @@ begin
       a.id, a.estate_id, a.connection_id,
       case when v_inst = 'hidden' then 'Protected Institution' else a.institution_name end,
       a.provider_name, a.asset_group, a.asset_category, a.asset_subtype, a.source_type,
-      case when v_det = 'hidden' then '••••' else a.masked_identifier end,
+      case when v_det_shows then a.masked_identifier else '••••' end,
       -- Exact ONLY at an exact tier; otherwise NULL. Never a bracket per account.
       case when v_bal in ('limited_detail', 'full_detail') then a.balance_cents else null end,
       a.currency,
-      -- Holdings: unchanged — full balances AND full account details, professional only.
-      case when v_bal = 'full_detail' and v_det = 'full_detail' then a.holdings else '[]'::jsonb end,
+      -- ★ HOLDINGS ARE OWNER-ONLY FOR THIS PILOT. Position-level data leaves only the owner's branch
+      --   above; no grant combination reaches it here.
+      '[]'::jsonb,
       a.refresh_timestamp, a.last_sync_status, a.confidence_level, a.verification_status, a.created_at,
       v_bal,
       null::bigint,   -- ★ per-account brackets are no longer a non-owner field on this surface
@@ -2556,6 +2591,7 @@ declare
   v_tot_gate   text;
   v_aal2       boolean;
   v_exact      boolean;
+  v_det_shows  boolean;
   v_groups     jsonb := null;
   v_conn       jsonb := null;
   v_total      jsonb := null;
@@ -2572,23 +2608,26 @@ begin
   if v_is_owner then
     v_bal := 'full_detail'; v_inst := 'full_detail'; v_det := 'full_detail'; v_tot_gate := 'full_detail';
   else
-    v_bal      := public.connector_disclosure_tier(p_estate, v_uid, 'account_balances');
+    -- ★ THE SAME EFFECTIVE TIER THE TOTAL READER USES (exact degrades to the bracket without aal2).
+    v_bal      := public.effective_balance_tier(p_estate, v_uid);
     v_inst     := public.connector_disclosure_tier(p_estate, v_uid, 'institution_names');
     v_det      := public.connector_disclosure_tier(p_estate, v_uid, 'linked_account_details');
     v_tot_gate := public.connector_disclosure_tier(p_estate, v_uid, 'total_asset_value');  -- gate only
   end if;
+  -- ★ ACCOUNT DETAILS DISCLOSE AT limited_detail / full_detail ONLY — the threshold list_estate_assets uses.
+  v_det_shows := v_det in ('limited_detail', 'full_detail');
 
-  -- ★ aal2 satisfies an authentication requirement; it never creates a grant. An exact tier without
-  --   a current aal2 session DEGRADES to the category bracket — it never raises.
-  v_aal2  := public.aal2_is_current();
-  v_exact := v_bal in ('limited_detail', 'full_detail') and v_aal2;
-  if v_bal in ('limited_detail', 'full_detail') and not v_aal2 then
+  -- ★ aal2 satisfies an authentication requirement; it never creates a grant. The owner's exact view
+  --   degrades to the category bracket without a current aal2 session — it never raises.
+  v_aal2 := public.aal2_is_current();
+  if v_is_owner and not v_aal2 then
     v_bal := 'category_summary';
   end if;
+  v_exact := v_bal in ('limited_detail', 'full_detail');
 
   -- ★ THE GATE: a grant on THIS estate alone is sufficient; nothing elsewhere is.
   if not v_is_owner and not v_member and v_tier = 'hidden'
-     and v_bal = 'hidden' and v_inst = 'hidden' and v_det = 'hidden' and v_tot_gate = 'hidden' then
+     and v_bal = 'hidden' and v_inst = 'hidden' and not v_det_shows and v_tot_gate = 'hidden' then
     return jsonb_build_object('authorized', false);
   end if;
 
@@ -2609,15 +2648,21 @@ begin
   end if;
 
   -- ── connected institutions (rows exist only because a descriptive grant or an exact tier says so)
-  if v_exact or v_inst <> 'hidden' or v_det <> 'hidden' then
+  if v_exact or v_inst <> 'hidden' or v_det_shows then
     select coalesce(jsonb_agg(jsonb_build_object(
              'id',                n.id,
              'asset_group',       n.asset_group,
              'currency',          n.currency,
              'last_sync_status',  n.last_sync_status,
              'institution',       case when v_inst <> 'hidden' then n.institution_name end,
-             'masked_identifier', case when v_det  <> 'hidden' then n.masked_identifier end,
-             'balance_cents',     case when v_exact then n.balance_cents end
+             'masked_identifier', case when v_det_shows then n.masked_identifier end,
+             'balance_cents',     case when v_exact then n.balance_cents end,
+             -- ★ COMPATIBILITY KEYS, ALWAYS NULL. The pilot client installed before this migration
+             --   REQUIRES these two keys on a row (its decoder refuses the whole payload without them)
+             --   and renders nothing for a null. They carry no figure and will be dropped once that
+             --   client is retired.
+             'range_low_cents',   null,
+             'range_high_cents',  null
            ) order by n.institution_name nulls last, n.id), '[]'::jsonb) into v_conn
       from public.normalized_assets n
      where n.estate_id = p_estate;

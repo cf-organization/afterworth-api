@@ -17,6 +17,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATION = "db/migrations/0066_20261119_beneficiary_connector_disclosure.sql";
 const MIRRORS: Record<string, string> = {
   connector_disclosure_tier: "db/functions/connector_disclosure_tier.sql",
+  effective_balance_tier: "db/functions/effective_balance_tier.sql",
   list_estate_assets: "db/functions/list_estate_assets.sql",
   get_estate_net_worth: "db/functions/get_estate_net_worth.sql",
   get_estate_discovery: "db/functions/estate_discovery_rpcs.sql",
@@ -73,11 +74,39 @@ describe("★ the non-owner path can no longer express a per-account bracket", (
     expect(gnw).toMatch(/v_bal = 'category_summary'/);
     expect(gnw).not.toMatch(/if exists \(\s*select 1 from public\.access_grants/);
   });
+  test("★ holdings are OWNER-ONLY on list_estate_assets: the non-owner select carries a literal empty array", () => {
+    // anchor on CODE — comments are stripped from the compared text
+    const nonOwner = lea.slice(lea.indexOf("connector_disclosure_tier(p_estate_id, v_uid, 'account_balances')"));
+    expect(nonOwner).toMatch(/'\[\]'::jsonb,/);
+    expect(nonOwner).not.toMatch(/a\.holdings/);
+  });
+  test("★ account details disclose at limited_detail / full_detail only, with the SAME threshold on both readers", () => {
+    for (const name of ["list_estate_assets", "get_estate_discovery"]) {
+      expect(fnBlock(read(MIGRATION), name)).toMatch(/v_det_shows := v_det in \('limited_detail', 'full_detail'\)/);
+      expect(fnBlock(read(MIGRATION), name)).not.toMatch(/v_det <> 'hidden'|v_det = 'hidden' then '••••'/);
+    }
+  });
+  test("★ discovery and the total reader resolve the balances tier through the SAME session-aware helper", () => {
+    expect(fnBlock(read(MIGRATION), "get_estate_discovery")).toMatch(/public\.effective_balance_tier\(p_estate, v_uid\)/);
+    expect(fnBlock(read(MIGRATION), "get_estate_net_worth")).toMatch(/public\.effective_balance_tier\(p_estate_id, v_uid\)/);
+    expect(fnBlock(read(MIGRATION), "effective_balance_tier")).toMatch(/aal2_is_current\(\)/);
+  });
+  test("★ the total reader checks the grant BEFORE reading the estate, and emits no currency when nothing is disclosed", () => {
+    const gnw = fnBlock(read(MIGRATION), "get_estate_net_worth");
+    const nonOwner = gnw.slice(gnw.indexOf("connector_disclosure_tier(p_estate_id, v_uid, 'total_asset_value')") - 20);
+    const grant = nonOwner.indexOf("connector_disclosure_tier(p_estate_id, v_uid, 'total_asset_value')");
+    const firstRead = nonOwner.indexOf("from public.normalized_assets");
+    expect(grant).toBeGreaterThan(-1); expect(firstRead).toBeGreaterThan(grant);
+    // both non-disclosing rows carry a NULL currency
+    expect((nonOwner.match(/'hidden'::text, null::text, (false|true)/g) ?? []).length).toBe(2);
+  });
   test("discovery never emits a per-account bracket and never emits holdings", () => {
     const disco = fnBlock(read(MIGRATION), "get_estate_discovery");
     const rows = disco.slice(disco.indexOf("'connected_institutions'") >= 0 ? 0 : 0);
     expect(rows).not.toMatch(/holdings/);
-    // the only bracket calls are over the per-category SUM
+    // the only bracket calls are over the per-category SUM; the two row-level range keys exist for the
+    // installed pilot client and are ALWAYS the null literal
+    expect(disco).toMatch(/'range_low_cents', null, 'range_high_cents', null/);
     const brackets = disco.match(/asset_bracket_(low|high)\(([^)]*)\)/g) ?? [];
     expect(brackets.length).toBeGreaterThanOrEqual(4);
     for (const b of brackets) expect(b).toMatch(/sum_cents|sum\(a\.approximate_value_cents\)/);
@@ -95,7 +124,8 @@ describe("registration", () => {
   test("the estate bundle carries the helper before list_estate_assets", () => {
     const bundle = read("db/bundles/estate_inventory_and_discovery_bundle.sql");
     const h = bundle.indexOf("function public.connector_disclosure_tier");
+    const e = bundle.indexOf("function public.effective_balance_tier");
     const l = bundle.indexOf("function public.list_estate_assets(");
-    expect(h).toBeGreaterThan(-1); expect(l).toBeGreaterThan(h);
+    expect(h).toBeGreaterThan(-1); expect(e).toBeGreaterThan(h); expect(l).toBeGreaterThan(e);
   });
 });

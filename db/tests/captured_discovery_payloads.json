@@ -2,7 +2,7 @@
   "owner": {
     "items": [
       {
-        "id": "4d8f598e-e42c-4014-9fad-fccd06916fbd",
+        "id": "4149b8a5-8990-407b-ae6c-d850b09c7fbd",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -16,7 +16,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "509216cd-d939-42d3-9c3b-8fac04f77663",
+        "id": "2cf8b591-622a-44e2-ac08-593e833e7325",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -30,7 +30,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "a4b89237-0387-45be-a0e5-272a07068361",
+        "id": "bcef3bae-0c95-40f9-8a8a-ad0131898c4a",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -95,21 +95,25 @@
     ],
     "connected_institutions": [
       {
-        "id": "12ecdb82-039a-474b-a91d-95696b0a28f2",
+        "id": "eefa82f1-e4ef-4d58-af16-e90fe593abcc",
         "currency": "USD",
         "asset_group": "cashBank",
         "institution": "Northbank",
         "balance_cents": null,
+        "range_low_cents": null,
         "last_sync_status": "live_connected",
+        "range_high_cents": null,
         "masked_identifier": null
       },
       {
-        "id": "a7407492-825b-4ea3-8d6f-0b5b93c95123",
+        "id": "d9b4bbcd-bff4-4cf1-bf18-392179094431",
         "currency": "USD",
         "asset_group": "investmentBrokerage",
         "institution": "Southvest",
         "balance_cents": null,
+        "range_low_cents": null,
         "last_sync_status": "live_connected",
+        "range_high_cents": null,
         "masked_identifier": null
       }
     ]
@@ -127,7 +131,7 @@
     "document_count": 0,
     "inventory_tier": "hidden",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -141,7 +145,7 @@
         "kind": "missing_evidence",
         "category": "realEstate",
         "sort_key": "10005Family home",
-        "subject_id": "509216cd-d939-42d3-9c3b-8fac04f77663",
+        "subject_id": "2cf8b591-622a-44e2-ac08-593e833e7325",
         "subject_kind": "asset",
         "subject_label": "Family home",
         "category_label": "Real estate"
@@ -150,7 +154,7 @@
         "kind": "missing_location",
         "category": "physicalValuable",
         "sort_key": "20008Wedding ring",
-        "subject_id": "a4b89237-0387-45be-a0e5-272a07068361",
+        "subject_id": "bcef3bae-0c95-40f9-8a8a-ad0131898c4a",
         "subject_kind": "asset",
         "subject_label": "Wedding ring",
         "category_label": "Physical valuable"
@@ -159,7 +163,7 @@
         "kind": "missing_value",
         "category": "physicalValuable",
         "sort_key": "30008Wedding ring",
-        "subject_id": "a4b89237-0387-45be-a0e5-272a07068361",
+        "subject_id": "bcef3bae-0c95-40f9-8a8a-ad0131898c4a",
         "subject_kind": "asset",
         "subject_label": "Wedding ring",
         "category_label": "Physical valuable"
@@ -244,7 +248,7 @@
     "document_count": 0,
     "inventory_tier": "range_only",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -258,7 +262,7 @@
   "professional_full_detail": {
     "items": [
       {
-        "id": "4d8f598e-e42c-4014-9fad-fccd06916fbd",
+        "id": "4149b8a5-8990-407b-ae6c-d850b09c7fbd",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -272,7 +276,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "509216cd-d939-42d3-9c3b-8fac04f77663",
+        "id": "2cf8b591-622a-44e2-ac08-593e833e7325",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -286,7 +290,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "a4b89237-0387-45be-a0e5-272a07068361",
+        "id": "bcef3bae-0c95-40f9-8a8a-ad0131898c4a",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -335,7 +339,7 @@
     "document_count": 0,
     "inventory_tier": "full_detail",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -349,7 +353,7 @@
   "professional_limited_detail": {
     "items": [
       {
-        "id": "4d8f598e-e42c-4014-9fad-fccd06916fbd",
+        "id": "4149b8a5-8990-407b-ae6c-d850b09c7fbd",
         "label": "Everyday account",
         "subtype": "chequingAccount",
         "category": "bankAccount",
@@ -363,7 +367,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "509216cd-d939-42d3-9c3b-8fac04f77663",
+        "id": "2cf8b591-622a-44e2-ac08-593e833e7325",
         "label": "Family home",
         "subtype": "primaryResidence",
         "category": "realEstate",
@@ -377,7 +381,7 @@
         "verification_status": "unverified"
       },
       {
-        "id": "a4b89237-0387-45be-a0e5-272a07068361",
+        "id": "bcef3bae-0c95-40f9-8a8a-ad0131898c4a",
         "label": "Wedding ring",
         "subtype": "jewellery",
         "category": "physicalValuable",
@@ -426,7 +430,7 @@
     "document_count": 0,
     "inventory_tier": "limited_detail",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -474,7 +478,7 @@
     "document_count": 0,
     "inventory_tier": "category_summary",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -500,7 +504,7 @@
       "tier": "full_detail",
       "items": [
         {
-          "id": "4d8f598e-e42c-4014-9fad-fccd06916fbd",
+          "id": "4149b8a5-8990-407b-ae6c-d850b09c7fbd",
           "label": "Everyday account",
           "subtype": "chequingAccount",
           "category": "bankAccount",
@@ -514,7 +518,7 @@
           "verification_status": "unverified"
         },
         {
-          "id": "509216cd-d939-42d3-9c3b-8fac04f77663",
+          "id": "2cf8b591-622a-44e2-ac08-593e833e7325",
           "label": "Family home",
           "subtype": "primaryResidence",
           "category": "realEstate",
@@ -528,7 +532,7 @@
           "verification_status": "unverified"
         },
         {
-          "id": "a4b89237-0387-45be-a0e5-272a07068361",
+          "id": "bcef3bae-0c95-40f9-8a8a-ad0131898c4a",
           "label": "Wedding ring",
           "subtype": "jewellery",
           "category": "physicalValuable",
@@ -607,7 +611,7 @@
     "document_count": 0,
     "inventory_tier": "hidden",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -630,31 +634,66 @@
     ],
     "connected_institutions": [
       {
-        "id": "a2059743-b000-4e4c-ad31-393de80e3df7",
+        "id": "4179b818-b37f-4627-89e9-b7644219be86",
         "currency": "USD",
         "asset_group": "investmentBrokerage",
         "institution": "A Broker",
         "balance_cents": null,
+        "range_low_cents": null,
         "last_sync_status": "live_connected",
+        "range_high_cents": null,
         "masked_identifier": null
       },
       {
-        "id": "e3d3eada-e06b-4dd0-8452-e4cb31c87fa1",
+        "id": "585e592f-5c00-4be8-9983-718c2192fcd8",
         "currency": "USD",
         "asset_group": "cashBank",
         "institution": "A Cash One",
         "balance_cents": null,
+        "range_low_cents": null,
         "last_sync_status": "live_connected",
+        "range_high_cents": null,
         "masked_identifier": null
       },
       {
-        "id": "94776d8b-f7e0-4af6-9e4f-d791b41ef546",
+        "id": "07507425-229e-42cf-b695-abbafb7c7bab",
         "currency": "USD",
         "asset_group": "cashBank",
         "institution": "A Cash Two",
         "balance_cents": null,
+        "range_low_cents": null,
         "last_sync_status": "live_connected",
+        "range_high_cents": null,
         "masked_identifier": null
+      }
+    ]
+  },
+  "professional_connector_exact_aal1": {
+    "is_owner": false,
+    "authorized": true,
+    "release_state": "active",
+    "document_count": 0,
+    "inventory_tier": "hidden",
+    "connected_total": {
+      "currency": null,
+      "total_cents": null,
+      "resolved_tier": "hidden",
+      "range_low_cents": null,
+      "range_high_cents": null,
+      "suppressed_by_breakdown": true
+    },
+    "connected_categories": [
+      {
+        "asset_group": "cashBank",
+        "total_cents": null,
+        "range_low_cents": 5000000,
+        "range_high_cents": 10000000
+      },
+      {
+        "asset_group": "investmentBrokerage",
+        "total_cents": null,
+        "range_low_cents": 0,
+        "range_high_cents": 1000000
       }
     ]
   },
@@ -743,7 +782,7 @@
     "document_count": 0,
     "inventory_tier": "hidden",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -772,7 +811,7 @@
     "document_count": 0,
     "inventory_tier": "hidden",
     "connected_total": {
-      "currency": "USD",
+      "currency": null,
       "total_cents": null,
       "resolved_tier": "hidden",
       "range_low_cents": null,
@@ -813,13 +852,15 @@
     ],
     "connected_institutions": [
       {
-        "id": "45d98d8f-7a36-4606-91af-9b78419eb167",
+        "id": "ed4e3d96-ceca-48b5-91a2-44a0aed77aaf",
         "currency": "USD",
         "asset_group": "cashBank",
         "institution": "O Cash",
         "balance_cents": null,
+        "range_low_cents": null,
         "last_sync_status": "live_connected",
-        "masked_identifier": null
+        "range_high_cents": null,
+        "masked_identifier": "****5555"
       }
     ]
   },
@@ -838,5 +879,69 @@
     "estate_display_name": "Fixture Estate",
     "access_request_state": "none",
     "can_request_document_access": true
+  },
+  "beneficiary_connector_with_account_details": {
+    "is_owner": false,
+    "authorized": true,
+    "release_state": "active",
+    "document_count": 0,
+    "inventory_tier": "hidden",
+    "connected_total": {
+      "currency": null,
+      "total_cents": null,
+      "resolved_tier": "hidden",
+      "range_low_cents": null,
+      "range_high_cents": null,
+      "suppressed_by_breakdown": false
+    },
+    "connected_categories": [
+      {
+        "asset_group": "cashBank",
+        "total_cents": null,
+        "range_low_cents": 5000000,
+        "range_high_cents": 10000000
+      },
+      {
+        "asset_group": "investmentBrokerage",
+        "total_cents": null,
+        "range_low_cents": 0,
+        "range_high_cents": 1000000
+      }
+    ],
+    "connected_institutions": [
+      {
+        "id": "4179b818-b37f-4627-89e9-b7644219be86",
+        "currency": "USD",
+        "asset_group": "investmentBrokerage",
+        "institution": "A Broker",
+        "balance_cents": null,
+        "range_low_cents": null,
+        "last_sync_status": "live_connected",
+        "range_high_cents": null,
+        "masked_identifier": "****2468"
+      },
+      {
+        "id": "585e592f-5c00-4be8-9983-718c2192fcd8",
+        "currency": "USD",
+        "asset_group": "cashBank",
+        "institution": "A Cash One",
+        "balance_cents": null,
+        "range_low_cents": null,
+        "last_sync_status": "live_connected",
+        "range_high_cents": null,
+        "masked_identifier": "****4321"
+      },
+      {
+        "id": "07507425-229e-42cf-b695-abbafb7c7bab",
+        "currency": "USD",
+        "asset_group": "cashBank",
+        "institution": "A Cash Two",
+        "balance_cents": null,
+        "range_low_cents": null,
+        "last_sync_status": "live_connected",
+        "range_high_cents": null,
+        "masked_identifier": "****8765"
+      }
+    ]
   }
 }
