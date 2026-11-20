@@ -537,11 +537,30 @@ begin
   -- created by a bundle and called by no assertion; `get_estate_net_worth` was not installed at all.
   -- Asserting they withhold under a dormant condition is worth nothing until they are shown to
   -- disclose under a live one — which is the whole reason `normalized_assets` is now in the harness.
-  if v_rows = 0 then
-    raise exception 'FAIL: the CONTROL account_balances grant produced no asset rows — every '
-      'withholding assertion about list_estate_assets below would be vacuous';
+  -- ★ 0066 RE-ANCHORED. A balances grant alone no longer produces asset ROWS to a non-owner — the
+  --   bracket surface is per CATEGORY and lives in get_estate_discovery. The control therefore asks
+  --   that surface, and proves the ROW surface can still speak through the grant that governs rows
+  --   (a descriptive one), removed again before the dormancy loop so the loop's zero stays meaningful.
+  if coalesce(jsonb_array_length(v_live_disco -> 'connected_categories'), 0) = 0 then
+    raise exception 'FAIL: the CONTROL account_balances grant disclosed no connector categories — every '
+      'withholding assertion about the connector surfaces below would be vacuous';
   end if;
-  raise notice '  ok   CONTROL: an immediately-released account_balances grant discloses % asset row(s)', v_rows;
+  raise notice '  ok   CONTROL: an immediately-released account_balances grant discloses % connector categor(y/ies)',
+    jsonb_array_length(v_live_disco -> 'connected_categories');
+  if v_rows <> 0 then
+    raise exception 'FAIL: a balances-only grant produced % asset row(s) — 0066 says rows come only from a '
+      'descriptive grant or an exact tier', v_rows;
+  end if;
+  perform harness_rc.regrant(BEN, 'institution_names', 'full_detail', 'immediately');
+  perform set_config('request.jwt.claim.sub', BEN::text, true);
+  set local role authenticated;
+  select count(*) into v_rows from public.list_estate_assets(A);
+  reset role;
+  if v_rows = 0 then
+    raise exception 'FAIL: the CONTROL descriptive grant produced no asset rows — the row surface cannot speak';
+  end if;
+  raise notice '  ok   CONTROL: a descriptive grant discloses % asset row(s), with no amount', v_rows;
+  delete from public.access_grants where estate_id = A and grantee_user_id = BEN and category = 'institution_names';
 
   perform set_config('request.jwt.claim.sub', BEN::text, true);
   set local role authenticated;
@@ -952,10 +971,12 @@ begin
   perform harness_rc.regrant_on(D, BEN2, 'account_balances', 'category_summary', 'immediately');
   perform set_config('request.jwt.claim.sub', BEN2::text, true);
   set local role authenticated;
-  select count(*) into v_rows from public.list_estate_assets(D);
+  -- ★ 0066 RE-ANCHORED: the balances grant's disclosure is the per-category bracket in discovery,
+  --   not a row in list_estate_assets (rows need a descriptive grant or an exact tier).
+  select coalesce(jsonb_array_length(public.get_estate_discovery(D) -> 'connected_categories'), 0) into v_rows;
   reset role;
   if v_rows = 0 then
-    raise exception 'FAIL[control]: an immediately account_balances grant on D disclosed no asset rows';
+    raise exception 'FAIL[control]: an immediately account_balances grant on D disclosed no connector categories';
   end if;
   delete from public.access_grants where estate_id = D and grantee_user_id = BEN2 and category = 'account_balances';
   perform harness_rc.regrant_on(D, BEN2, 'total_asset_value', 'range_only', 'immediately');

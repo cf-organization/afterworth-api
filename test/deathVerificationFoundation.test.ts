@@ -81,7 +81,10 @@ describe("1 · the seam is consulted by the SANCTIONED set, and only as the pred
     // never what the estate contains, which §3/§4 of executor_workspace_authorization.sql assert
     // by execution. It is therefore exempt from the only-as-a-predicate-argument rule below.
     "executor_workspace.sql",
-    "get_estate_net_worth.sql",
+    // ★ 0066. The connector readers resolve grants through this one helper, which passes the seam
+    //   to the predicate exactly as list_estate_assets' asset_grant_tier does; get_estate_net_worth
+    //   itself no longer names the reader.
+    "connector_disclosure_tier.sql",
     "list_estate_assets.sql",
     // ★ PHASE 11-E. The safety module reads the lifecycle to gate its own transitions — the one
     // sanctioned NON-disclosure consumer. It is exempt from the only-as-an-argument rule below

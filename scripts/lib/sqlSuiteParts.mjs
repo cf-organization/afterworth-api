@@ -120,6 +120,11 @@ export const SQL_SUITE_PARTS = Object.freeze([
   //   not yet exist, which is why that suite creates its policy rather than the preamble.
   'db/functions/aal2_is_current.sql',
   'db/functions/require_aal2.sql',
+  // ★ 0066. The per-estate connector resolver every connector reader calls; plpgsql resolves at
+  //   runtime, so it must exist before any suite CALLS list_estate_assets / get_estate_net_worth /
+  //   get_estate_discovery. Loaded as source for the same reason as its neighbours.
+  'db/functions/connector_disclosure_tier.sql',
+  'db/functions/effective_balance_tier.sql',
   'db/functions/get_estate_net_worth.sql',
   // ★ ADDED IN PHASE 11-C, SAME POSTURE. The death-verification routines call all three at
   // execution time; production has carried them since 0014/0015 (admin gate, verified live
@@ -170,6 +175,11 @@ export const SQL_SUITE_PARTS = Object.freeze([
   // ★ LAST, DELIBERATELY. The exit matrix asks whether the features above compose; it must run
   // after each of them has proved itself, so a failure here is a COMPOSITION failure rather than
   // an ambiguous mixture of the two.
+  // ★ 0066, AFTER every disclosure suite and BEFORE the exit matrix. One beneficiary identity across
+  //   two synthetic estates (plus an estate they own and one they are a stranger to): each sharing
+  //   choice returns what its name says, scope never leaks across estates, aal2 creates no grant,
+  //   and the total's precision test is asserted with arithmetic. It owns and removes its fixture.
+  'db/tests/beneficiary_connector_disclosure_authorization.sql',
   'db/tests/phase10_exit_matrix.sql',
 ]);
 

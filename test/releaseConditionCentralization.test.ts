@@ -111,7 +111,9 @@ describe("0 · the audit is reading something", () => {
       "db/functions/can_access_document.sql",
       "db/functions/estate_discovery_rpcs.sql",
       "db/functions/list_estate_assets.sql",
-      "db/functions/get_estate_net_worth.sql",
+      // ★ 0066: the connector readers resolve their grants through ONE helper; get_estate_net_worth
+      //   no longer reads the column itself — the helper is the evaluator now.
+      "db/functions/connector_disclosure_tier.sql",
       "db/functions/lifecycle_notification_rpcs.sql",
     ]) {
       expect(SQL_SOURCES, `${f} is missing from the scan set`).toContain(f);
@@ -280,7 +282,9 @@ describe("3 · every evaluator that reads the column calls the authority", () =>
       "db/functions/can_access_document.sql",
       "db/functions/estate_discovery_rpcs.sql",
       "db/functions/list_estate_assets.sql",
-      "db/functions/get_estate_net_worth.sql",
+      // ★ 0066: the connector readers resolve their grants through ONE helper; get_estate_net_worth
+      //   no longer reads the column itself — the helper is the evaluator now.
+      "db/functions/connector_disclosure_tier.sql",
       "db/functions/lifecycle_notification_rpcs.sql",
     ]) {
       expect(READS_COLUMN, `${f} no longer reads release_condition — did a gate disappear?`).toContain(f);
@@ -291,7 +295,7 @@ describe("3 · every evaluator that reads the column calls the authority", () =>
     "db/functions/can_access_document.sql",
     "db/functions/estate_discovery_rpcs.sql",
     "db/functions/list_estate_assets.sql",
-    "db/functions/get_estate_net_worth.sql",
+    "db/functions/connector_disclosure_tier.sql",   // ★ 0066 — replaces get_estate_net_worth here
     "db/functions/lifecycle_notification_rpcs.sql",
   ])("%s delegates to public.release_condition_satisfied", (file) => {
     expect(load(file).code).toMatch(/public\.release_condition_satisfied\s*\(/);
@@ -316,7 +320,13 @@ describe("3 · every evaluator that reads the column calls the authority", () =>
       [...load(f).code.matchAll(/(?<!function\s)public\.release_condition_satisfied\s*\(([^)]*)\)/gi)]
         .map((m) => ({ file: f, args: m[1] }))
     );
-    expect(calls.length, "fewer call sites than the rewiring created — this rule would be vacuous").toBeGreaterThanOrEqual(7);
+    // ★ 0066 LOWERED THIS FLOOR FROM 7 TO 5, AND THE REASON IS RECORDED RATHER THAN HIDDEN IN A DIFF.
+    //   The Phase 11-B rewiring created seven direct call sites. Migration 0066 centralised the three
+    //   connector readers' grant resolution into ONE helper (`connector_disclosure_tier`): the two direct
+    //   calls in get_estate_net_worth and the one in list_estate_assets became one call in the helper.
+    //   Fewer call sites by construction is not a disappeared gate — the per-call policy assertion below
+    //   still runs over every remaining site, and the evaluator-set test above names the helper.
+    expect(calls.length, "fewer call sites than the centralised design has — this rule would be vacuous").toBeGreaterThanOrEqual(5);
     for (const { file, args } of calls) {
       expect(
         /'(standard|legacy_immediate_only)'/.test(args),
@@ -535,8 +545,10 @@ describe("6 · the predicate consumes the lifecycle as an ARGUMENT and still rea
 
   it("every consumer passes the seam as the lifecycle argument (the notification pin excepted)", () => {
     const calls = SQL_SOURCES.flatMap((f) => fullArgs(load(f).code).map((args) => ({ file: f, args })));
-    expect(calls.length, "fewer call sites than the rewiring created — this rule would be vacuous")
-      .toBeGreaterThanOrEqual(7);
+    // ★ 0066: 7 → 5 for the reason recorded at the section-3 floor — three direct connector calls
+    //   became one call inside connector_disclosure_tier; every remaining site is still checked below.
+    expect(calls.length, "fewer call sites than the centralised design has — this rule would be vacuous")
+      .toBeGreaterThanOrEqual(5);
     for (const { file, args } of calls) {
       // Split top-level commas (depth 0) to isolate the fourth argument.
       const parts: string[] = [];
