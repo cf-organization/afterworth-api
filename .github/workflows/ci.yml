@@ -21,7 +21,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # ★ 24, NOT 20 (2026-11-19). The production runtime on Vercel is Node 24.x, and vitest 5 —
+          #   adopted to clear the tinypool CRITICAL advisories without an exception — declares
+          #   `engines: ^22.12 || ^24 || >=26`. A verify job on 20 would no longer be able to run the
+          #   suite at all; matching the runtime also closes the "CI Node lags production" gap.
+          node-version: 24
           cache: npm
 
       - run: npm ci
