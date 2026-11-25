@@ -64,6 +64,7 @@ buildBundle(
       'db/functions/create_document_grant.sql',
       'db/functions/approve_document_grant.sql',
       'db/functions/revoke_document_grant.sql',
+      'db/functions/invitation_phone_key.sql',
       'db/functions/caller_verified_contacts.sql',
       'db/functions/provision_from_invitation.sql',
       'db/functions/accept_invitation.sql',

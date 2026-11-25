@@ -3,7 +3,10 @@
 -- INVITATION CONTACT BINDING — every place an invitation is matched to the person it was addressed
 -- to now reads the caller's VERIFIED contacts from the authenticated identity.
 --
--- ★ WHAT CHANGES. One new helper, `public.caller_verified_contacts()`, returns the GoTrue-confirmed
+-- ★ WHAT CHANGES. Two new helpers. `public.invitation_phone_key(text, boolean)` reduces a phone to its
+--   E.164 digit key on both sides of a match (the Auth digits and the owner's "+"-prefixed invitation
+--   compare equal; a number without "+" or malformed never matches — existing rows need no backfill).
+--   `public.caller_verified_contacts()` returns the GoTrue-confirmed
 --   email and phone of `auth.uid()` (NULL for an unconfirmed, missing or deleted contact). Four
 --   functions are re-created to use it instead of `public.profiles`, which is self-editable and is
 --   copied only at sign-up: `resolve_membership` (the pending-invitation list — its `p_email` /
@@ -16,13 +19,55 @@
 --   invitations; token preview (`invitation_preview`); table grants (none exist on `invitations` for
 --   client roles, so the invitee read policy is reachable only through these definer functions).
 --
--- ★ SCHEMA UNCHANGED. Function bodies only, all also under db/functions/ (source of truth).
+-- ★ SCHEMA UNCHANGED. Function bodies only (six), all also under db/functions/ (source of truth).
 --   Requires GoTrue's `auth.users.email_confirmed_at`, `phone`, `phone_confirmed_at`, `deleted_at`.
 --
 -- Idempotent: `create or replace` throughout. Re-apply on any DB reset AFTER the bootstrap.
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 
--- ── 1 · the verified-contact source ─────────────────────────────────────────────────────────────────────────────
+-- ── 1 · the phone comparison key ─────────────────────────────────────────────────────────────────────────────
+-- public.invitation_phone_key(p_raw text, p_require_plus boolean) -> text
+--
+-- THE ONE comparison key for a phone number on the invitation path. Both sides of every phone match
+-- (resolve_membership's pending list, accept_invitation, decline_invitation, bind_invitation_token)
+-- are reduced to this key and compared with plain equality — never a raw string against a raw string.
+--
+-- ★ WHY. GoTrue stores a confirmed phone as international DIGITS ("15555550100"); the owner paths
+--   store the invitee phone as the owner typed it, conventionally with a leading "+" ("+15555550100").
+--   A raw equality never matched the two, so a confirmed phone could not see or accept an invitation
+--   addressed to it. The key is the E.164 digit string, derived strictly:
+--
+--   · p_require_plus = true  (the INVITATION side): accepted only as "+" followed by E.164 digits
+--     (`^\+[1-9][0-9]{7,14}$`). A number written without the "+" has no country-code marker and is
+--     ambiguous, so it NEVER matches — existing rows written with "+" are covered without a backfill;
+--   · p_require_plus = false (the AUTH side): the same digits with or without the "+", as GoTrue
+--     writes them (`^\+?[1-9][0-9]{7,14}$`);
+--   · anything else — spaces, dashes, parentheses, letters, a leading zero, too short, too long,
+--     NULL — yields NULL, and a NULL key matches nothing.
+--
+-- ★ STRICT ON PURPOSE. No digit stripping, no "best effort" normalisation: a malformed value is a
+--   value nobody verified, and the cost of refusing it is one re-issued invitation.
+--
+-- Source of truth for this function. Re-apply on any DB reset.
+
+create or replace function public.invitation_phone_key(p_raw text, p_require_plus boolean)
+ returns text
+ language sql
+ immutable
+ strict
+ parallel safe
+as $function$
+  select case
+    when p_require_plus and p_raw ~ '^\+[1-9][0-9]{7,14}$' then substr(p_raw, 2)
+    when not p_require_plus and p_raw ~ '^\+[1-9][0-9]{7,14}$' then substr(p_raw, 2)
+    when not p_require_plus and p_raw ~ '^[1-9][0-9]{7,14}$' then p_raw
+    else null
+  end
+$function$;
+revoke execute on function public.invitation_phone_key(text, boolean) from public, anon;
+grant  execute on function public.invitation_phone_key(text, boolean) to authenticated;
+
+-- ── 2 · the verified-contact source ─────────────────────────────────────────────────────────────────────────────
 -- public.caller_verified_contacts() -> (email text, phone text)
 --
 -- The ONE source of the authenticated caller's VERIFIED contacts, for every place an invitation is
@@ -40,6 +85,10 @@
 --   the address was proven. A contact is eligible ONLY when its confirmation timestamp is set:
 --   an unconfirmed email yields NULL, a missing or unconfirmed phone yields NULL, and each contact
 --   is decided independently — a verified email keeps working without any phone.
+--
+-- ★ THE PHONE IS RETURNED AS A COMPARISON KEY, NOT A STRING (see invitation_phone_key.sql). GoTrue
+--   stores E.164 digits without the "+"; the callers reduce the invitation side to the same key and
+--   compare keys. A confirmed phone that is not E.164-shaped yields NULL and matches nothing.
 --
 -- ★ NULL MEANS "NO CONTACT", AND THE CALLERS TREAT IT AS "MATCHES NOTHING". No fallback to a profile,
 --   a JWT claim, or a caller-supplied parameter. SECURITY DEFINER only so the definer can read
@@ -65,8 +114,8 @@ begin
   select
     case when u.email_confirmed_at is not null and nullif(btrim(u.email), '') is not null
          then lower(btrim(u.email)) end,
-    case when u.phone_confirmed_at is not null and nullif(btrim(u.phone), '') is not null
-         then btrim(u.phone) end
+    case when u.phone_confirmed_at is not null
+         then public.invitation_phone_key(btrim(u.phone), false) end
     into email, phone
     from auth.users u
    where u.id = v_user
@@ -77,7 +126,7 @@ $function$;
 revoke execute on function public.caller_verified_contacts() from public, anon;
 grant  execute on function public.caller_verified_contacts() to authenticated;
 
--- ── 2 · resolve_membership (pending list) ─────────────────────────────────────────────────────────────────────────────
+-- ── 3 · resolve_membership (pending list) ─────────────────────────────────────────────────────────────────────────────
 -- public.resolve_membership(p_email text, p_phone text) -> jsonb
 --
 -- Resolves the authenticated caller's membership context: their primary estate
@@ -94,7 +143,9 @@ grant  execute on function public.caller_verified_contacts() to authenticated;
 -- contacts from `caller_verified_contacts()` (GoTrue-confirmed email / phone of auth.uid()), never
 -- on `p_email` / `p_phone`. The two parameters stay in the signature for installed clients and are
 -- accepted but NOT consulted: a supplied address can never widen what the caller sees. A missing or
--- unconfirmed phone matches nothing; a confirmed email matches independently of any phone.
+-- unconfirmed phone matches nothing; a confirmed email matches independently of any phone. Phones
+-- are compared as E.164 keys on both sides (`invitation_phone_key`): the Auth digits and the owner's
+-- "+"-prefixed invitation reduce to the same key; a number without "+" or malformed never matches.
 --
 -- Source of truth for this function. Re-apply on any DB reset.
 
@@ -188,13 +239,12 @@ begin
   where i.status in ('pending', 'matched')
     and i.expires_at > now()
     and (
+      -- the SAME null-safe predicate the accept/decline/bind guards use
       (v_email is not null
-       and i.invitee_email is not null
-       and lower(i.invitee_email) = v_email)
+       and lower(i.invitee_email) is not distinct from v_email)
       or
       (v_phone is not null
-       and i.invitee_phone is not null
-       and i.invitee_phone = v_phone)
+       and public.invitation_phone_key(i.invitee_phone, true) is not distinct from v_phone)
     );
 
   -- Additional contexts: approved memberships in estates the user does NOT own.
@@ -224,7 +274,7 @@ $function$;
 revoke execute on function public.resolve_membership(text, text) from public, anon;
 grant  execute on function public.resolve_membership(text, text) to authenticated;
 
--- ── 3 · accept_invitation ─────────────────────────────────────────────────────────────────────────────
+-- ── 4 · accept_invitation ─────────────────────────────────────────────────────────────────────────────
 -- public.accept_invitation(p_invitation_id uuid)
 --   -> TABLE(membership_id uuid, estate_id uuid, estate_display_name text, role text, status text)
 --
@@ -259,8 +309,10 @@ begin
   -- profile address proves nothing about who the caller is; `caller_verified_contacts()` reads the
   -- GoTrue-confirmed email/phone, and a NULL contact matches nothing.
   select c.email, c.phone into v_user_email, v_user_phone from public.caller_verified_contacts() c;
-  if not ((v_user_email is not null and v_inv.invitee_email is not null and lower(v_inv.invitee_email) = v_user_email)
-       or (v_user_phone is not null and v_inv.invitee_phone is not null and v_inv.invitee_phone = v_user_phone)) then
+  -- ★ NULL-SAFE, DELIBERATELY. `IS NOT DISTINCT FROM`: a NULL on either side is "no match", never a NULL
+  -- that would make `not (... or ...)` NULL and silently skip this raise (three-valued logic).
+  if not ((v_user_email is not null and lower(v_inv.invitee_email) is not distinct from v_user_email)
+       or (v_user_phone is not null and public.invitation_phone_key(v_inv.invitee_phone, true) is not distinct from v_user_phone)) then
     raise exception 'invitation_not_for_caller' using errcode = 'P0006';
   end if;
 
@@ -317,7 +369,7 @@ begin
 end;
 $function$;
 
--- ── 4 · decline_invitation ─────────────────────────────────────────────────────────────────────────────
+-- ── 5 · decline_invitation ─────────────────────────────────────────────────────────────────────────────
 -- public.decline_invitation(p_invitation_id uuid) -> void
 --
 -- Declines an invitation BY ID. Used by the in-app "matched invitations" screen.
@@ -365,8 +417,10 @@ begin
   -- Verify the caller is the intended invitee (same guard as accept).
   -- ★ THE CALLER'S VERIFIED CONTACTS, NEVER THE PROFILE (2026-11-25) — see caller_verified_contacts.sql.
   select c.email, c.phone into v_user_email, v_user_phone from public.caller_verified_contacts() c;
-  if not ((v_user_email is not null and v_inv.invitee_email is not null and lower(v_inv.invitee_email) = v_user_email)
-       or (v_user_phone is not null and v_inv.invitee_phone is not null and v_inv.invitee_phone = v_user_phone)) then
+  -- ★ NULL-SAFE, DELIBERATELY. `IS NOT DISTINCT FROM`: a NULL on either side is "no match", never a NULL
+  -- that would make `not (... or ...)` NULL and silently skip this raise (three-valued logic).
+  if not ((v_user_email is not null and lower(v_inv.invitee_email) is not distinct from v_user_email)
+       or (v_user_phone is not null and public.invitation_phone_key(v_inv.invitee_phone, true) is not distinct from v_user_phone)) then
     raise exception 'invitation_not_for_caller' using errcode = 'P0006';
   end if;
 
@@ -415,7 +469,7 @@ begin
 end;
 $function$;
 
--- ── 5 · bind_invitation_token ─────────────────────────────────────────────────────────────────────────────
+-- ── 6 · bind_invitation_token ─────────────────────────────────────────────────────────────────────────────
 -- public.bind_invitation_token(p_token text)
 --   -> TABLE(membership_id uuid, estate_id uuid, estate_display_name text, role text, status text)
 --
@@ -453,8 +507,10 @@ begin
 
   -- ★ THE CALLER'S VERIFIED CONTACTS, NEVER THE PROFILE (2026-11-25) — see caller_verified_contacts.sql.
   select c.email, c.phone into v_user_email, v_user_phone from public.caller_verified_contacts() c;
-  if not ((v_user_email is not null and v_inv.invitee_email is not null and lower(v_inv.invitee_email) = v_user_email)
-       or (v_user_phone is not null and v_inv.invitee_phone is not null and v_inv.invitee_phone = v_user_phone)) then
+  -- ★ NULL-SAFE, DELIBERATELY. `IS NOT DISTINCT FROM`: a NULL on either side is "no match", never a NULL
+  -- that would make `not (... or ...)` NULL and silently skip this raise (three-valued logic).
+  if not ((v_user_email is not null and lower(v_inv.invitee_email) is not distinct from v_user_email)
+       or (v_user_phone is not null and public.invitation_phone_key(v_inv.invitee_phone, true) is not distinct from v_user_phone)) then
     raise exception 'invitation_not_for_caller' using errcode = 'P0006';
   end if;
 

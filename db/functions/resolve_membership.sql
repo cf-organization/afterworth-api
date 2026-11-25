@@ -29,7 +29,9 @@
 -- contacts from `caller_verified_contacts()` (GoTrue-confirmed email / phone of auth.uid()), never
 -- on `p_email` / `p_phone`. The two parameters stay in the signature for installed clients and are
 -- accepted but NOT consulted: a supplied address can never widen what the caller sees. A missing or
--- unconfirmed phone matches nothing; a confirmed email matches independently of any phone.
+-- unconfirmed phone matches nothing; a confirmed email matches independently of any phone. Phones
+-- are compared as E.164 keys on both sides (`invitation_phone_key`): the Auth digits and the owner's
+-- "+"-prefixed invitation reduce to the same key; a number without "+" or malformed never matches.
 --
 -- Source of truth for this function. Re-apply on any DB reset.
 
@@ -123,13 +125,12 @@ begin
   where i.status in ('pending', 'matched')
     and i.expires_at > now()
     and (
+      -- the SAME null-safe predicate the accept/decline/bind guards use
       (v_email is not null
-       and i.invitee_email is not null
-       and lower(i.invitee_email) = v_email)
+       and lower(i.invitee_email) is not distinct from v_email)
       or
       (v_phone is not null
-       and i.invitee_phone is not null
-       and i.invitee_phone = v_phone)
+       and public.invitation_phone_key(i.invitee_phone, true) is not distinct from v_phone)
     );
 
   -- Additional contexts: approved memberships in estates the user does NOT own.
