@@ -89,7 +89,10 @@ describe('2 · the sanitizer mirrors the client rule', () => {
     const b = bodyOf(read(SANITIZER), 'safe_inviter_display_name');
     // the address check and the trim share ONE explicit whitespace class (no bare \S)
     expect(b).not.toContain("'\\S@\\S'");
-    expect(b).toMatch(/~ '\[\^\\s\\u00a0[^']*\]@\[\^\\s\\u00a0[^']*\]'/);
+    expect(b).toMatch(/~ '\[\^\\u0009\\u000a[^']*\]@\[\^\\u0009\\u000a[^']*\]'/);
+    // no locale-dependent class anywhere in the body: the whitespace set is spelled out as code points
+    expect(b).not.toMatch(/\\[sS]/);
+    for (const cp of ['\\u0009', '\\u000b', '\\u000c', '\\u0020', '\\u2028', '\\u2029']) expect(b).toContain(cp);
     expect(b).toContain("when v = '' then null");
     expect(b).toContain('> 200 then null');
     // the trim set is JavaScript's, not btrim's: NBSP, the Zs block, the line terminators and the BOM
@@ -132,6 +135,7 @@ describe('3 · source of truth and migration carry the same bodies', () => {
   test('★ 0068 lands on 0067: its resolve_membership body carries the contact binding as well as the cue', () => {
     const b = bodyOf(read(MIGRATION), 'resolve_membership');
     expect(b).toContain('from public.caller_verified_contacts() c');
+    expect(b).toContain('public.invitation_phone_key(i.invitee_phone, true) is not distinct from v_phone');
     expect(b).toContain("'inviterDisplayName'");
     expect(read(MIGRATION)).toMatch(/LANDS AFTER 0067/);
     expect(readdirSync(join(ROOT, 'db/migrations')).some((f) => f.startsWith('0067_') && f.includes('contact_binding'))).toBe(true);

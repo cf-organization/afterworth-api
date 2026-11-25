@@ -6,10 +6,12 @@
 -- trimmed value) so the server and the app cannot disagree about whether a stored value is a name:
 --
 --   · NULL → NULL (the function is STRICT);
---   · trim the SAME set JavaScript's String.prototype.trim() strips — ASCII whitespace, line
---     terminators (LF, CR, U+2028, U+2029), NO-BREAK SPACE U+00A0, U+1680, U+2000–U+200A, U+202F,
---     U+205F, U+3000 and the BOM U+FEFF. `btrim(text)` strips only ' ' and was the defect this file
---     once had: a tab-only or NBSP-only value survived as a "name";
+--   · trim EXACTLY the set JavaScript's String.prototype.trim() strips, spelled out as code points —
+--     ECMAScript WhiteSpace (TAB, VT, FF, SP, NBSP U+00A0, BOM U+FEFF, and the Zs block: U+1680,
+--     U+2000–U+200A, U+202F, U+205F, U+3000) plus LineTerminator (LF, CR, U+2028, U+2029). No `\s`:
+--     PostgreSQL's `\s` is `[[:space:]]`, whose membership depends on the database locale, and a
+--     match that changes with the locale is not a mirror of anything. `btrim(text)` strips only ' '
+--     and was the defect this file once had: a tab-only or NBSP-only value survived as a "name";
 --   · nothing left after trimming → NULL (missing);
 --   · anything EMAIL-SHAPED → NULL (unsafe): an `@` with a NON-WHITESPACE character on both sides, where
 --     "whitespace" is the SAME explicit set the trim uses. The client tests `/\S@\S/`, and JavaScript's
@@ -37,12 +39,12 @@ as $function$
   with trimmed as (
     select regexp_replace(
              p_raw,
-             '^[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
+             '^[\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
              '', 'g') as v
   )
   select case
     when v = '' then null
-    when v ~ '[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]@[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]' then null
+    when v ~ '[^\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]@[^\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]' then null
     when length(v) > 200 then null
     else v
   end

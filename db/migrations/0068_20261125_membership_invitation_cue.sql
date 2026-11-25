@@ -20,8 +20,9 @@
 --   the server never manufactures a distinction. The primary (owned) context carries no cue.
 --
 -- ★ LANDS AFTER 0067 (invitation contact binding). Both migrations re-create resolve_membership; this
---   one's body INCLUDES the verified-contact matching 0067 introduced and depends on its helper
---   `caller_verified_contacts()`. Apply 0067 first, then 0068; the reverse order would re-create the
+--   one's body INCLUDES the verified-contact matching 0067 introduced (its null-safe predicate and
+--   E.164 phone key) and depends on its helpers `caller_verified_contacts()` and
+--   `invitation_phone_key()`. Apply 0067 first, then 0068; the reverse order would re-create the
 --   function without the cue (proven by scripts/verifyResolveMembershipLandingOrder.mjs).
 --
 -- ★ SCHEMA UNCHANGED. Two function bodies only, both also under db/functions/ (source of truth):
@@ -44,10 +45,12 @@
 -- trimmed value) so the server and the app cannot disagree about whether a stored value is a name:
 --
 --   · NULL → NULL (the function is STRICT);
---   · trim the SAME set JavaScript's String.prototype.trim() strips — ASCII whitespace, line
---     terminators (LF, CR, U+2028, U+2029), NO-BREAK SPACE U+00A0, U+1680, U+2000–U+200A, U+202F,
---     U+205F, U+3000 and the BOM U+FEFF. `btrim(text)` strips only ' ' and was the defect this file
---     once had: a tab-only or NBSP-only value survived as a "name";
+--   · trim EXACTLY the set JavaScript's String.prototype.trim() strips, spelled out as code points —
+--     ECMAScript WhiteSpace (TAB, VT, FF, SP, NBSP U+00A0, BOM U+FEFF, and the Zs block: U+1680,
+--     U+2000–U+200A, U+202F, U+205F, U+3000) plus LineTerminator (LF, CR, U+2028, U+2029). No `\s`:
+--     PostgreSQL's `\s` is `[[:space:]]`, whose membership depends on the database locale, and a
+--     match that changes with the locale is not a mirror of anything. `btrim(text)` strips only ' '
+--     and was the defect this file once had: a tab-only or NBSP-only value survived as a "name";
 --   · nothing left after trimming → NULL (missing);
 --   · anything EMAIL-SHAPED → NULL (unsafe): an `@` with a NON-WHITESPACE character on both sides, where
 --     "whitespace" is the SAME explicit set the trim uses. The client tests `/\S@\S/`, and JavaScript's
@@ -75,12 +78,12 @@ as $function$
   with trimmed as (
     select regexp_replace(
              p_raw,
-             '^[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
+             '^[\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
              '', 'g') as v
   )
   select case
     when v = '' then null
-    when v ~ '[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]@[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]' then null
+    when v ~ '[^\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]@[^\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]' then null
     when length(v) > 200 then null
     else v
   end
@@ -121,7 +124,9 @@ grant  execute on function public.safe_inviter_display_name(text) to authenticat
 -- contacts from `caller_verified_contacts()` (GoTrue-confirmed email / phone of auth.uid()), never
 -- on `p_email` / `p_phone`. The two parameters stay in the signature for installed clients and are
 -- accepted but NOT consulted: a supplied address can never widen what the caller sees. A missing or
--- unconfirmed phone matches nothing; a confirmed email matches independently of any phone.
+-- unconfirmed phone matches nothing; a confirmed email matches independently of any phone. Phones
+-- are compared as E.164 keys on both sides (`invitation_phone_key`): the Auth digits and the owner's
+-- "+"-prefixed invitation reduce to the same key; a number without "+" or malformed never matches.
 --
 -- Source of truth for this function. Re-apply on any DB reset.
 
@@ -215,13 +220,12 @@ begin
   where i.status in ('pending', 'matched')
     and i.expires_at > now()
     and (
+      -- the SAME null-safe predicate the accept/decline/bind guards use
       (v_email is not null
-       and i.invitee_email is not null
-       and lower(i.invitee_email) = v_email)
+       and lower(i.invitee_email) is not distinct from v_email)
       or
       (v_phone is not null
-       and i.invitee_phone is not null
-       and i.invitee_phone = v_phone)
+       and public.invitation_phone_key(i.invitee_phone, true) is not distinct from v_phone)
     );
 
   -- Additional contexts: approved memberships in estates the user does NOT own.
