@@ -1,0 +1,73 @@
+{
+  "primaryEstateContext": {
+    "id": "e7282ab4-aec1-439c-aa27-5b7fb5ef95c1",
+    "estateId": "34b5578e-89b3-4b98-be73-ccdc4a552b4c",
+    "ownerUserId": "0b000000-0000-4000-8000-00000000000b",
+    "isPrimaryEstate": true,
+    "membershipStatus": "approved",
+    "roleWithinEstate": "primary_user",
+    "estateDisplayName": "My Estate"
+  },
+  "additionalContexts": [
+    {
+      "id": "418f3333-60b2-43f1-9a44-ce3bdbf0aed9",
+      "estateId": "24e50a58-8450-4958-9991-233d17055641",
+      "ownerUserId": "0d000000-0000-4000-8000-00000000000d",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": "Dana Hartley"
+    },
+    {
+      "id": "e04d7ab9-5fae-4f6c-a548-e74b6ce3ba91",
+      "estateId": "b9432447-a632-4dfb-aa66-66241d63cd0b",
+      "ownerUserId": "01000000-0000-4000-8000-000000000011",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": null
+    },
+    {
+      "id": "9f467755-630b-4f62-ab88-58979216264e",
+      "estateId": "07db3d3c-5c26-497e-beb3-84ac253830a0",
+      "ownerUserId": "01000000-0000-4000-8000-000000000012",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": null
+    },
+    {
+      "id": "eefe664d-c744-4c04-88ba-8fb6e719659e",
+      "estateId": "55d5c997-2c02-4f12-a228-0f3d76b6adc7",
+      "ownerUserId": "01000000-0000-4000-8000-000000000013",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": null
+    },
+    {
+      "id": "f1d10781-cf49-47d3-bbbf-8ad360933958",
+      "estateId": "8b805297-d6fb-4ea6-929f-fd13234892a8",
+      "ownerUserId": "0e000000-0000-4000-8000-00000000000e",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": null
+    },
+    {
+      "id": "eba23964-dc88-4fbb-9225-a21d985856bb",
+      "estateId": "bd04cb39-cd6e-472e-bfbb-15ee80a01710",
+      "ownerUserId": "0f000000-0000-4000-8000-00000000000f",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": null
+    }
+  ]
+}

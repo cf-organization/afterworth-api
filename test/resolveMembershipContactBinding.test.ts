@@ -14,7 +14,7 @@
  *   · the harness stand-ins model the confirmation columns, and CI runs the container verification.
  */
 import { describe, expect, test } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = join(__dirname, '..');
@@ -104,10 +104,19 @@ describe('3 · the helper', () => {
 });
 
 describe('4 · sources agree: functions ↔ migration ↔ bundles', () => {
-  test.each(['invitation_phone_key', 'caller_verified_contacts', 'resolve_membership', 'accept_invitation', 'decline_invitation', 'bind_invitation_token'])('★ %s: db/functions === migration 0067 (normalised)', (name) => {
+  /** The LATEST migration that defines a function is the one whose body must equal db/functions — a later
+   *  migration may legitimately supersede 0067's body (0068 does so for resolve_membership, adding the cue). */
+  const latestMigrationDefining = (name: string): string => {
+    const files = readdirSync(join(ROOT, 'db/migrations')).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort();
+    const defining = files.filter((f) => new RegExp(`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\s*\\(`, 'i').test(read(`db/migrations/${f}`)));
+    expect(defining.length).toBeGreaterThan(0);
+    return `db/migrations/${defining[defining.length - 1]}`;
+  };
+  test.each(['invitation_phone_key', 'caller_verified_contacts', 'resolve_membership', 'accept_invitation', 'decline_invitation', 'bind_invitation_token'])('★ %s: db/functions === its latest migration (normalised); 0067 defines it', (name) => {
     const src = read(name === 'caller_verified_contacts' ? HELPER : name === 'invitation_phone_key' ? PHONE_KEY : `db/functions/${name}.sql`);
     expect(bodyOf(src, name).length).toBeGreaterThan(200);
-    expect(bodyOf(read(MIGRATION), name)).toBe(bodyOf(src, name));
+    expect(bodyOf(read(MIGRATION), name).length).toBeGreaterThan(200); // 0067 carries every one of them
+    expect(bodyOf(read(latestMigrationDefining(name)), name)).toBe(bodyOf(src, name));
   });
   test('★ the bundles that carry accept/bind also carry the helper, and their bodies match the sources', () => {
     for (const [bundle, fns] of [
