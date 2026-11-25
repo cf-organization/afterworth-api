@@ -88,12 +88,23 @@ describe('2 · the sanitizer mirrors the client rule', () => {
   test('★ email-shaped (\\S@\\S), blank and over-long values become NULL; nothing is substituted', () => {
     const b = bodyOf(read(SANITIZER), 'safe_inviter_display_name');
     expect(b).toContain("~ '\\S@\\S'");
-    expect(b).toContain("btrim(p_raw) = '' then null");
+    expect(b).toContain("when v = '' then null");
     expect(b).toContain('> 200 then null');
+    // the trim set is JavaScript's, not btrim's: NBSP, the Zs block, the line terminators and the BOM
+    for (const cp of ['\\u00a0', '\\u2000-\\u200a', '\\u2028', '\\u2029', '\\u202f', '\\u205f', '\\u3000', '\\ufeff']) expect(b).toContain(cp);
+    expect(b).not.toMatch(/btrim\(/);
     expect(b).toMatch(/strict/);
     expect(b).not.toMatch(/security definer/i); // a pure sanitizer needs no elevated rights
     expect(b).not.toMatch(/An estate owner|coalesce\(/);
   });
+  test('★ the SQL-decided assertion file exists, is non-vacuous, and the capture script runs it', () => {
+    const sql = read('db/tests/safe_inviter_display_name_assertions.sql');
+    expect(sql).toMatch(/is not distinct from r\.expected/); // compared INSIDE SQL, never by a client trim
+    expect((sql.match(/^\s+\('/gm) ?? []).length).toBeGreaterThanOrEqual(20); // at least twenty cases
+    for (const label of ['tabs and newlines only', 'nonbreaking spaces only', 'valid name padded with NBSP', 'address-shaped', 'exactly 200 characters', '201 characters']) expect(sql).toContain(label);
+    expect(read('scripts/captureMembershipInvitationCue.mjs')).toContain('db/tests/safe_inviter_display_name_assertions.sql');
+  });
+
   test('★ positive control — the regex this pins is the one the mobile model uses verbatim', () => {
     // The client: `if (/\S@\S/.test(trimmed)) return null;` (features/invitations/model.ts). Same shape, same outcome.
     const clientRule = /\S@\S/;

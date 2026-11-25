@@ -166,15 +166,11 @@ try {
   check(!r4.additionalContexts.some((c) => c.estateId === estateOf.DANA), 'the revoked membership\'s context is gone entirely (no cue without access)');
   check(r4.additionalContexts.length === 5, `5 contexts remain (got ${r4.additionalContexts.length})`);
 
-  say('\n── 5 · the sanitizer, directly ──');
-  const san = (v) => q(`select coalesce(public.safe_inviter_display_name(${v}), '<null>')`);
-  check(san(`'  Dana Hartley '`) === 'Dana Hartley', 'trims');
-  check(san(`'dana@example.test'`) === '<null>', 'email-shaped → null');
-  check(san(`'Dana <dana@example.test>'`) === '<null>', 'name with an address inside → null (any \\S@\\S)');
-  check(san(`'   '`) === '<null>', 'blank → null');
-  check(san(`null`) === '<null>', 'null → null');
-  check(san(`'@'`) === '@', 'a lone @ is not address-shaped (mirrors the client rule exactly)');
-  check(san(`repeat('x', 201)`) === '<null>', 'over 200 chars → null');
+  say('\n── 5 · the sanitizer, decided INSIDE SQL (db/tests/safe_inviter_display_name_assertions.sql) ──');
+  // ★ Compared with IS NOT DISTINCT FROM in the database: no client-side trim can make a failing case pass.
+  const sa = psql(readFileSync(join(ROOT, 'db/tests/safe_inviter_display_name_assertions.sql'), 'utf8'));
+  for (const line of (sa.stderr || '').split('\n').filter((l) => /NOTICE:\s+(ok|FAIL|ALL)/.test(l))) say('    ' + line.replace(/^.*NOTICE:\s+/, ''));
+  check(sa.status === 0, 'every sanitizer assertion passed, compared in SQL');
   check(q(`select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'safe_inviter_display_name' and p.prosecdef`) === '0', 'the sanitizer is NOT security definer');
 
   say(`\nFAILURES: ${failures}`);
