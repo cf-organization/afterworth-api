@@ -10,6 +10,14 @@
 -- SECURITY DEFINER; relies on auth.uid(). Called from /api/invitations/resolve
 -- with the caller's JWT forwarded (so auth.uid() is the real user).
 --
+-- ★ CONTACT BINDING (2026-11-25). The pending-invitation list is matched on the caller's VERIFIED
+-- contacts from `caller_verified_contacts()` (GoTrue-confirmed email / phone of auth.uid()), never
+-- on `p_email` / `p_phone`. The two parameters stay in the signature for installed clients and are
+-- accepted but NOT consulted: a supplied address can never widen what the caller sees. A missing or
+-- unconfirmed phone matches nothing; a confirmed email matches independently of any phone. Phones
+-- are compared as E.164 keys on both sides (`invitation_phone_key`): the Auth digits and the owner's
+-- "+"-prefixed invitation reduce to the same key; a number without "+" or malformed never matches.
+--
 -- Source of truth for this function. Re-apply on any DB reset.
 
 CREATE OR REPLACE FUNCTION public.resolve_membership(p_email text, p_phone text)
@@ -24,6 +32,8 @@ declare
   v_pending jsonb;
   v_additional jsonb;
   v_primary_estate_id uuid;
+  v_email text;
+  v_phone text;
 begin
   -- Caller must be authenticated. Resolution has no meaning otherwise.
   if v_user is null then
@@ -78,7 +88,9 @@ begin
     and public.is_ownership_role(m.role)
   limit 1;
 
-  -- Pending invitations matching the user's email or phone.
+  -- Pending invitations addressed to the caller's VERIFIED contacts (header note). The parameters
+  -- p_email / p_phone are deliberately unused here.
+  select c.email, c.phone into v_email, v_phone from public.caller_verified_contacts() c;
   select coalesce(jsonb_agg(jsonb_build_object(
     'id', i.id,
     'estateId', i.estate_id,
@@ -98,13 +110,12 @@ begin
   where i.status in ('pending', 'matched')
     and i.expires_at > now()
     and (
-      (p_email is not null
-       and i.invitee_email is not null
-       and lower(i.invitee_email) = lower(p_email))
+      -- the SAME null-safe predicate the accept/decline/bind guards use
+      (v_email is not null
+       and lower(i.invitee_email) is not distinct from v_email)
       or
-      (p_phone is not null
-       and i.invitee_phone is not null
-       and i.invitee_phone = p_phone)
+      (v_phone is not null
+       and public.invitation_phone_key(i.invitee_phone, true) is not distinct from v_phone)
     );
 
   -- Additional contexts: approved memberships in estates the user does NOT own.
@@ -131,3 +142,5 @@ begin
   );
 end;
 $function$;
+revoke execute on function public.resolve_membership(text, text) from public, anon;
+grant  execute on function public.resolve_membership(text, text) to authenticated;

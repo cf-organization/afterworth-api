@@ -59,6 +59,14 @@ jobs:
       - name: Upload-policy seed (routine-level, container)
         run: npm run verify:upload-policy
 
+      # ★ INVITATION CONTACT BINDING (container). Builds a database from db/bootstrap plus the binding
+      # migration, seeds synthetic identities in every contact state (confirmed, unconfirmed, phone-only,
+      # stale profile, deleted) and proves each caller is matched only to their own verified contacts —
+      # through the pending list, accept, decline and token binding — and that supplied parameters widen
+      # nothing. Exits 2 without Docker, so a runner that cannot execute it FAILS rather than passing.
+      - name: Invitation contact binding (container)
+        run: npm run verify:contact-binding
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

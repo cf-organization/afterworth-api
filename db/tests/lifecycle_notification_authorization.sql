@@ -465,6 +465,8 @@ begin
   delete from public.notifications where user_id = OWNER_A;
   insert into public.profiles (id, email) values (BENEFICIARY, 'fixture-invitee@example.invalid')
     on conflict (id) do update set email = excluded.email;
+  -- the match is against the CONFIRMED auth.users address, not the profile (contact binding, 2026-11-25)
+  update auth.users set email = 'fixture-invitee@example.invalid', email_confirmed_at = now() where id = BENEFICIARY;
   insert into public.invitations (estate_id, invitee_email, proposed_role, status)
   values (A, 'fixture-invitee@example.invalid', 'beneficiary', 'pending')
   returning id into v_req;
@@ -533,6 +535,7 @@ begin
   delete from public.notifications where user_id = OWNER_A;
   insert into public.profiles (id, email) values (STRANGER, 'fixture-acceptor@example.invalid')
     on conflict (id) do update set email = excluded.email;
+  update auth.users set email = 'fixture-acceptor@example.invalid', email_confirmed_at = now() where id = STRANGER;
   insert into public.invitations (estate_id, invitee_email, proposed_role, status)
   values (A, 'fixture-acceptor@example.invalid', 'beneficiary', 'pending')
   returning id into v_req;

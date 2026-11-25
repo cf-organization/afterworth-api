@@ -30,7 +30,12 @@ end $$;
 
 create table if not exists auth.users (
   id uuid primary key default extensions.gen_random_uuid(),
-  email text
+  email text,
+  -- GoTrue's confirmation columns, read by caller_verified_contacts() (contact binding, 2026-11-25).
+  email_confirmed_at timestamptz,
+  phone text,
+  phone_confirmed_at timestamptz,
+  deleted_at timestamptz
 );
 
 -- Stand-ins. Real Supabase reads the JWT; these return NULL/empty, which is correct fail-closed
