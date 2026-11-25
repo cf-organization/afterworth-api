@@ -11,7 +11,10 @@
 --     U+205F, U+3000 and the BOM U+FEFF. `btrim(text)` strips only ' ' and was the defect this file
 --     once had: a tab-only or NBSP-only value survived as a "name";
 --   · nothing left after trimming → NULL (missing);
---   · anything EMAIL-SHAPED (`\S@\S`, deliberately broader than RFC) → NULL (unsafe). Both deployed
+--   · anything EMAIL-SHAPED → NULL (unsafe): an `@` with a NON-WHITESPACE character on both sides, where
+--     "whitespace" is the SAME explicit set the trim uses. The client tests `/\S@\S/`, and JavaScript's
+--     `\S` excludes exactly that set (NBSP included), so `Dana<NBSP>@<NBSP>Hartley` is a name on both
+--     sides and `dana@example.test` is an address on both. Deliberately broader than RFC. Both deployed
 --     invitation create paths persist `coalesce(nullif(full_name,''), email)`, so a row whose inviter
 --     had no profile name carries an ADDRESS in this column. The server gates whether the column is
 --     returned, never what it contains — until here;
@@ -39,7 +42,7 @@ as $function$
   )
   select case
     when v = '' then null
-    when v ~ '\S@\S' then null
+    when v ~ '[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]@[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]' then null
     when length(v) > 200 then null
     else v
   end

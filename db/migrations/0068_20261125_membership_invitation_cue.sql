@@ -1,4 +1,4 @@
--- 0067_20261125_membership_invitation_cue.sql
+-- 0068_20261125_membership_invitation_cue.sql
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 -- MEMBERSHIP INVITATION CUE — a recipient may keep seeing the safe inviter display name from the
 -- invitation THEY accepted, on THEIR OWN active membership context.
@@ -18,6 +18,11 @@
 -- ★ WHAT IS NOT DONE. No approval date, no contact detail, no nickname, no visible id, no neutral
 --   "An estate owner" discriminator, no profile lookup. Two memberships may carry the same safe name;
 --   the server never manufactures a distinction. The primary (owned) context carries no cue.
+--
+-- ★ LANDS AFTER 0067 (invitation contact binding). Both migrations re-create resolve_membership; this
+--   one's body INCLUDES the verified-contact matching 0067 introduced and depends on its helper
+--   `caller_verified_contacts()`. Apply 0067 first, then 0068; the reverse order would re-create the
+--   function without the cue (proven by scripts/verifyResolveMembershipLandingOrder.mjs).
 --
 -- ★ SCHEMA UNCHANGED. Two function bodies only, both also under db/functions/ (source of truth):
 --   · public.safe_inviter_display_name(text)  — NEW, the one server-side sanitizer;
@@ -44,7 +49,10 @@
 --     U+205F, U+3000 and the BOM U+FEFF. `btrim(text)` strips only ' ' and was the defect this file
 --     once had: a tab-only or NBSP-only value survived as a "name";
 --   · nothing left after trimming → NULL (missing);
---   · anything EMAIL-SHAPED (`\S@\S`, deliberately broader than RFC) → NULL (unsafe). Both deployed
+--   · anything EMAIL-SHAPED → NULL (unsafe): an `@` with a NON-WHITESPACE character on both sides, where
+--     "whitespace" is the SAME explicit set the trim uses. The client tests `/\S@\S/`, and JavaScript's
+--     `\S` excludes exactly that set (NBSP included), so `Dana<NBSP>@<NBSP>Hartley` is a name on both
+--     sides and `dana@example.test` is an address on both. Deliberately broader than RFC. Both deployed
 --     invitation create paths persist `coalesce(nullif(full_name,''), email)`, so a row whose inviter
 --     had no profile name carries an ADDRESS in this column. The server gates whether the column is
 --     returned, never what it contains — until here;
@@ -72,7 +80,7 @@ as $function$
   )
   select case
     when v = '' then null
-    when v ~ '\S@\S' then null
+    when v ~ '[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]@[^\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]' then null
     when length(v) > 200 then null
     else v
   end
@@ -81,7 +89,7 @@ $function$;
 revoke execute on function public.safe_inviter_display_name(text) from public, anon;
 grant  execute on function public.safe_inviter_display_name(text) to authenticated;
 
--- ── 2 · resolve_membership with the cue ───────────────────────────────────────────────────────────
+-- ── 2 · resolve_membership with the cue (and 0067's contact binding) ────────────────────────────
 -- public.resolve_membership(p_email text, p_phone text) -> jsonb
 --
 -- Resolves the authenticated caller's membership context: their primary estate
@@ -109,6 +117,12 @@ grant  execute on function public.safe_inviter_display_name(text) to authenticat
 -- SECURITY DEFINER; relies on auth.uid(). Called from /api/invitations/resolve
 -- with the caller's JWT forwarded (so auth.uid() is the real user).
 --
+-- ★ CONTACT BINDING (2026-11-25). The pending-invitation list is matched on the caller's VERIFIED
+-- contacts from `caller_verified_contacts()` (GoTrue-confirmed email / phone of auth.uid()), never
+-- on `p_email` / `p_phone`. The two parameters stay in the signature for installed clients and are
+-- accepted but NOT consulted: a supplied address can never widen what the caller sees. A missing or
+-- unconfirmed phone matches nothing; a confirmed email matches independently of any phone.
+--
 -- Source of truth for this function. Re-apply on any DB reset.
 
 CREATE OR REPLACE FUNCTION public.resolve_membership(p_email text, p_phone text)
@@ -123,6 +137,8 @@ declare
   v_pending jsonb;
   v_additional jsonb;
   v_primary_estate_id uuid;
+  v_email text;
+  v_phone text;
 begin
   -- Caller must be authenticated. Resolution has no meaning otherwise.
   if v_user is null then
@@ -177,7 +193,9 @@ begin
     and public.is_ownership_role(m.role)
   limit 1;
 
-  -- Pending invitations matching the user's email or phone.
+  -- Pending invitations addressed to the caller's VERIFIED contacts (header note). The parameters
+  -- p_email / p_phone are deliberately unused here.
+  select c.email, c.phone into v_email, v_phone from public.caller_verified_contacts() c;
   select coalesce(jsonb_agg(jsonb_build_object(
     'id', i.id,
     'estateId', i.estate_id,
@@ -197,13 +215,13 @@ begin
   where i.status in ('pending', 'matched')
     and i.expires_at > now()
     and (
-      (p_email is not null
+      (v_email is not null
        and i.invitee_email is not null
-       and lower(i.invitee_email) = lower(p_email))
+       and lower(i.invitee_email) = v_email)
       or
-      (p_phone is not null
+      (v_phone is not null
        and i.invitee_phone is not null
-       and i.invitee_phone = p_phone)
+       and i.invitee_phone = v_phone)
     );
 
   -- Additional contexts: approved memberships in estates the user does NOT own.

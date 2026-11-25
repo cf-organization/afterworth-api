@@ -42,9 +42,16 @@ begin
       ('200 characters padded to 202',          ' ' || repeat('x', 200) || ' ',                           repeat('x', 200)),
       ('201 characters padded',                 ' ' || repeat('x', 201) || ' ',                           null),
       ('200 non-ASCII characters',              repeat(U&'\00E9', 200),                                   repeat(U&'\00E9', 200)),
-      ('201 non-ASCII characters',              repeat(U&'\00E9', 201),                                   null)
+      ('201 non-ASCII characters',              repeat(U&'\00E9', 201),                                   null),
+      -- the address check and the trim share ONE whitespace definition (the client's JavaScript \s)
+      ('internal NBSP on both sides of @',      U&'Dana\00A0@\00A0Hartley',                               U&'Dana\00A0@\00A0Hartley'),
+      ('internal NBSP before @ only',           U&'Dana\00A0@example.test',                               U&'Dana\00A0@example.test'),
+      ('ordinary space on both sides of @',     'Dana @ Hartley',                                         'Dana @ Hartley'),
+      ('ordinary address control',              'dana@example.test',                                      null),
+      ('address control with NBSP padding',     U&'\00A0dana@example.test\00A0',                         null)
     ) as t(label, input, expected)
   loop
+    -- default collation
     n_checked := n_checked + 1;
     if public.safe_inviter_display_name(r.input) is not distinct from r.expected then
       raise notice 'ok   %', r.label;
@@ -54,8 +61,19 @@ begin
         coalesce('"' || r.expected || '"', 'NULL');
       failed := failed || r.label;
     end if;
+    -- ★ AND UNDER THE "C" COLLATION. The explicit code-point classes must not depend on the locale's
+    -- idea of whitespace: a C-collated input is matched by the same characters.
+    n_checked := n_checked + 1;
+    if public.safe_inviter_display_name(r.input collate "C") is not distinct from r.expected then
+      raise notice 'ok   % (C collation)', r.label;
+    else
+      raise notice 'FAIL % (C collation) — got % (expected %)', r.label,
+        coalesce('"' || public.safe_inviter_display_name(r.input collate "C") || '"', 'NULL'),
+        coalesce('"' || r.expected || '"', 'NULL');
+      failed := failed || (r.label || ' (C collation)');
+    end if;
   end loop;
-  if n_checked < 20 then
+  if n_checked < 40 then
     raise exception 'FAIL vacuous — only % cases checked', n_checked;
   end if;
   if array_length(failed, 1) > 0 then

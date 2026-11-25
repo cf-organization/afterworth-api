@@ -32,7 +32,8 @@ const outArg = process.argv.indexOf('--out');
 const OUT = outArg >= 0 && process.argv[outArg + 1] ? resolve(process.argv[outArg + 1]) : mkdtempSync(join(tmpdir(), 'aw-cue-captures-'));
 mkdirSync(OUT, { recursive: true });
 const BOOT = join(ROOT, 'db/bootstrap');
-const MIG = join(ROOT, 'db/migrations/0067_20261125_membership_invitation_cue.sql');
+const MIG_BINDING = join(ROOT, 'db/migrations/0067_20261125_resolve_membership_contact_binding.sql');
+const MIG = join(ROOT, 'db/migrations/0068_20261125_membership_invitation_cue.sql');
 const CONTAINER = `aw-cue-capture-${process.pid}`;
 const KEEP = process.argv.includes('--keep');
 const say = (m) => console.log(m);
@@ -71,16 +72,17 @@ try {
   const phases = readdirSync(BOOT).filter((f) => /^\d+_.*\.sql$/.test(f)).sort((a, b) => Number(a.split('_')[0]) - Number(b.split('_')[0]));
   for (const f of phases) must(psql(readFileSync(join(BOOT, f), 'utf8')), `bootstrap ${f}`);
   say(`bootstrap applied: ${phases.length} phases`);
-  must(psql(readFileSync(MIG, 'utf8')), 'migration 0067 (1st apply)');
-  must(psql(readFileSync(MIG, 'utf8')), 'migration 0067 (2nd apply — idempotent)');
-  say('migration 0067 applied twice (idempotent)');
+  must(psql(readFileSync(MIG_BINDING, 'utf8')), 'migration 0067 (contact binding)');
+  must(psql(readFileSync(MIG, 'utf8')), 'migration 0068 (1st apply)');
+  must(psql(readFileSync(MIG, 'utf8')), 'migration 0068 (2nd apply — idempotent)');
+  say('migrations 0067 then 0068 applied (0068 twice, idempotent)');
   // auth.uid() reads a session setting: NOT production, capture-only.
   must(psql(`create or replace function auth.uid() returns uuid language sql stable as $fn$ select nullif(current_setting('app.uid', true), '')::uuid $fn$;`), 'auth.uid override');
 
   // ── seed identities ──
   for (const [k, id] of Object.entries(U)) {
     const [email, name] = PROFILE[k];
-    must(psql(`insert into auth.users (id, email) values ('${id}', '${email}') on conflict do nothing;
+    must(psql(`insert into auth.users (id, email, email_confirmed_at) values ('${id}', '${email}', now()) on conflict do nothing;
       insert into public.profiles (id, email, full_name) values ('${id}', '${email}', ${name == null ? 'null' : `'${name}'`}) on conflict (id) do update set email = excluded.email, full_name = excluded.full_name;`), `seed ${k}`);
   }
   // ── owners bootstrap their estates (each named "My Estate" by resolve_membership itself) ──

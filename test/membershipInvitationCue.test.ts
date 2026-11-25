@@ -23,7 +23,7 @@ import { join } from 'node:path';
 
 const ROOT = join(__dirname, '..');
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
-const MIGRATION = 'db/migrations/0067_20261125_membership_invitation_cue.sql';
+const MIGRATION = 'db/migrations/0068_20261125_membership_invitation_cue.sql';
 const RESOLVE = 'db/functions/resolve_membership.sql';
 const SANITIZER = 'db/functions/safe_inviter_display_name.sql';
 const FIXTURES = 'test/fixtures/membershipInvitationCue';
@@ -87,7 +87,9 @@ describe('1 · the cue is scoped to the recipient, the membership and the estate
 describe('2 · the sanitizer mirrors the client rule', () => {
   test('★ email-shaped (\\S@\\S), blank and over-long values become NULL; nothing is substituted', () => {
     const b = bodyOf(read(SANITIZER), 'safe_inviter_display_name');
-    expect(b).toContain("~ '\\S@\\S'");
+    // the address check and the trim share ONE explicit whitespace class (no bare \S)
+    expect(b).not.toContain("'\\S@\\S'");
+    expect(b).toMatch(/~ '\[\^\\s\\u00a0[^']*\]@\[\^\\s\\u00a0[^']*\]'/);
     expect(b).toContain("when v = '' then null");
     expect(b).toContain('> 200 then null');
     // the trim set is JavaScript's, not btrim's: NBSP, the Zs block, the line terminators and the BOM
@@ -100,8 +102,9 @@ describe('2 · the sanitizer mirrors the client rule', () => {
   test('★ the SQL-decided assertion file exists, is non-vacuous, and the capture script runs it', () => {
     const sql = read('db/tests/safe_inviter_display_name_assertions.sql');
     expect(sql).toMatch(/is not distinct from r\.expected/); // compared INSIDE SQL, never by a client trim
-    expect((sql.match(/^\s+\('/gm) ?? []).length).toBeGreaterThanOrEqual(20); // at least twenty cases
-    for (const label of ['tabs and newlines only', 'nonbreaking spaces only', 'valid name padded with NBSP', 'address-shaped', 'exactly 200 characters', '201 characters']) expect(sql).toContain(label);
+    expect((sql.match(/^\s+\('/gm) ?? []).length).toBeGreaterThanOrEqual(30); // at least thirty cases, each also run under C collation
+    expect(sql).toMatch(/collate "C"/);
+    for (const label of ['tabs and newlines only', 'nonbreaking spaces only', 'valid name padded with NBSP', 'address-shaped', 'exactly 200 characters', '201 characters', 'internal NBSP on both sides of @', 'ordinary address control']) expect(sql).toContain(label);
     expect(read('scripts/captureMembershipInvitationCue.mjs')).toContain('db/tests/safe_inviter_display_name_assertions.sql');
   });
 
@@ -126,6 +129,14 @@ describe('3 · source of truth and migration carry the same bodies', () => {
     for (const p of [MIGRATION, SANITIZER]) expect(read(p)).toMatch(/revoke execute on function public\.safe_inviter_display_name\(text\) from public, anon;/);
     for (const p of [MIGRATION, RESOLVE]) expect(read(p)).toMatch(/grant\s+execute on function public\.resolve_membership\(text, text\) to authenticated;/);
   });
+  test('★ 0068 lands on 0067: its resolve_membership body carries the contact binding as well as the cue', () => {
+    const b = bodyOf(read(MIGRATION), 'resolve_membership');
+    expect(b).toContain('from public.caller_verified_contacts() c');
+    expect(b).toContain("'inviterDisplayName'");
+    expect(read(MIGRATION)).toMatch(/LANDS AFTER 0067/);
+    expect(readdirSync(join(ROOT, 'db/migrations')).some((f) => f.startsWith('0067_') && f.includes('contact_binding'))).toBe(true);
+  });
+
   test('★ the migration changes no table', () => {
     const m = read(MIGRATION).replace(/--[^\n]*/g, '');
     expect(m).not.toMatch(/alter\s+table|create\s+table|add\s+column/i);
