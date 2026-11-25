@@ -7,6 +7,21 @@
 -- Each estate context includes ownerUserId (estates.owner_id) so the iOS legacy
 -- estate-context layer has the real owner for both owned and beneficiary contexts.
 --
+-- ★ THE INVITATION CUE (2026-11-25). Each ADDITIONAL context (an approved, non-owned membership)
+-- carries an optional, nullable `inviterDisplayName`: the safe inviter display name from the one
+-- invitation THIS caller accepted to obtain THIS membership — an invitation cue, not a claim about
+-- the estate's current owner. Why: every bootstrapped estate is named "My Estate", so a recipient
+-- holding two memberships with the same role in two such estates had nothing to tell them apart
+-- (mobile #221). The cue is released only when ALL of the following hold, otherwise it is NULL:
+--   · the membership's `source_invitation_id` links an invitation (a reconciled membership has none);
+--   · that invitation is for the SAME estate and was ACCEPTED BY THIS CALLER (`accepted_by = v_user`,
+--     status 'accepted') — a mismatched or borrowed link releases nothing;
+--   · the owner chose to show the inviter name at invitation time (`preview_visibility.showInviterName`),
+--     i.e. the recipient already saw it on the acceptance screen — this re-releases, never discloses;
+--   · the stored value passes `safe_inviter_display_name` (blank / email-shaped / over-long → NULL).
+-- Never substituted from a profile, never an approval date, contact detail, nickname or id. Two
+-- memberships may legitimately carry the SAME safe name; the server never manufactures a difference.
+--
 -- SECURITY DEFINER; relies on auth.uid(). Called from /api/invitations/resolve
 -- with the caller's JWT forwarded (so auth.uid() is the real user).
 --
@@ -125,7 +140,20 @@ begin
     'ownerUserId', e.owner_id,
     'roleWithinEstate', m.role,
     'membershipStatus', m.status,
-    'isPrimaryEstate', false
+    'isPrimaryEstate', false,
+    -- The invitation cue (header note): bound to THIS membership, THIS estate and THIS caller's own
+    -- acceptance, released only where the recipient already saw it, sanitized before serialization.
+    -- A scalar subquery with no matching row is NULL — unlinked, mismatched and hidden all read as
+    -- "no cue" without a branch per cause.
+    'inviterDisplayName', (
+      select public.safe_inviter_display_name(i.inviter_display_name)
+        from public.invitations i
+       where i.id = m.source_invitation_id
+         and i.estate_id = m.estate_id
+         and i.accepted_by = v_user
+         and i.status = 'accepted'
+         and coalesce((i.preview_visibility->>'showInviterName')::boolean, false)
+    )
   )), '[]'::jsonb)
   into v_additional
   from public.estate_memberships m

@@ -1,0 +1,23 @@
+{
+  "primaryEstateContext": {
+    "id": "748145bc-f9e1-499f-9c02-28940344d077",
+    "estateId": "6b1e1276-c7cc-4146-8b04-584b6801e58e",
+    "ownerUserId": "0c000000-0000-4000-8000-00000000000c",
+    "isPrimaryEstate": true,
+    "membershipStatus": "approved",
+    "roleWithinEstate": "primary_user",
+    "estateDisplayName": "My Estate"
+  },
+  "additionalContexts": [
+    {
+      "id": "515e4da8-e8bd-4163-9f5a-2ed69b301eda",
+      "estateId": "24e50a58-8450-4958-9991-233d17055641",
+      "ownerUserId": "0d000000-0000-4000-8000-00000000000d",
+      "isPrimaryEstate": false,
+      "membershipStatus": "approved",
+      "roleWithinEstate": "beneficiary",
+      "estateDisplayName": "My Estate",
+      "inviterDisplayName": "Dana Hartley"
+    }
+  ]
+}
