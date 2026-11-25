@@ -16,6 +16,10 @@
 --   an unconfirmed email yields NULL, a missing or unconfirmed phone yields NULL, and each contact
 --   is decided independently — a verified email keeps working without any phone.
 --
+-- ★ THE PHONE IS RETURNED AS A COMPARISON KEY, NOT A STRING (see invitation_phone_key.sql). GoTrue
+--   stores E.164 digits without the "+"; the callers reduce the invitation side to the same key and
+--   compare keys. A confirmed phone that is not E.164-shaped yields NULL and matches nothing.
+--
 -- ★ NULL MEANS "NO CONTACT", AND THE CALLERS TREAT IT AS "MATCHES NOTHING". No fallback to a profile,
 --   a JWT claim, or a caller-supplied parameter. SECURITY DEFINER only so the definer can read
 --   auth.users; the function returns the caller's OWN row and nothing else.
@@ -40,8 +44,8 @@ begin
   select
     case when u.email_confirmed_at is not null and nullif(btrim(u.email), '') is not null
          then lower(btrim(u.email)) end,
-    case when u.phone_confirmed_at is not null and nullif(btrim(u.phone), '') is not null
-         then btrim(u.phone) end
+    case when u.phone_confirmed_at is not null
+         then public.invitation_phone_key(btrim(u.phone), false) end
     into email, phone
     from auth.users u
    where u.id = v_user

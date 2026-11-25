@@ -21,6 +21,7 @@ const ROOT = join(__dirname, '..');
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
 const MIGRATION = 'db/migrations/0067_20261125_resolve_membership_contact_binding.sql';
 const HELPER = 'db/functions/caller_verified_contacts.sql';
+const PHONE_KEY = 'db/functions/invitation_phone_key.sql';
 const CALLERS = ['db/functions/resolve_membership.sql', 'db/functions/accept_invitation.sql', 'db/functions/decline_invitation.sql', 'db/functions/bind_invitation_token.sql'];
 const stripComments = (s: string) => s.replace(/--[^\n]*/g, '');
 const bodyOf = (sql: string, name: string) =>
@@ -48,8 +49,13 @@ describe('1 · every matcher reads the verified contacts and no matcher reads a 
   test('★ a NULL contact matches nothing: every comparison is guarded by "is not null" on the caller side', () => {
     for (const p of CALLERS) {
       const code = stripComments(read(p));
-      expect(code).toMatch(/v_(user_)?email is not null[\s\S]{0,120}lower\(/);
-      expect(code).toMatch(/v_(user_)?phone is not null[\s\S]{0,120}invitee_phone = v_(user_)?phone/);
+      // ★ NULL-SAFE: `is not distinct from` on both comparisons, so a NULL key is "no match" and can never make an
+      //   `if not (... or ...)` guard NULL and skip its raise (the three-valued-logic hole the regression found)
+      expect(code).toMatch(/v_(user_)?email is not null\s+and lower\((v_inv|i)\.invitee_email\) is not distinct from v_(user_)?email/);
+      expect(code).toMatch(/v_(user_)?phone is not null\s+and public\.invitation_phone_key\((v_inv|i)\.invitee_phone, true\) is not distinct from v_(user_)?phone/);
+      expect(code).not.toMatch(/invitee_phone = v_(user_)?phone\b/); // never a raw string equality
+      expect(code).not.toMatch(/invitee_phone, true\) = v_(user_)?phone\b/); // and never a NULL-propagating equality on the key
+      expect(code).not.toMatch(/invitee_email\) = v_(user_)?email\b/);
       expect(code).not.toMatch(/coalesce\(v_user_(email|phone), ?''\)/); // the old "empty string matches" shape is gone
     }
   });
@@ -65,11 +71,22 @@ describe('2 · resolve_membership keeps its signature and ignores the supplied c
     const pending = body.slice(at, body.indexOf(';', at));
     expect(pending.length).toBeGreaterThan(200);
     expect(pending).not.toMatch(/p_email|p_phone/);
-    expect(pending).toMatch(/lower\(i\.invitee_email\) = v_email/);
-    expect(pending).toMatch(/i\.invitee_phone = v_phone/);
+    expect(pending).toMatch(/lower\(i\.invitee_email\) is not distinct from v_email/);
+    expect(pending).toMatch(/public\.invitation_phone_key\(i\.invitee_phone, true\) is not distinct from v_phone/);
     expect(body).toMatch(/from public\.caller_verified_contacts\(\) c/);
     // the response shape is untouched: the same three top-level keys
     expect(body).toMatch(/'primaryEstateContext', v_primary, 'pendingInvitations', v_pending, 'additionalContexts', v_additional/);
+  });
+});
+
+describe('3a · the phone key', () => {
+  test('★ strict E.164: "+" required on the invitation side, optional on the Auth side; anything else is NULL', () => {
+    const b = bodyOf(read(PHONE_KEY), 'invitation_phone_key');
+    expect(b).toContain("p_require_plus and p_raw ~ '^\\+[1-9][0-9]{7,14}$' then substr(p_raw, 2)");
+    expect(b).toContain("not p_require_plus and p_raw ~ '^[1-9][0-9]{7,14}$' then p_raw");
+    expect(b).toMatch(/else null/);
+    expect(b).toMatch(/strict/);
+    expect(b).not.toMatch(/regexp_replace|translate\(/); // no digit stripping, no best-effort normalisation
   });
 });
 
@@ -78,7 +95,7 @@ describe('3 · the helper', () => {
     const b = bodyOf(read(HELPER), 'caller_verified_contacts');
     expect(b).toMatch(/from auth\.users u where u\.id = v_user and u\.deleted_at is null/);
     expect(b).toMatch(/u\.email_confirmed_at is not null/);
-    expect(b).toMatch(/u\.phone_confirmed_at is not null/);
+    expect(b).toMatch(/u\.phone_confirmed_at is not null then public\.invitation_phone_key\(btrim\(u\.phone\), false\)/);
     expect(b).toMatch(/security definer/i);
     expect(b).toMatch(/stable/);
     expect(b).not.toMatch(/profiles|auth\.jwt\(\)|p_email|p_phone/);
@@ -87,21 +104,19 @@ describe('3 · the helper', () => {
 });
 
 describe('4 · sources agree: functions ↔ migration ↔ bundles', () => {
-  test.each(['caller_verified_contacts', 'resolve_membership', 'accept_invitation', 'decline_invitation', 'bind_invitation_token'])('★ %s: db/functions === migration 0067 (normalised)', (name) => {
-    const src = ['caller_verified_contacts', ...CALLERS.map((p) => p.replace('db/functions/', '').replace('.sql', ''))].includes(name)
-      ? read(name === 'caller_verified_contacts' ? HELPER : `db/functions/${name}.sql`)
-      : '';
+  test.each(['invitation_phone_key', 'caller_verified_contacts', 'resolve_membership', 'accept_invitation', 'decline_invitation', 'bind_invitation_token'])('★ %s: db/functions === migration 0067 (normalised)', (name) => {
+    const src = read(name === 'caller_verified_contacts' ? HELPER : name === 'invitation_phone_key' ? PHONE_KEY : `db/functions/${name}.sql`);
     expect(bodyOf(src, name).length).toBeGreaterThan(200);
     expect(bodyOf(read(MIGRATION), name)).toBe(bodyOf(src, name));
   });
   test('★ the bundles that carry accept/bind also carry the helper, and their bodies match the sources', () => {
     for (const [bundle, fns] of [
-      ['db/bundles/lifecycle_notifications_bundle.sql', ['caller_verified_contacts', 'accept_invitation', 'decline_invitation']],
-      ['db/bundles/provisioning_correction_bundle.sql', ['caller_verified_contacts', 'accept_invitation', 'bind_invitation_token']],
+      ['db/bundles/lifecycle_notifications_bundle.sql', ['invitation_phone_key', 'caller_verified_contacts', 'accept_invitation', 'decline_invitation']],
+      ['db/bundles/provisioning_correction_bundle.sql', ['invitation_phone_key', 'caller_verified_contacts', 'accept_invitation', 'bind_invitation_token']],
     ] as const) {
       const b = read(bundle);
       for (const fn of fns) {
-        const src = fn === 'caller_verified_contacts' ? read(HELPER) : read(`db/functions/${fn}.sql`);
+        const src = fn === 'caller_verified_contacts' ? read(HELPER) : fn === 'invitation_phone_key' ? read(PHONE_KEY) : read(`db/functions/${fn}.sql`);
         expect(bodyOf(b, fn)).toBe(bodyOf(src, fn));
       }
     }

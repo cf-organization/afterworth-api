@@ -27,7 +27,9 @@ for (const f of ['--database-url', '--db-url', '--project-ref', '--linked', '--r
 }
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BOOT = join(ROOT, 'db/bootstrap');
-const MIG = join(ROOT, 'db/migrations/0067_20261125_resolve_membership_contact_binding.sql');
+const migArg = process.argv.indexOf('--migration');
+// --migration <path> is for BEFORE/AFTER comparison against an older copy of this same migration (verification-only).
+const MIG = migArg >= 0 && process.argv[migArg + 1] ? resolve(process.argv[migArg + 1]) : join(ROOT, 'db/migrations/0067_20261125_resolve_membership_contact_binding.sql');
 const CONTAINER = `aw-contact-binding-${process.pid}`;
 const KEEP = process.argv.includes('--keep');
 const say = (m) => console.log(m);
@@ -54,9 +56,14 @@ const U = {
   E:     '0a000000-0000-4000-8000-0000000000f6', // confirmed email, account deleted
   F:     '0a000000-0000-4000-8000-000000000007', // another caller, no invitations
   H:     '0a000000-0000-4000-8000-000000000008', // confirmed email AND confirmed phone
+  J:     '0a000000-0000-4000-8000-000000000009', // confirmed phone stored by Auth as international DIGITS (no "+")
+  K:     '0a000000-0000-4000-8000-00000000000e', // confirmed phone (digits); invitations to it written WITHOUT "+", malformed, or a different number
 };
 const PHONE_C = '+15555550100';
 const PHONE_H = '+15555550200';
+const PHONE_J_AUTH = '15555550400'; // as GoTrue stores it
+const PHONE_J_INV = '+15555550400'; // as the owner path writes it
+const PHONE_K_AUTH = '15555550500';
 const PHONE_X = '+15555550300'; // invited, held by no confirmed account; G will claim it in a PROFILE only
 const EMAIL_X = 'invitee-x@example.test'; // invited, held by no account; D will claim it in a PROFILE only
 /** [email, email_confirmed, phone, phone_confirmed, deleted] — auth.users is GoTrue's; profiles mirror the sign-up copy. */
@@ -71,6 +78,8 @@ const AUTH = {
   E: ['e@example.test', true, null, false, true],
   F: ['f@example.test', true, null, false, false],
   H: ['h@example.test', true, PHONE_H, true, false],
+  J: [null, false, PHONE_J_AUTH, true, false],
+  K: [null, false, PHONE_K_AUTH, true, false],
 };
 const lit = (v) => (v == null ? 'null' : `'${v}'`);
 
@@ -126,6 +135,13 @@ try {
     H_phone: invite(null, PHONE_H),
     X_email: invite(EMAIL_X, null),
     X_phone: invite(null, PHONE_X),
+    // ── the phone-format regression: Auth digits vs owner-path "+" ──
+    J_plus: invite(null, PHONE_J_INV),
+    J_plus_pro: invite(null, PHONE_J_INV, 'professional_delegate'),
+    J_plus_e2: invite(null, PHONE_J_INV, 'beneficiary', U.OWNER2, ESTATE2),
+    K_noplus: invite(null, PHONE_K_AUTH),                 // missing country-code marker
+    K_other: invite(null, '+15555550501'),                 // a different number
+    K_malformed: invite(null, '+1 (555) 555-0500', 'professional_delegate'), // malformed
   };
   const pendingIds = (who, email = null, phone = null) => {
     const j = asQ(who, `select public.resolve_membership(${lit(email)}, ${lit(phone)})::text;`);
@@ -145,6 +161,23 @@ try {
   must(psql(`update auth.users set phone_confirmed_at = null where id = '${U.H}';`), 'H loses phone confirmation');
   check(same(pendingIds(U.H, 'h@example.test', PHONE_H), ids('H_email')), 'H with the phone unconfirmed → the email invitation only (a verified email works without any phone)');
   must(psql(`update auth.users set phone_confirmed_at = now() where id = '${U.H}';`), 'H phone re-confirmed');
+
+  say('\n── 1b · phone format: Auth stores international digits, the owner path writes "+" — one strict key ──');
+  check(same(pendingIds(U.J, null, null), ids('J_plus', 'J_plus_pro', 'J_plus_e2')), 'J (Auth "15555550400", confirmed) sees every invitation written as "+15555550400"');
+  check(pendingIds(U.K, null, null).size === 0, 'K (Auth "15555550500", confirmed) sees NOTHING: no "+" (no country-code marker), a different number, a malformed number');
+  check(pendingIds(U.J, null, PHONE_J_AUTH).size === 3 && pendingIds(U.J, null, '+15555550500').size === 3, 'J\'s list is the same whatever phone is supplied (parameters not consulted)');
+  check(refused(as(U.K, `select * from public.accept_invitation('${inv.K_noplus.id}');`), 'invitation_not_for_caller'), 'K cannot accept the invitation written without "+"');
+  check(refused(as(U.K, `select * from public.accept_invitation('${inv.K_other.id}');`), 'invitation_not_for_caller'), 'K cannot accept the different number');
+  check(refused(as(U.K, `select * from public.accept_invitation('${inv.K_malformed.id}');`), 'invitation_not_for_caller'), 'K cannot accept the malformed number');
+  check(as(U.J, `select * from public.accept_invitation('${inv.J_plus.id}');`).status === 0, 'J ACCEPTS the "+"-written invitation with Auth digits');
+  check(as(U.J, `select public.decline_invitation('${inv.J_plus_pro.id}');`).status === 0, 'J DECLINES one');
+  check(as(U.J, `select * from public.bind_invitation_token('${inv.J_plus_e2.token}');`).status === 0, 'J BINDS one by token');
+  // resolve_membership bootstraps each caller's OWN primary estate on first call, so count only memberships in estates they do not own
+  const foreign = (uid) => q(`select count(*) from public.estate_memberships m join public.estates e on e.id = m.estate_id where m.user_id = '${uid}' and e.owner_id <> m.user_id and m.status = 'approved'`);
+  check(foreign(U.J) === '2' && foreign(U.K) === '0', 'J holds two foreign memberships (accept + bind); K holds none');
+  const keyOf = (v) => q(`select coalesce(public.invitation_phone_key(${v}, true), '<null>')`);
+  check(keyOf("'+15555550400'") === '15555550400' && keyOf("'15555550400'") === '<null>' && keyOf("'+1 (555) 555-0400'") === '<null>' && keyOf("'+0123456789'") === '<null>' && keyOf("'+1555'") === '<null>' && keyOf("'+1234567890123456'") === '<null>', 'invitation-side key: "+E.164" only; no "+", separators, leading zero, too short, too long → NULL');
+  check(q(`select coalesce(public.invitation_phone_key('15555550400', false), '<null>')`) === '15555550400' && q(`select coalesce(public.invitation_phone_key('+15555550400', false), '<null>')`) === '15555550400' && q(`select coalesce(public.invitation_phone_key('555-0400', false), '<null>')`) === '<null>', 'Auth-side key: digits with or without "+"; anything else NULL');
 
   say('\n── 2 · supplied parameters never widen the list ──');
   check(pendingIds(U.F, 'a@example.test', PHONE_C).size === 0, 'F passing A\'s email and C\'s phone sees nothing');
@@ -169,7 +202,7 @@ try {
   check(q(`select count(*) from public.estate_memberships where estate_id = '${ESTATE}' and user_id in ('${U.B}','${U.D}','${U.E}','${U.G}','${U.F}')`) === '0', 'B, D, E, G, F hold no membership');
 
   say('\n── 4 · unchanged: owner management and token preview ──');
-  check(Number(asQ(U.OWNER, `select count(*) from public.list_estate_invitations('${ESTATE}', 50);`)) >= 9, 'the owner still lists their estate\'s invitations');
+  check(Number(asQ(U.OWNER, `select count(*) from public.list_estate_invitations('${ESTATE}', 50);`)) >= 14, 'the owner still lists their estate\'s invitations');
   check(refused(as(U.F, `select * from public.list_estate_invitations('${ESTATE}', 50);`), 'owner_required'), 'a non-owner is refused (owner_required)');
   const preview = q(`select set_config('app.uid', '', false); select count(*) from public.invitation_preview('${inv.H_email.token}');`);
   check(preview === '1', 'the unauthenticated token preview still returns its one hint row');
