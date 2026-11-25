@@ -53,6 +53,7 @@ buildBundle(
     script: 'scripts/buildProvisioningCorrectionBundle.mjs',
     parts: [
       'db/functions/provision_from_invitation.sql',
+      'db/functions/caller_verified_contacts.sql',
       'db/functions/accept_invitation.sql',
       'db/functions/bind_invitation_token.sql',
       'db/functions/create_invitation.sql',

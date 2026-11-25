@@ -41,6 +41,13 @@ create table if not exists auth.users (
   email text
 );
 alter table auth.users add column if not exists email text;
+-- ★ CONFIRMATION COLUMNS MODELLED SINCE 2026-11-25 (contact binding). `caller_verified_contacts()`
+-- reads GoTrue's `email_confirmed_at` / `phone_confirmed_at` / `deleted_at`; a scenario that wants a
+-- contact to count must set the confirmation explicitly — an unconfirmed address matches nothing.
+alter table auth.users add column if not exists email_confirmed_at timestamptz;
+alter table auth.users add column if not exists phone text;
+alter table auth.users add column if not exists phone_confirmed_at timestamptz;
+alter table auth.users add column if not exists deleted_at timestamptz;
 
 -- ★ THE REAL SHAPE. Supabase's `auth.uid()` reads the `sub` claim of the request JWT. Reading it from
 -- the same GUC makes caller identity switchable per transaction, which is what lets one harness

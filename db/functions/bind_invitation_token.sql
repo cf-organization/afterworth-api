@@ -33,9 +33,10 @@ begin
   if v_inv.expires_at < now() then raise exception 'invitation_expired' using errcode = 'P0003'; end if;
   if v_inv.status = 'revoked' then raise exception 'invitation_revoked' using errcode = 'P0004'; end if;
 
-  select profiles.email, profiles.phone into v_user_email, v_user_phone from public.profiles where profiles.id = v_user;
-  if not ((v_inv.invitee_email is not null and lower(v_inv.invitee_email) = lower(coalesce(v_user_email,'')))
-       or (v_inv.invitee_phone is not null and v_inv.invitee_phone = coalesce(v_user_phone,''))) then
+  -- ★ THE CALLER'S VERIFIED CONTACTS, NEVER THE PROFILE (2026-11-25) — see caller_verified_contacts.sql.
+  select c.email, c.phone into v_user_email, v_user_phone from public.caller_verified_contacts() c;
+  if not ((v_user_email is not null and v_inv.invitee_email is not null and lower(v_inv.invitee_email) = v_user_email)
+       or (v_user_phone is not null and v_inv.invitee_phone is not null and v_inv.invitee_phone = v_user_phone)) then
     raise exception 'invitation_not_for_caller' using errcode = 'P0006';
   end if;
 
