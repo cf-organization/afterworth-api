@@ -33,6 +33,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { renderInvitationEmail } from "../email/invitationTemplate.js";
+import { safeInviterDisplayName } from "./safeInviterDisplayName.js";
 import {
   send as defaultSend,
   type DeliveryOutcome,
@@ -159,8 +160,13 @@ export async function deliverClaimedRow(
   // The owner's disclosure choices, honoured exactly. A name the owner hid is not substituted.
   const estateName = preview.showEstateName === true && typeof issued.estate_display_name === "string"
     ? issued.estate_display_name : null;
-  const inviterName = preview.showInviterName === true && typeof issued.inviter_display_name === "string"
-    ? issued.inviter_display_name : null;
+  // ★ THE CHOICE GATES, THE SANITIZER DECIDES (0069). The notice RPC releases the stored column RAW to
+  //   this service-role worker; it is this line that decides what a RECIPIENT receives. Rows written
+  //   before 0069 may hold the owner's EMAIL ADDRESS as their "name" (the old create paths fell back to
+  //   it), and the owner's choice to show a name was never a choice to disclose an address. Hidden →
+  //   null; blank, address-shaped or over-long → null; null → neutral wording in the template. The same
+  //   line serves the immediate attempt and every queued retry, because both reach it.
+  const inviterName = preview.showInviterName === true ? safeInviterDisplayName(issued.inviter_display_name) : null;
 
   if (!recipient) {
     // Phone-only invitation: there is no SMS provider in this project, so there is nothing to send.

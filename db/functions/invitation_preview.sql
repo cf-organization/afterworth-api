@@ -12,13 +12,16 @@
 --
 -- Called from api/invitations/preview.ts with an anon client (no JWT).
 -- SECURITY DEFINER. Source of truth — re-apply on DB reset.
+--
+-- ★ 0069 (2026-11-26): the released inviter name passes `safe_inviter_display_name`; a legacy row holding an
+-- address returns NULL. The showInviterName gate and the estate-name gate are unchanged. Body identical to 0069.
 
-CREATE OR REPLACE FUNCTION public.invitation_preview(p_token text)
- RETURNS TABLE(token_fingerprint text, invitation_kind text, proposed_role text, estate_display_name text, inviter_display_name text, invitee_email_hint text, invitee_phone_hint text, expires_at timestamp with time zone, is_expired boolean, is_revoked boolean)
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public', 'extensions'
-AS $function$
+create or replace function public.invitation_preview(p_token text)
+ returns table(token_fingerprint text, invitation_kind text, proposed_role text, estate_display_name text, inviter_display_name text, invitee_email_hint text, invitee_phone_hint text, expires_at timestamp with time zone, is_expired boolean, is_revoked boolean)
+ language plpgsql
+ security definer
+ set search_path to 'public', 'extensions'
+as $function$
 declare
   v_hash text;
   v_fp text;
@@ -50,8 +53,10 @@ begin
     v_inv.proposed_role::text,
     case when (v_inv.preview_visibility->>'showEstateName')::boolean is true
          then v_inv.estate_display_name else null end,
+    -- ★ 0069: the owner's choice gates WHETHER a name is released; the sanitizer decides whether the
+    --   stored value IS one. A legacy row holding an address releases NULL here, as it does everywhere.
     case when (v_inv.preview_visibility->>'showInviterName')::boolean is true
-         then v_inv.inviter_display_name else null end,
+         then public.safe_inviter_display_name(v_inv.inviter_display_name) else null end,
     v_inv.invitee_email_hint,
     v_inv.invitee_phone_hint,
     v_inv.expires_at,

@@ -34,6 +34,9 @@
 -- "+"-prefixed invitation reduce to the same key; a number without "+" or malformed never matches.
 --
 -- Source of truth for this function. Re-apply on any DB reset.
+--
+-- ★ 0069 (2026-11-26): the pending list's `inviterDisplayName` passes `safe_inviter_display_name` exactly as the
+-- membership cue already did; the cue rules and the contact binding are unchanged. Body identical to 0069.
 
 CREATE OR REPLACE FUNCTION public.resolve_membership(p_email text, p_phone text)
  RETURNS jsonb
@@ -112,9 +115,11 @@ begin
     'estateDisplayName',
       case when (i.preview_visibility->>'showEstateName')::boolean
            then i.estate_display_name else null end,
+    -- ★ 0069: sanitized here too — the acceptance screen must never print an address that a legacy row
+    --   stored as the inviter "name". The owner's choice still gates the release; NULL means no name.
     'inviterDisplayName',
       case when (i.preview_visibility->>'showInviterName')::boolean
-           then i.inviter_display_name else null end,
+           then public.safe_inviter_display_name(i.inviter_display_name) else null end,
     'invitationKind', i.kind,
     'proposedRole', i.proposed_role,
     'expiresAt', i.expires_at,

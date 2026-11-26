@@ -9,7 +9,8 @@
     "test": "vitest run",
     "test:sql-auth": "node scripts/verifySqlAuthorization.mjs",
     "verify:upload-policy": "node scripts/verifyUploadPolicySeed.mjs",
-    "verify:contact-binding": "node scripts/verifyResolveMembershipContactBinding.mjs"
+    "verify:contact-binding": "node scripts/verifyResolveMembershipContactBinding.mjs",
+    "verify:inviter-privacy": "node scripts/verifyInviterNamePrivacy.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.106.2",

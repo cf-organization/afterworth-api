@@ -107,7 +107,9 @@ describe("★ the scan is not vacuous", () => {
     // revoke's final definition must come from 0047, not 0042 — otherwise the audit would be
     // judging history and every fix would fail its own check.
     expect(FINAL.get("public.revoke_estate_invitation")?.file).toMatch(/^0047_/);
-    expect(FINAL.get("public.create_estate_invitation")?.file).toMatch(/^0045_/);
+    // …and create_estate_invitation's from 0069 (inviter-name privacy), which superseded 0045's body while
+    // keeping its fix — plpgsqlShadowing.test.ts asserts the qualified predicate on the FINAL body.
+    expect(FINAL.get("public.create_estate_invitation")?.file).toMatch(/^0069_/);
   });
 });
 
