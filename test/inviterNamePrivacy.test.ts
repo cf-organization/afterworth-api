@@ -59,6 +59,38 @@ describe("0 · the scan set is real", () => {
   });
 });
 
+describe("0b · the prerequisite guard runs first and names what is missing", () => {
+  const raw = () => read(MIGRATION);
+  test("★ one DO block, placed before the first create or replace, checks the two 0067 helpers and the 0068 sanitizer", () => {
+    const m = raw();
+    const guardAt = m.indexOf("do $prereq$");
+    const firstCreate = m.search(/create\s+or\s+replace\s+function/i);
+    expect(guardAt).toBeGreaterThan(0);
+    expect(firstCreate).toBeGreaterThan(guardAt); // nothing is replaced before the check
+    const guard = m.slice(guardAt, m.indexOf("$prereq$;", guardAt));
+    expect(guard).toContain("to_regprocedure('public.invitation_phone_key(text, boolean)')");
+    expect(guard).toContain("to_regprocedure('public.caller_verified_contacts()')");
+    expect(guard).toContain("to_regprocedure('public.safe_inviter_display_name(text)')");
+    expect(guard).toMatch(/raise exception '0069_prerequisite_missing: apply migration % before 0069\. Nothing has been changed\.', v_missing/);
+    // the message names the prerequisite MIGRATION as well as the function
+    expect(guard).toMatch(/'0067 \(resolve_membership contact binding\): public\.invitation_phone_key\(text, boolean\)'/);
+    expect(guard).toMatch(/'0067 \(resolve_membership contact binding\): public\.caller_verified_contacts\(\)'/);
+    expect(guard).toMatch(/'0068 \(membership invitation cue\): public\.safe_inviter_display_name\(text\)'/);
+    // it only reads the catalog: no write, no create, no grant inside the guard
+    expect(stripComments(guard)).not.toMatch(/create|grant|revoke|insert|update|delete/i);
+  });
+  test("★ the container proof exercises the guard in both psql modes and fingerprints the four targets", () => {
+    const script = read("scripts/verifyInviterNamePrivacy.mjs");
+    expect(script).toContain("0069_prerequisite_missing");
+    expect(script).toMatch(/const psql1 = .*'-1'/); // single-transaction mode, the hosted editor's shape
+    expect(script).toContain("md5(p.prosrc)");
+    for (const f of FUNCTIONS) expect(script).toContain(`'${f}'`);
+    expect(script).toMatch(/bare bootstrap \(no 0067\)/);
+    expect(script).toMatch(/0067 applied, 0068 missing/);
+    expect(script).toMatch(/re-applying 0069 preserves the final definitions/);
+  });
+});
+
 describe("1 · neither create path persists an address as the inviter name", () => {
   test.each(["create_estate_invitation", "create_invitation"])("★ %s: full_name through the sanitizer; no email fallback; no profile email read for the name", (fn) => {
     const b = bodyOf(read(MIGRATION), fn);

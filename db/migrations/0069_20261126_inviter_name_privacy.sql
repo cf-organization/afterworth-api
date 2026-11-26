@@ -54,6 +54,31 @@
 -- Idempotent: `create or replace` throughout. Re-apply on any DB reset AFTER the bootstrap, 0067 and 0068.
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 
+-- ── 0 · prerequisites — stop here, before any definition changes, if 0067 or 0068 is missing ──────
+-- Every function below either CALLS `safe_inviter_display_name` (0068) or carries 0067's verified-contact
+-- matching (`caller_verified_contacts`, `invitation_phone_key`). PL/pgSQL resolves calls at RUN time, so
+-- without this check a 0069 pasted over a database missing 0068 would be ACCEPTED and then fail on the
+-- first invitation created or previewed. The check names the missing prerequisite and raises, which
+-- aborts the paste (the SQL editor runs it as one transaction; psql with ON_ERROR_STOP stops at this
+-- statement) before the first `create or replace` runs. Proven in scripts/verifyInviterNamePrivacy.mjs §P.
+do $prereq$
+declare
+  v_missing text := null;
+begin
+  if to_regprocedure('public.invitation_phone_key(text, boolean)') is null then
+    v_missing := '0067 (resolve_membership contact binding): public.invitation_phone_key(text, boolean)';
+  elsif to_regprocedure('public.caller_verified_contacts()') is null then
+    v_missing := '0067 (resolve_membership contact binding): public.caller_verified_contacts()';
+  elsif to_regprocedure('public.safe_inviter_display_name(text)') is null then
+    v_missing := '0068 (membership invitation cue): public.safe_inviter_display_name(text)';
+  end if;
+  if v_missing is not null then
+    raise exception '0069_prerequisite_missing: apply migration % before 0069. Nothing has been changed.', v_missing
+      using errcode = 'P0001', hint = 'Apply 0067, then 0068, then re-run 0069.';
+  end if;
+end;
+$prereq$;
+
 -- ── 1 · the owner path: create_estate_invitation ──────────────────────────────────────────────────
 -- public.create_estate_invitation(p_estate, p_proposed_role, p_invitee_email, p_invitee_phone,
 --                                 p_show_estate_name, p_show_inviter_name, p_expires_in_days)

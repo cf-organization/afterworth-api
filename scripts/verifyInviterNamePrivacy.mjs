@@ -53,6 +53,8 @@ const KEEP = process.argv.includes('--keep');
 const say = (m) => console.log(m);
 const rm = () => { if (!KEEP) spawnSync('docker', ['rm', '-f', CONTAINER], { stdio: 'ignore' }); };
 const psql = (sql) => spawnSync('docker', ['exec', '-i', CONTAINER, 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-f', '-'], { input: sql, encoding: 'utf8' });
+/** The same, as ONE transaction (-1): how the hosted SQL editor runs a paste — any error rolls the whole script back. */
+const psql1 = (sql) => spawnSync('docker', ['exec', '-i', CONTAINER, 'psql', '-U', 'postgres', '-1', '-v', 'ON_ERROR_STOP=1', '-q', '-f', '-'], { input: sql, encoding: 'utf8' });
 const q = (sql) => { const r = spawnSync('docker', ['exec', '-i', CONTAINER, 'psql', '-U', 'postgres', '-tAc', sql], { encoding: 'utf8' }); if (r.status !== 0) throw new Error(`query failed: ${sql.slice(0, 120)}\n${r.stderr}`); return r.stdout.trim().split('\n').pop() ?? ''; };
 const must = (r, what) => { if (r.status !== 0) throw new Error(`${what} failed:\n${(r.stderr || '').slice(0, 1200)}`); };
 const as = (uid, sql) => psql(`select set_config('app.uid', '${uid}', false);\n${sql}`);
@@ -108,10 +110,35 @@ try {
   const phases = readdirSync(BOOT).filter((f) => /^\d+_.*\.sql$/.test(f)).sort((a, b) => Number(a.split('_')[0]) - Number(b.split('_')[0]));
   for (const f of phases) must(psql(readFileSync(join(BOOT, f), 'utf8')), `bootstrap ${f}`);
   say(`bootstrap applied: ${phases.length} phases`);
+
+  // ── P · prerequisites: 0069 stops BEFORE any target definition changes when 0067 or 0068 is missing ──
+  // Definitions are fingerprinted as md5(prosrc) — the same expression an operator runs for the
+  // post-apply definition check — so "unchanged" here is the exact comparison the owner will make.
+  const TARGETS = ['create_estate_invitation', 'create_invitation', 'invitation_preview', 'resolve_membership'];
+  const defs = () => Object.fromEntries(TARGETS.map((f) => [f, q(`select md5(p.prosrc) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = '${f}'`)]));
+  const sameDefs = (a, b) => TARGETS.every((f) => a[f] === b[f] && /^[0-9a-f]{32}$/.test(a[f]));
+  const stopped = (r, prerequisite) => r.status !== 0 && /0069_prerequisite_missing/.test(r.stderr) && new RegExp(prerequisite).test(r.stderr) && /Nothing has been changed/.test(r.stderr);
+  say('\n── P · 0069 refuses to run without its prerequisites, and changes nothing when it refuses ──');
+  const d0 = defs();
+  check(TARGETS.every((f) => /^[0-9a-f]{32}$/.test(d0[f])), 'positive control — all four target functions exist in the bootstrap and fingerprint');
+  check(stopped(psql(readFileSync(M0069, 'utf8')), '0067 .*invitation_phone_key'), 'bare bootstrap (no 0067): 0069 stops and names the missing 0067 helper');
+  check(sameDefs(d0, defs()), '  …and none of the four target definitions changed (statement mode)');
   must(psql(readFileSync(M0067, 'utf8')), 'migration 0067');
+  const d1 = defs();
+  check(d1.resolve_membership !== d0.resolve_membership && d1.create_invitation === d0.create_invitation, 'positive control — the fingerprint moves when a definition really changes (0067 re-created resolve_membership only)');
+  check(stopped(psql(readFileSync(M0069, 'utf8')), '0068 .*safe_inviter_display_name'), '0067 applied, 0068 missing: 0069 stops and names the 0068 sanitizer');
+  check(sameDefs(d1, defs()), '  …and none of the four target definitions changed (statement mode, ON_ERROR_STOP)');
+  check(stopped(psql1(readFileSync(M0069, 'utf8')), '0068 .*safe_inviter_display_name'), '  …the same in single-transaction mode (how the hosted SQL editor runs a paste)');
+  check(sameDefs(d1, defs()), '  …and nothing changed there either');
   must(psql(readFileSync(M0068, 'utf8')), 'migration 0068');
+  const d2 = defs();
   must(psql(readFileSync(M0069, 'utf8')), 'migration 0069 (1st apply)');
+  const d3 = defs();
+  check(TARGETS.every((f) => d3[f] !== d2[f]), '0067 → 0068 → 0069 succeeds and re-creates all four target functions');
   must(psql(readFileSync(M0069, 'utf8')), 'migration 0069 (2nd apply — idempotent)');
+  check(sameDefs(d3, defs()), 're-applying 0069 preserves the final definitions (md5(prosrc) identical for all four)');
+  say('  definition check for the operator — expected md5(prosrc) after 0069:');
+  for (const f of TARGETS) say(`    ${f.padEnd(26)} ${d3[f]}`);
   say('migrations 0067, 0068, 0069 applied (0069 twice, idempotent)');
   must(psql(`create or replace function auth.uid() returns uuid language sql stable as $fn$ select nullif(current_setting('app.uid', true), '')::uuid $fn$;`), 'auth.uid override');
 
