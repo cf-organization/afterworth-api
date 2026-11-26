@@ -7,6 +7,9 @@
 -- to 'beneficiary' — the GENERIC access-class membership (fiduciary authority lives ONLY in
 -- estate_designations, stamped at accept, NEVER the membership role). Pending-cap ≤20 active per estate.
 -- Captured from live 2026-07-15 (previously VC-only in migration 0016). SECURITY DEFINER.
+--
+-- ★ 0069 (2026-11-26): the inviter name is `safe_inviter_display_name(full_name)` — a name or NULL, never the
+-- inviter's email address, and a missing name never blocks the mint. Body identical to migration 0069.
 
 create or replace function public.create_invitation(
   p_estate uuid, p_kind text, p_proposed_role text,
@@ -73,7 +76,9 @@ begin
   if v_pending >= 20 then raise exception 'pending_invitation_cap' using errcode = 'P0001'; end if;
 
   select e.name into v_estate_name from public.estates e where e.id = p_estate;
-  select coalesce(nullif(p.full_name,''), p.email) into v_inviter_name from public.profiles p where p.id = auth.uid();
+  -- ★ THE INVITER NAME IS A NAME OR NOTHING (0069) — the same rule as create_estate_invitation. Blank,
+  --   address-shaped or over-long → NULL; never the inviter's email address; never blocks the mint.
+  select public.safe_inviter_display_name(p.full_name) into v_inviter_name from public.profiles p where p.id = auth.uid();
   v_email_hint := case when p_invitee_email is not null
     then left(p_invitee_email,1) || '•••@' || split_part(p_invitee_email,'@',2) else null end;
   v_phone_hint := case when p_invitee_phone is not null then '•••' || right(p_invitee_phone,4) else null end;

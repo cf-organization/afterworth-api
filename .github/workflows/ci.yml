@@ -67,6 +67,15 @@ jobs:
       - name: Invitation contact binding (container)
         run: npm run verify:contact-binding
 
+      # ★ INVITER NAME PRIVACY (container). Builds db/bootstrap + 0067 + 0068 + 0069, seeds synthetic owners in
+      # every name state (hidden, shown, blank profile name with an email on file, a legacy row already storing
+      # an address) and proves that no release point — the stored row, the token preview, the pending list,
+      # the post-acceptance cue — ever returns an email address as a name, while delivery still targets the
+      # recipient and 0067's contact binding and 0068's cue rules hold. It also cross-checks the SQL sanitizer
+      # against the TypeScript twin on the same vectors. Exits 2 without Docker.
+      - name: Inviter name privacy (container)
+        run: npm run verify:inviter-privacy
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

@@ -121,8 +121,22 @@ describe('2 · the sanitizer mirrors the client rule', () => {
 });
 
 describe('3 · source of truth and migration carry the same bodies', () => {
-  test('★ resolve_membership: db/functions === migration 0067 (normalised)', () => {
-    expect(bodyOf(read(MIGRATION), 'resolve_membership')).toBe(bodyOf(read(RESOLVE), 'resolve_membership'));
+  /** The LATEST migration defining a function is the deployed body. 0069 (inviter-name privacy) superseded
+   *  0068's resolve_membership by sanitizing the PENDING list's name; the cue section is carried verbatim, which
+   *  §1 above asserts on the mirror and test/inviterNamePrivacy.test.ts asserts on 0069 itself. */
+  const latestMigrationDefining = (name: string): string => {
+    const files = readdirSync(join(ROOT, 'db/migrations')).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort();
+    const defining = files.filter((f) => new RegExp(`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\s*\\(`, 'i').test(read(`db/migrations/${f}`)));
+    expect(defining.length).toBeGreaterThan(0);
+    return `db/migrations/${defining[defining.length - 1]}`;
+  };
+  test('★ resolve_membership: db/functions === its latest migration (normalised); 0068 defines it and 0069 supersedes it', () => {
+    expect(bodyOf(read(MIGRATION), 'resolve_membership').length).toBeGreaterThan(400);
+    expect(latestMigrationDefining('resolve_membership')).toMatch(/0069_.*inviter_name_privacy/);
+    expect(bodyOf(read(latestMigrationDefining('resolve_membership')), 'resolve_membership')).toBe(bodyOf(read(RESOLVE), 'resolve_membership'));
+    // 0069 changed exactly one thing in this body: the pending list's inviter name now passes the sanitizer
+    const diffOnly = (b: string) => b.replace(/then public\.safe_inviter_display_name\(i\.inviter_display_name\) else null end, 'invitationKind'/, 'then i.inviter_display_name else null end, \'invitationKind\'');
+    expect(diffOnly(bodyOf(read(RESOLVE), 'resolve_membership'))).toBe(bodyOf(read(MIGRATION), 'resolve_membership'));
   });
   test('★ safe_inviter_display_name: db/functions === migration 0067 (normalised)', () => {
     expect(bodyOf(read(MIGRATION), 'safe_inviter_display_name')).toBe(bodyOf(read(SANITIZER), 'safe_inviter_display_name'));

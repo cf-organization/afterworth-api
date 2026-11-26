@@ -199,3 +199,39 @@ describe("expiry is stated plainly", () => {
     expect(r.text).not.toContain("2026-09-01T00:00:00");
   });
 });
+
+describe("★ an address is never printed as a name (0069)", () => {
+  const SENDER = "owner-sender@example.test";
+  const neutral = `You have been invited to ${base.estateDisplayName} on AfterWorth.`;
+
+  it("positive control — a valid name IS printed, in HTML and in text", () => {
+    const r = renderInvitationEmail({ ...base, inviterDisplayName: "Dana Hartley" });
+    for (const body of [r.html, r.text]) expect(body).toContain(`Dana Hartley has invited you to ${base.estateDisplayName} on AfterWorth.`);
+  });
+
+  it("★ an address-shaped inviter name renders the neutral opening — the address is absent from subject, HTML and text", () => {
+    const r = renderInvitationEmail({ ...base, inviterDisplayName: SENDER });
+    for (const body of [r.subject, r.html, r.text]) expect(body).not.toContain(SENDER);
+    for (const body of [r.html, r.text]) {
+      expect(body).toContain(neutral);
+      expect(body).not.toContain("has invited you");
+    }
+  });
+
+  it("an address wrapped in a name is refused too", () => {
+    const r = renderInvitationEmail({ ...base, inviterDisplayName: "Dana <owner-sender@example.test>" });
+    expect(r.html).not.toContain("owner-sender");
+    expect(r.text).toContain(neutral);
+  });
+
+  it("an over-long value (201 characters) is treated as withheld", () => {
+    const r = renderInvitationEmail({ ...base, inviterDisplayName: "x".repeat(201) });
+    expect(r.text).toContain(neutral);
+    expect(r.html).not.toContain("x".repeat(201));
+  });
+
+  it("the estate name keeps its own rule — this change touches only the inviter", () => {
+    const r = renderInvitationEmail({ ...base, estateDisplayName: "  The Example Estate  ", inviterDisplayName: null });
+    expect(r.subject).toBe("You have been invited to The Example Estate on AfterWorth");
+  });
+});

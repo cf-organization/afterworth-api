@@ -33,10 +33,16 @@
  * saying so discloses nothing.
  */
 
+import { safeInviterDisplayName } from "../invitations/safeInviterDisplayName.js";
+
 export interface InvitationEmailInput {
   /** Shown only when the owner enabled it at creation. */
   readonly estateDisplayName: string | null;
-  /** Shown only when the owner enabled it at creation. */
+  /**
+   * Shown only when the owner enabled it at creation — AND only if it is a name. The template runs the
+   * inviter sanitizer itself (0069): an address-shaped, blank or over-long value renders the neutral
+   * wording, so no caller can make this message print an email address as a person's name.
+   */
   readonly inviterDisplayName: string | null;
   readonly expiresAt: Date;
   /** Fully-formed acceptance URL, token already embedded. */
@@ -75,7 +81,10 @@ function formatExpiry(date: Date): string {
  */
 export function renderInvitationEmail(input: InvitationEmailInput): RenderedEmail {
   const estate = input.estateDisplayName?.trim() || null;
-  const inviter = input.inviterDisplayName?.trim() || null;
+  // ★ A NAME OR NOTHING (0069). `.trim() || null` once stood here, and it printed "<address> has invited
+  //   you" for every owner whose profile had no name — the create paths stored the email as the name.
+  //   The sanitizer is the same rule the SQL release points and the client apply; null → neutral copy.
+  const inviter = safeInviterDisplayName(input.inviterDisplayName);
   const expiry = formatExpiry(input.expiresAt);
 
   const subject = estate

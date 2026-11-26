@@ -360,3 +360,127 @@ describe("★ the email carries no secret at all", () => {
     ]);
   });
 });
+
+/**
+ * ★ 0069 — THE INVITER NAME IS RELEASED ONLY AS THE OWNER CHOSE, AND ONLY WHEN IT IS A NAME.
+ *
+ * The notice RPC hands the orchestrator the stored column RAW (recorded in scripts/verifyInviterNamePrivacy.mjs
+ * §5), so the rendered HTML and plain text asserted here are the recipient-facing truth for the email. The
+ * sender's address is DIFFERENT from the recipient's in every case, so "the sender address is absent" and
+ * "delivery still targets the recipient" are two separable facts, both asserted on both formats.
+ */
+describe("★ the inviter name reaches the recipient only as the owner chose, and only when it is a name", () => {
+  const SENDER = "owner-sender@example.test";
+  const RECIPIENT = "recipient@example.test";
+  const ESTATE = "The Example Estate";
+  const NEUTRAL = `You have been invited to ${ESTATE} on AfterWorth.`;
+
+  /** Render one invitation whose stored inviter name and visibility are as given; returns the one send. */
+  async function rendered(inviter_display_name: string | null, showInviterName: boolean) {
+    const db = makeDb();
+    db.invitations[0].invitee_email = RECIPIENT;
+    db.invitations[0].inviter_display_name = inviter_display_name;
+    db.invitations[0].preview_visibility = { showEstateName: true, showInviterName };
+    const { send, calls } = scriptedSender([accepted]);
+    const counters = await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
+    expect(counters.providerAccepted).toBe(1); // the send happened — a missing name never blocks delivery
+    expect(calls).toHaveLength(1);
+    return calls[0];
+  }
+  const bothFormats = (c: { html: string; text: string }) => [c.html, c.text];
+
+  it("precondition — the fixture's sender and recipient addresses differ, and neither is a substring of the other", () => {
+    expect(SENDER).not.toBe(RECIPIENT);
+    expect(RECIPIENT.includes(SENDER)).toBe(false);
+    expect(SENDER.includes(RECIPIENT)).toBe(false);
+  });
+
+  it("★ positive control — a SHOWN valid name opens the message, in HTML and in text, and the recipient is the target", async () => {
+    const c = await rendered("Dana Hartley", true);
+    expect(c.to).toBe(RECIPIENT);
+    for (const body of bothFormats(c)) {
+      expect(body).toContain(`Dana Hartley has invited you to ${ESTATE} on AfterWorth.`);
+      expect(body).not.toContain(NEUTRAL);
+      expect(body).not.toContain(SENDER);
+    }
+  });
+
+  it("a HIDDEN valid name → neutral wording; the name and the sender address appear nowhere", async () => {
+    const c = await rendered("Dana Hartley", false);
+    expect(c.to).toBe(RECIPIENT);
+    for (const body of bothFormats(c)) {
+      expect(body).toContain(NEUTRAL);
+      expect(body).not.toContain("Dana Hartley");
+      expect(body).not.toContain(SENDER);
+      expect(body).not.toMatch(/\S@\S/.source === "\\S@\\S" ? /[^\s>"]+@[^\s<"]+/ : /@/); // no address of any kind in the copy
+    }
+  });
+
+  it("a BLANK profile name with an email on file: the post-0069 row stores NULL → neutral wording, sent to the recipient", async () => {
+    // What create_estate_invitation / create_invitation now persist for an owner whose full_name is '' or NULL
+    // (proven in the container script §1); the owner had chosen to show a name, so showInviterName is true.
+    const c = await rendered(null, true);
+    expect(c.to).toBe(RECIPIENT);
+    for (const body of bothFormats(c)) {
+      expect(body).toContain(NEUTRAL);
+      expect(body).not.toContain(SENDER);
+      expect(body).not.toContain("null");
+      expect(body).not.toContain("  has invited");
+    }
+  });
+
+  it("★ a LEGACY row that already stores the sender's ADDRESS as the name, with showInviterName=true → neutral wording; the address is absent from HTML and text", async () => {
+    // Exactly the pre-0069 shape: coalesce(nullif(full_name,''), email) wrote the owner's address into the
+    // name column, and the owner's choice to show a name gated it straight into the email.
+    const c = await rendered(SENDER, true);
+    expect(c.to).toBe(RECIPIENT);
+    for (const body of bothFormats(c)) {
+      expect(body).toContain(NEUTRAL);
+      expect(body).not.toContain(SENDER);
+      expect(body).not.toContain("has invited you");
+    }
+  });
+
+  it("★ the gate and the sanitizer both apply on a QUEUED RETRY — the drain renders the same neutral message for a legacy row", async () => {
+    const db = makeDb();
+    db.invitations[0].invitee_email = RECIPIENT;
+    db.invitations[0].inviter_display_name = SENDER;
+    db.invitations[0].preview_visibility = { showEstateName: true, showInviterName: true };
+    const { send, calls } = scriptedSender([transient, accepted]);
+    const admin = makeFakeAdmin(db);
+    await claimAndDeliver(admin, { outboxId: OUTBOX_ID }, { send }); // immediate attempt: provider refused
+    expect(db.outbox[0].status).toBe("retryPending");
+    db.outbox[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    await claimAndDeliver(admin, { max: 25 }, { send }); // the cron drain's retry
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(c.to).toBe(RECIPIENT);
+      for (const body of bothFormats(c)) {
+        expect(body).toContain(NEUTRAL);
+        expect(body).not.toContain(SENDER);
+      }
+    }
+    expect(calls[1].html).toBe(calls[0].html); // the retry is the same message, not a differently-gated one
+  });
+
+  it("an address-shaped PROFILE NAME (someone typed their email as their name) → neutral, even when shown", async () => {
+    const c = await rendered("addr-as-name@example.test", true);
+    for (const body of bothFormats(c)) {
+      expect(body).toContain(NEUTRAL);
+      expect(body).not.toContain("addr-as-name@example.test");
+    }
+  });
+
+  it("the estate-name choice is separate: hidden estate + shown name still names the inviter and not the estate", async () => {
+    const db = makeDb();
+    db.invitations[0].invitee_email = RECIPIENT;
+    db.invitations[0].inviter_display_name = "Dana Hartley";
+    db.invitations[0].preview_visibility = { showEstateName: false, showInviterName: true };
+    const { send, calls } = scriptedSender([accepted]);
+    await claimAndDeliver(makeFakeAdmin(db), { outboxId: OUTBOX_ID }, { send });
+    for (const body of bothFormats(calls[0])) {
+      expect(body).toContain("Dana Hartley has invited you to AfterWorth.");
+      expect(body).not.toContain(ESTATE);
+    }
+  });
+});
